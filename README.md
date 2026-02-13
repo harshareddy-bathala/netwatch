@@ -1,0 +1,254 @@
+# NetWatch v2.0.0 — Intelligent Network Traffic Analysis System
+
+[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-100%2B-green.svg)](#testing)
+
+## Overview
+
+NetWatch is a production-ready, real-time network traffic monitoring and analysis system. It automatically detects your network connection type, captures packets with Scapy, tracks devices, calculates bandwidth, detects anomalies with machine learning, and displays everything on a live web dashboard.
+
+### Key Features
+
+- **Auto Mode Detection** — Hotspot, Wi-Fi Client, Ethernet, Public Network, Port Mirror
+- **Real-time Dashboard** — Bandwidth charts (SSE push @ 3s), device list, protocol distribution, alert feed
+- **New Device Alerts** — MAC-based detection of unknown devices connecting to your hotspot
+- **Anomaly Detection** — Isolation Forest ML algorithm flags unusual traffic patterns
+- **Health Score** — Composite 0–100 network health rating
+- **Alert System** — Threshold + ML alerts with deduplication and lifecycle management
+- **Disconnected Detection** — Gracefully pauses capture when network drops (e.g., hotspot turned off)
+- **Cross-platform** — Windows, Linux, macOS with platform-specific deployment packages
+- **Zero Cloud** — Everything runs locally with SQLite; no external services required
+
+---
+
+## Prerequisites
+
+> **Python 3.11 is required.** NetWatch has been tested and validated exclusively with Python 3.11. Other versions are not supported.
+
+### Required Software
+
+| Software | Platform | Purpose | Download |
+|----------|----------|---------|----------|
+| **Python 3.11** | All | Runtime | [python.org](https://www.python.org/downloads/release/python-3110/) |
+| **Npcap** | Windows | Packet capture driver | [npcap.com](https://npcap.com/) |
+| **pip** | All | Package manager | Bundled with Python 3.11 |
+
+### Platform Notes
+
+- **Windows:** Install Npcap with **"WinPcap API-compatible Mode"** checked. Run NetWatch **as Administrator** (packet capture requires raw sockets).
+- **Linux:** Run with `sudo`. Install `libpcap-dev` if not present (`apt install libpcap-dev`).
+- **macOS:** Run with `sudo`. Xcode command-line tools may be required (`xcode-select --install`).
+
+---
+
+## Quick Start
+
+### 1. Verify Python 3.11
+
+```bash
+python --version
+# Expected: Python 3.11.x
+```
+
+If you have multiple Python versions, use the specific Python 3.11 path:
+```bash
+# Windows
+py -3.11 --version
+
+# Linux / macOS
+python3.11 --version
+```
+
+### 2. Clone & Create Virtual Environment
+
+```bash
+git clone https://github.com/your-team/netwatch.git
+cd netwatch
+
+# Create venv with Python 3.11 specifically
+python -m venv venv               # If 'python' is 3.11
+py -3.11 -m venv venv             # Windows with multiple Python versions
+python3.11 -m venv venv           # Linux / macOS with multiple versions
+```
+
+### 3. Activate & Install
+
+```bash
+# Activate the virtual environment
+venv\Scripts\activate             # Windows (cmd)
+venv\Scripts\Activate.ps1         # Windows (PowerShell)
+source venv/bin/activate          # Linux / macOS
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Initialize the database
+python database/init_db.py
+```
+
+### 4. Run NetWatch
+
+```bash
+# Windows — Run terminal as Administrator first
+python main.py
+
+# Linux / macOS
+sudo venv/bin/python main.py
+
+# With options
+python main.py --port 8080 --log-level DEBUG --no-capture
+```
+
+Open **http://localhost:5000** in your browser.
+
+### CLI Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--port` | 5000 | Web server port |
+| `--host` | 0.0.0.0 | Bind address |
+| `--no-capture` | off | Start without packet capture |
+| `--log-level` | INFO | DEBUG, INFO, WARNING, ERROR |
+| `--log-file` | auto | Custom log file path |
+
+---
+
+## Project Structure
+
+```
+netWatch/
+├── main.py                    # Entry point (CLI, logging, shutdown)
+├── config.py                  # Central configuration
+├── requirements.txt           # Dependencies
+├── packet_capture/            # Capture engine & mode detection
+│   ├── capture_engine.py      # Scapy-based packet sniffing
+│   ├── packet_processor.py    # Batch processing & queue
+│   ├── bandwidth_calculator.py# Sliding-window bandwidth
+│   ├── parser.py              # Protocol identification
+│   ├── mode_detector.py       # Auto network mode detection
+│   ├── interface_manager.py   # Interface enumeration & callbacks
+│   ├── filter_manager.py      # BPF filter validation
+│   ├── network_discovery.py   # ARP scanning
+│   └── modes/                 # Mode implementations
+│       ├── base_mode.py       #   Abstract base
+│       ├── hotspot_mode.py    #   Mobile hotspot
+│       ├── wifi_client_mode.py#   Wi-Fi client
+│       ├── ethernet_mode.py   #   Wired connection
+│       ├── public_network_mode.py # Campus/public Wi-Fi
+│       └── port_mirror_mode.py#   SPAN port
+├── database/                  # Data layer
+│   ├── connection.py          # SQLite connection pool (WAL)
+│   ├── models.py              # Data models
+│   ├── schema.sql             # Table definitions
+│   ├── init_db.py             # DB initialization
+│   └── queries/               # Separated query modules
+├── alerts/                    # Alert system
+│   ├── alert_engine.py        # Threshold engine
+│   ├── deduplication.py       # Cooldown-based throttle
+│   └── anomaly_detector.py    # IsolationForest ML
+├── backend/                   # Flask REST API
+│   ├── app.py                 # Application factory
+│   └── routes.py              # 30+ API endpoints
+├── frontend/                  # SPA dashboard
+│   ├── index.html             # Single page app
+│   ├── css/                   # Modular CSS
+│   └── js/                    # Components & utils
+├── tests/                     # 100+ pytest tests
+│   ├── test_mode_detection.py
+│   ├── test_packet_capture.py
+│   ├── test_database.py
+│   ├── test_alerts.py
+│   ├── test_api_endpoints.py
+│   ├── test_integration.py
+│   └── test_performance.py
+├── deploy/                    # Deployment scripts
+│   ├── create_windows_installer.py
+│   ├── create_deb_package.sh
+│   └── create_macos_app.sh
+└── docs/                      # Documentation
+```
+
+---
+
+## Network Modes
+
+NetWatch auto-detects your connection and optimizes capture:
+
+| Mode | Trigger | Visibility | Promiscuous | ARP Scan |
+|------|---------|------------|-------------|----------|
+| **Hotspot** | Mobile hotspot / ICS active | All connected client devices | ON | Yes |
+| **Wi-Fi Client** | Connected to WiFi or phone hotspot | Own traffic only | OFF | No |
+| **Ethernet** | Wired NIC with gateway | Local subnet traffic | ON | Yes |
+| **Port Mirror** | SPAN port detected (>50% foreign MACs) | Full network segment | ON | Yes |
+| **Public Network** | Campus/hotel WiFi (fallback) | Own traffic only | OFF | No |
+| **Disconnected** | No active network interface | Capture paused | — | No |
+
+**Supported connection types:**
+- WiFi client (connecting to any WiFi/hotspot)
+- Mobile hotspot (sharing internet from your phone/laptop)
+- Ethernet cable (host, client, or direct link)
+- USB tethering (RNDIS/NCM — detected as Ethernet)
+- Switch port mirroring (SPAN)
+- Public/campus WiFi networks
+- VPN connections (tunnels classified correctly, captures on physical interface)
+
+---
+
+## Testing
+
+```bash
+# Full suite
+pytest tests/ -v
+
+# With coverage
+pytest tests/ --cov=. --cov-report=term-missing
+
+# Specific category
+pytest tests/test_mode_detection.py -v
+pytest tests/test_performance.py -v
+```
+
+---
+
+## Deployment
+
+| Platform | Method | Script |
+|----------|--------|--------|
+| Windows | PyInstaller → .exe + installer batch | `deploy/create_windows_installer.py` |
+| Linux | .deb package + systemd service | `deploy/create_deb_package.sh` |
+| macOS | .app bundle | `deploy/create_macos_app.sh` |
+
+See [Production Deployment Guide](docs/PRODUCTION_DEPLOYMENT.md) for details.
+
+---
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Architecture](docs/ARCHITECTURE.md) | System design, data flow, component diagram |
+| [API Reference](docs/API_REFERENCE.md) | All REST endpoints with request/response examples |
+| [User Guide](docs/USER_GUIDE.md) | Dashboard walkthrough, modes, alerts, FAQ |
+| [Production Deployment](docs/PRODUCTION_DEPLOYMENT.md) | Installation, services, security, backups |
+| [Troubleshooting](docs/TROUBLESHOOTING.md) | Common issues and platform-specific fixes |
+| [Setup Guide](docs/SETUP_GUIDE.md) | Detailed installation for all connection types |
+| [Contributing](CONTRIBUTING.md) | Dev workflow, code style, PR process |
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Capture | **Python 3.11**, Scapy 2.5 |
+| API | Flask 3.0 |
+| Database | SQLite (WAL mode) with connection pool |
+| ML | scikit-learn (Isolation Forest) |
+| Frontend | Vanilla JS SPA, CSS custom properties, SSE real-time push |
+| Data | pandas, numpy |
+| System | psutil (monitoring), Npcap (Windows capture driver) |
+
+## License
+
+MIT — see [LICENSE](LICENSE).

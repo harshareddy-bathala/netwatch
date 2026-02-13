@@ -1,0 +1,27 @@
+# NetWatch — Docker Compose
+# Usage:  docker compose up -d
+
+version: "3.9"
+
+services:
+  netwatch:
+    build: .
+    container_name: netwatch
+    ports:
+      - "5000:5000"
+    volumes:
+      - netwatch-data:/data
+    environment:
+      - NETWATCH_ENV=production
+      - DATABASE_PATH=/data/netwatch.db
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+    restart: unless-stopped
+    # Packet capture requires host networking + NET_ADMIN
+    # Uncomment below for live capture mode:
+    # network_mode: host
+    # cap_add:
+    #   - NET_ADMIN
+    #   - NET_RAW
+
+volumes:
+  netwatch-data:

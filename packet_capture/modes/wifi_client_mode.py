@@ -1,0 +1,113 @@
+"""
+wifi_client_mode.py - WiFi Client Monitoring Mode
+===================================================
+
+Active when this device is connected to a WiFi network **as a client**
+(i.e. NOT hosting a hotspot).
+
+Key behaviour:
+    - Promiscuous mode: OFF
+    - Scope: OWN_TRAFFIC_ONLY
+    - BPF filter: ``host <our_ip>`` — only our own packets
+    - ARP scan: disabled (not our network to probe)
+    - Safe for public networks
+
+**Why should WiFi client mode NOT use promiscuous mode?**
+
+1. AP isolation: Most access points enable client isolation, so the NIC
+   will never receive other clients' unicast frames regardless of
+   promiscuous mode.  Enabling it wastes CPU for no benefit.
+2. Privacy & legality: Capturing other clients' traffic on a network we
+   don't own may violate laws (CFAA, GDPR, etc.) and the network's
+   acceptable use policy.
+3. Noise: Even when frames *are* visible (open networks without
+   isolation), they are almost always encrypted at L2 (WPA2/3) and
+   therefore useless without the per-client PTK.
+4. Performance: Promiscuous mode forces the NIC driver to deliver every
+   frame to the kernel, increasing CPU and memory pressure on laptops.
+
+The correct filter is  ``host <our_ip>``  which tells the kernel to
+discard everything that isn't to/from us before it even reaches Scapy.
+"""
+
+import logging
+from typing import Optional
+
+from .base_mode import (
+    BaseMode,
+    InterfaceInfo,
+    ModeCapabilities,
+    ModeName,
+    NetworkScope,
+    _cidr_from_ip_and_mask,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class WiFiClientMode(BaseMode):
+    """
+    Monitoring mode for a standard WiFi client connection.
+
+    This is the mode that should be returned when the laptop is connected
+    to someone else's WiFi — the exact scenario that the old
+    ``_detect_windows_hotspot()`` was incorrectly classifying as hotspot.
+    """
+
+    # ------------------------------------------------------------------ #
+    # Abstract method implementations
+    # ------------------------------------------------------------------ #
+
+    def get_mode_name(self) -> ModeName:
+        return ModeName.WIFI_CLIENT
+
+    def get_bpf_filter(self) -> str:
+        """
+        BPF filter: only capture packets involving our own IP.
+
+        This is the single most important filter for fixing the original bug.
+        Instead of capturing *all* wireless traffic (which is what an empty
+        filter does in promiscuous mode), we restrict to ``host <our_ip>``.
+        """
+        ip = self._interface.ip_address
+        if ip:
+            return f"host {ip}"
+        # If we somehow don't know our IP, capture nothing rather than everything.
+        logger.warning("WiFiClientMode: no IP known — using restrictive fallback filter")
+        return "host 0.0.0.0"
+
+    def get_valid_ip_range(self) -> Optional[str]:
+        """
+        Return the local subnet CIDR if known, for informational purposes.
+
+        Note: even though we know the subnet, our BPF filter is still
+        ``host <our_ip>`` — we never capture other hosts' traffic.
+        """
+        ip = self._interface.ip_address
+        mask = self._interface.netmask
+        if ip and mask:
+            return _cidr_from_ip_and_mask(ip, mask)
+        return None
+
+    def _get_capabilities(self) -> ModeCapabilities:
+        return ModeCapabilities(
+            can_see_other_devices=False,
+            should_use_promiscuous=False,
+            scope=NetworkScope.OWN_TRAFFIC_ONLY,
+            can_arp_scan=False,
+            can_do_passive_discovery=False,
+            safe_for_public=True,
+            description=(
+                "WiFi client mode — monitoring own traffic only. "
+                "Promiscuous mode disabled (AP isolation makes it useless)."
+            ),
+        )
+
+    # ------------------------------------------------------------------ #
+    # Overrides
+    # ------------------------------------------------------------------ #
+
+    def get_description(self) -> str:
+        ssid = self._interface.ssid or "unknown network"
+        ip = self._interface.ip_address or "no IP"
+        return f"WiFi Client — connected to '{ssid}' ({ip}), own traffic only"

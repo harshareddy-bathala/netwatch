@@ -1,0 +1,228 @@
+(venv) PS C:\Users\BATHALAHARSHAVARDHAN\Desktop\Projects\netWatch> python main.py --reset-db
+2026-02-08 18:09:18,792 - root - INFO - [N/A] Logging configured: level=INFO, dir=C:\Users\BATHALAHARSHAVARDHAN\Desktop\Projects\netWatch\logs, json=True, errors=True
+
+    ╔════════════════════════════════════════════════════════════════════════╗
+    ║                                                                        ║
+    ║  ███╗   ██╗███████╗████████╗██╗    ██╗ █████╗ ████████╗ ██████╗██╗  ██╗║
+    ║  ████╗  ██║██╔════╝╚══██╔══╝██║    ██║██╔══██╗╚══██╔══╝██╔════╝██║  ██║║
+    ║  ██╔██╗ ██║█████╗     ██║   ██║ █╗ ██║███████║   ██║   ██║     ███████║║
+    ║  ██║╚██╗██║██╔══╝     ██║   ██║███╗██║██╔══██║   ██║   ██║     ██╔══██║║
+    ║  ██║ ╚████║███████╗   ██║   ╚███╔███╔╝██║  ██║   ██║   ╚██████╗██║  ██║║
+    ║  ╚═╝  ╚═══╝╚══════╝   ╚═╝    ╚══╝╚══╝ ╚═╝  ╚═╝   ╚═╝    ╚═════╝╚═╝  ╚═╝║
+    ║                                                                        ║
+    ║   v2.0.0  |  development                                               ║
+    ╚════════════════════════════════════════════════════════════════════════╝
+
+2026-02-08 18:09:18,793 - database.init_db - WARNING - [N/A] Forcing database reset - deleting old database
+2026-02-08 18:09:18,793 - database.init_db - INFO - [N/A] Deleted old database: C:\Users\BATHALAHARSHAVARDHAN\Desktop\Projects\netWatch\netwatch.db
+2026-02-08 18:09:18,908 - database.init_db - INFO - [N/A] Database initialized successfully at: C:\Users\BATHALAHARSHAVARDHAN\Desktop\Projects\netWatch\netwatch.db
+2026-02-08 18:09:18,909 - database.init_db - INFO - [N/A] Applying migration: 001_add_wal_mode.sql
+2026-02-08 18:09:18,909 - database.init_db - INFO - [N/A] Applying migration: 003_add_composite_indexes.sql
+2026-02-08 18:09:18,909 - database.init_db - INFO - [N/A] Applying migration: 004_optimize_indexes.sql
+2026-02-08 18:09:18,916 - database.init_db - INFO - [N/A] Applying migration: 005_fix_slow_queries.sql
+2026-02-08 18:09:18,916 - database.init_db - INFO - [N/A] Migrations complete – applied: 001_add_wal_mode.sql,003_add_composite_indexes.sql,004_optimize_indexes.sql,005_fix_slow_queries.sql
+2026-02-08 18:09:18,916 - __main__ - INFO - [N/A] Database initialized
+2026-02-08 18:09:18,916 - database.migrations.cleanup_invalid_devices - INFO - [N/A] Running startup database migrations …
+2026-02-08 18:09:18,926 - database.migrations.cleanup_invalid_devices - INFO - [N/A] Cleanup migration: database is already clean.
+2026-02-08 18:09:18,943 - database.connection - INFO - [N/A] Connection pool initialised – 15 connections, WAL=WAL, sync=NORMAL
+2026-02-08 18:09:18,943 - __main__ - INFO - [N/A] Connection pool ready (size=15)
+2026-02-08 18:09:18,943 - __main__ - INFO - [N/A] Capture backend: Scapy + Npcap
+2026-02-08 18:09:19,034 - packet_capture.mode_detector - INFO - [N/A] Detected mode: WIFI_CLIENT
+2026-02-08 18:09:19,034 - packet_capture.interface_manager - INFO - [N/A] Initial mode: wifi_client
+2026-02-08 18:09:19,034 - packet_capture.interface_manager - INFO - [N/A] Interface monitoring started (interval=30s)
+2026-02-08 18:09:19,034 - __main__ - INFO - [N/A] Detected mode: wifi_client on interface 'Wi-Fi 2'
+2026-02-08 18:09:19,034 - __main__ - INFO - [N/A] Creating Scapy/Npcap capture engine on 'Wi-Fi 2'
+2026-02-08 18:09:19,034 - packet_capture.filter_manager - INFO - [N/A] Mode 'wifi_client': BPF filter = 'host 10.234.255.114'
+2026-02-08 18:09:19,034 - packet_capture.filter_manager - INFO - [N/A] Mode 'wifi_client': promiscuous = False
+2026-02-08 18:09:19,037 - packet_capture.capture_engine - INFO - [N/A] Starting CaptureEngine on 'Wi-Fi 2' | mode=wifi_client | filter='host 10.234.255.114' | promisc=False
+2026-02-08 18:09:19,037 - packet_capture.filter_manager - INFO - [N/A] Mode 'wifi_client': BPF filter = 'host 10.234.255.114'
+2026-02-08 18:09:19,037 - packet_capture.capture_base - INFO - [N/A] Processor thread started
+2026-02-08 18:09:19,037 - packet_capture.capture_engine - INFO - [N/A] CaptureEngine threads started
+2026-02-08 18:09:19,037 - packet_capture.filter_manager - INFO - [N/A] Mode 'wifi_client': promiscuous = False
+2026-02-08 18:09:19,037 - __main__ - INFO - [N/A] Packet capture started
+2026-02-08 18:09:19,037 - packet_capture.capture_engine - INFO - [N/A] Capture thread started — iface='Wi-Fi 2', filter='host 10.234.255.114', promisc=False
+2026-02-08 18:09:19,037 - database.queries.device_queries - INFO - [N/A] Subnet frozen to capture interface: 10.234.255.114 -> 10.234.255
+2026-02-08 18:09:19,039 - database.queries.device_queries - INFO - [N/A] Device queries: mode set to 'wifi_client'
+2026-02-08 18:09:19,039 - __main__ - INFO - [N/A] Device discovery locked to capture interface: 10.234.255.114 (mode=wifi_client)
+2026-02-08 18:09:19,039 - alerts.alert_engine - INFO - [N/A] AlertEngine initialised (cooldown=300s)
+2026-02-08 18:09:19,039 - alerts.anomaly_detector - INFO - [N/A] AnomalyDetector initialised
+2026-02-08 18:09:19,039 - alerts.anomaly_detector - INFO - [N/A] AnomalyDetector started (min_samples=60, check_interval=30s, contamination=0.01)
+2026-02-08 18:09:19,039 - __main__ - INFO - [N/A] Anomaly detector started
+2026-02-08 18:09:19,039 - alerts.alert_engine - INFO - [N/A] AlertEngine initialised (cooldown=300s)
+2026-02-08 18:09:19,042 - utils.health_monitor - INFO - [N/A] HealthMonitor initialised (interval=60s)
+2026-02-08 18:09:19,047 - utils.health_monitor - INFO - [N/A] HealthMonitor started
+2026-02-08 18:09:19,047 - __main__ - INFO - [N/A] System health monitor started
+2026-02-08 18:09:19,048 - __main__ - INFO - [N/A] Periodic health logging started (60s interval)
+2026-02-08 18:09:19,048 - __main__ - INFO - [N/A] Periodic cleanup task started (daily at 3 AM)
+2026-02-08 18:09:19,049 - __main__ - INFO - [N/A] Dashboard: http://127.0.0.1:5000  — Press Ctrl+C to stop
+2026-02-08 18:09:19,049 - __main__ - INFO - [N/A] 🧹 Daily cleanup starting...
+2026-02-08 18:09:19,052 - backend.middleware - INFO - [N/A] Security middleware registered (auth=OFF, rate_limit=OFF, metrics=ON)
+2026-02-08 18:09:19,052 - database.queries.maintenance - INFO - [N/A] 🧹 Full database cleanup starting...
+2026-02-08 18:09:19,054 - packet_capture.network_discovery - INFO - [N/A] NetworkDiscovery initialized (interface: Wi-Fi 2, subnet: 10.234.255.0/24)
+2026-02-08 18:09:19,066 - backend.routes - INFO - [N/A] API routes registered successfully
+2026-02-08 18:09:19,066 - packet_capture.network_discovery - INFO - [N/A] Starting ARP scan on 10.234.255.0/24
+2026-02-08 18:09:19,066 - database.queries.maintenance - INFO - [N/A] No old traffic data to clean up (retention: 7 days)
+2026-02-08 18:09:19,085 - database.queries.maintenance - INFO - [N/A] ✅ Cleanup complete: deleted 0 records, freed 0.0 MB (took 0.0s)
+2026-02-08 18:09:19,085 - __main__ - INFO - [N/A] ✅ Daily cleanup complete: deleted 0 records, freed 0.0 MB
+ * Serving Flask app 'backend.app'
+ * Debug mode: on
+2026-02-08 18:09:19,879 - utils.performance_logger - INFO - [N/A] System health: CPU=43.8%, Memory=178.1MB, Threads=37, Files=9, Conns=0
+2026-02-08 18:09:25,378 - packet_capture.network_discovery - INFO - [N/A] New device discovered: 10.234.255.114 - 28:D0:43:A5:22:70
+2026-02-08 18:09:30,458 - packet_capture.network_discovery - INFO - [N/A] New device discovered: 10.234.255.245 - 76:27:58:8D:CF:79
+2026-02-08 18:09:30,458 - packet_capture.network_discovery - INFO - [N/A] ARP scan found 2 devices
+2026-02-08 18:09:49,121 - alerts.anomaly_detector - INFO - [N/A] Collecting samples: 1 < 60
+2026-02-08 18:09:49,132 - alerts.anomaly_detector - INFO - [N/A] Insufficient samples: 1 < 60
+2026-02-08 18:09:49,449 - packet_capture.capture_base - INFO - [N/A] Capture stats: 7462 captured, 7446 processed, 0 dropped, 245.5 pps, 30 batches
+2026-02-08 18:10:19,212 - alerts.anomaly_detector - INFO - [N/A] Collecting samples: 2 < 60
+2026-02-08 18:10:19,213 - alerts.anomaly_detector - INFO - [N/A] Insufficient samples: 2 < 60
+2026-02-08 18:10:19,821 - packet_capture.capture_base - INFO - [N/A] Capture stats: 12635 captured, 12587 processed, 0 dropped, 208.1 pps, 30 batches
+2026-02-08 18:10:20,689 - utils.performance_logger - INFO - [N/A] System health: CPU=0.0%, Memory=221.8MB, Threads=35, Files=9, Conns=0
+2026-02-08 18:10:30,466 - packet_capture.network_discovery - INFO - [N/A] NetworkDiscovery initialized (interface: Wi-Fi 2, subnet: 10.234.255.0/24)
+2026-02-08 18:10:30,466 - packet_capture.network_discovery - INFO - [N/A] Starting ARP scan on 10.234.255.0/24
+2026-02-08 18:10:37,013 - packet_capture.network_discovery - INFO - [N/A] New device discovered: 10.234.255.114 - 28:D0:43:A5:22:70
+2026-02-08 18:10:41,959 - packet_capture.network_discovery - INFO - [N/A] New device discovered: 10.234.255.245 - 76:27:58:8D:CF:79
+2026-02-08 18:10:46,974 - packet_capture.network_discovery - INFO - [N/A] New device discovered: 10.234.255.133 - F2:D5:64:2A:49:E7
+2026-02-08 18:10:46,975 - packet_capture.network_discovery - INFO - [N/A] ARP scan found 3 devices
+2026-02-08 18:10:49,318 - alerts.anomaly_detector - INFO - [N/A] Insufficient samples: 2 < 60
+2026-02-08 18:10:50,716 - packet_capture.capture_base - INFO - [N/A] Capture stats: 17355 captured, 17329 processed, 0 dropped, 189.4 pps, 30 batches
+2026-02-08 18:10:59,634 - utils.query_cache - WARNING - [8eb536fb] Slow query: get_health_score took 113ms (avg 19ms over 32 calls)
+2026-02-08 18:11:19,506 - alerts.anomaly_detector - INFO - [N/A] Collecting samples: 3 < 60
+2026-02-08 18:11:19,510 - alerts.anomaly_detector - INFO - [N/A] Insufficient samples: 3 < 60
+2026-02-08 18:11:20,946 - packet_capture.capture_base - INFO - [N/A] Capture stats: 25728 captured, 25688 processed, 0 dropped, 211.2 pps, 30 batches
+2026-02-08 18:11:21,514 - utils.performance_logger - INFO - [N/A] System health: CPU=12.5%, Memory=240.0MB, Threads=35, Files=9, Conns=0
+2026-02-08 18:11:46,989 - packet_capture.network_discovery - INFO - [N/A] NetworkDiscovery initialized (interface: Wi-Fi 2, subnet: 10.234.255.0/24)
+2026-02-08 18:11:46,989 - packet_capture.network_discovery - INFO - [N/A] Starting ARP scan on 10.234.255.0/24
+2026-02-08 18:11:49,705 - alerts.anomaly_detector - INFO - [N/A] Insufficient samples: 3 < 60
+2026-02-08 18:11:51,185 - packet_capture.capture_base - INFO - [N/A] Capture stats: 32452 captured, 32439 processed, 0 dropped, 213.4 pps, 30 batches
+2026-02-08 18:11:53,389 - packet_capture.network_discovery - INFO - [N/A] New device discovered: 10.234.255.114 - 28:D0:43:A5:22:70
+2026-02-08 18:11:57,379 - utils.query_cache - WARNING - [37218ee7] Slow query: get_top_devices took 169ms (avg 38ms over 6 calls)
+2026-02-08 18:11:57,384 - utils.query_cache - WARNING - [37218ee7] Slow query: get_dashboard_data took 350ms (avg 85ms over 6 calls)
+2026-02-08 18:11:58,339 - packet_capture.network_discovery - INFO - [N/A] New device discovered: 10.234.255.245 - 76:27:58:8D:CF:79
+2026-02-08 18:12:03,297 - packet_capture.network_discovery - INFO - [N/A] New device discovered: 10.234.255.133 - F2:D5:64:2A:49:E7
+2026-02-08 18:12:07,800 - utils.query_cache - WARNING - [c3bd36de] Slow query: get_dashboard_data took 195ms (avg 101ms over 7 calls)
+2026-02-08 18:12:11,302 - packet_capture.network_discovery - INFO - [N/A] New device discovered: 10.234.255.2 - F6:EC:F2:48:C2:24
+2026-02-08 18:12:11,303 - packet_capture.network_discovery - INFO - [N/A] ARP scan found 4 devices
+2026-02-08 18:12:19,921 - alerts.anomaly_detector - INFO - [N/A] Collecting samples: 4 < 60
+2026-02-08 18:12:19,921 - alerts.anomaly_detector - INFO - [N/A] Insufficient samples: 4 < 60
+2026-02-08 18:12:20,096 - utils.query_cache - WARNING - [N/A] Slow query: get_realtime_stats took 181ms (avg 34ms over 64 calls)
+2026-02-08 18:12:20,111 - utils.query_cache - WARNING - [8eb536fb] Slow query: get_realtime_stats took 177ms (avg 36ms over 65 calls)
+2026-02-08 18:12:21,465 - packet_capture.capture_base - INFO - [N/A] Capture stats: 37188 captured, 37187 processed, 0 dropped, 203.9 pps, 30 batches
+2026-02-08 18:12:22,497 - utils.performance_logger - INFO - [N/A] System health: CPU=3.1%, Memory=259.0MB, Threads=35, Files=9, Conns=0
+2026-02-08 18:12:38,757 - utils.query_cache - WARNING - [8eb536fb] Slow query: get_realtime_stats took 120ms (avg 38ms over 71 calls)
+2026-02-08 18:12:44,156 - utils.query_cache - WARNING - [6d2cb379] Slow query: get_dashboard_data took 194ms (avg 112ms over 8 calls)
+2026-02-08 18:12:48,251 - utils.query_cache - WARNING - [8eb536fb] Slow query: get_health_score took 135ms (avg 33ms over 67 calls)
+2026-02-08 18:12:50,242 - alerts.anomaly_detector - INFO - [N/A] Insufficient samples: 4 < 60
+2026-02-08 18:12:51,934 - packet_capture.capture_base - INFO - [N/A] Capture stats: 40455 captured, 40447 processed, 0 dropped, 190.1 pps, 30 batches
+2026-02-08 18:12:54,469 - utils.query_cache - WARNING - [6af5119d] Slow query: get_dashboard_data took 205ms (avg 123ms over 9 calls)
+2026-02-08 18:13:04,861 - utils.query_cache - WARNING - [203623a4] Slow query: get_dashboard_data took 266ms (avg 137ms over 10 calls)
+2026-02-08 18:13:11,316 - packet_capture.network_discovery - INFO - [N/A] NetworkDiscovery initialized (interface: Wi-Fi 2, subnet: 10.234.255.0/24)
+2026-02-08 18:13:11,316 - packet_capture.network_discovery - INFO - [N/A] Starting ARP scan on 10.234.255.0/24
+2026-02-08 18:13:15,333 - utils.query_cache - WARNING - [99008141] Slow query: get_top_devices took 225ms (avg 72ms over 11 calls)
+2026-02-08 18:13:15,335 - utils.query_cache - WARNING - [99008141] Slow query: get_dashboard_data took 359ms (avg 157ms over 11 calls)
+2026-02-08 18:13:17,667 - packet_capture.network_discovery - INFO - [N/A] New device discovered: 10.234.255.114 - 28:D0:43:A5:22:70
+2026-02-08 18:13:20,419 - alerts.anomaly_detector - INFO - [N/A] Collecting samples: 5 < 60
+2026-02-08 18:13:20,419 - alerts.anomaly_detector - INFO - [N/A] Insufficient samples: 5 < 60
+2026-02-08 18:13:22,329 - packet_capture.capture_base - INFO - [N/A] Capture stats: 46478 captured, 46468 processed, 0 dropped, 191.1 pps, 30 batches
+2026-02-08 18:13:22,664 - packet_capture.network_discovery - INFO - [N/A] New device discovered: 10.234.255.245 - 76:27:58:8D:CF:79
+2026-02-08 18:13:23,234 - utils.performance_logger - INFO - [N/A] System health: CPU=3.1%, Memory=267.0MB, Threads=35, Files=9, Conns=0
+2026-02-08 18:13:25,714 - utils.query_cache - WARNING - [5f46e242] Slow query: get_dashboard_data took 215ms (avg 162ms over 12 calls)
+2026-02-08 18:13:27,664 - packet_capture.network_discovery - INFO - [N/A] New device discovered: 10.234.255.242 - 92:66:65:11:DA:AA
+2026-02-08 18:13:31,825 - utils.query_cache - WARNING - [8eb536fb] Slow query: get_realtime_stats took 107ms (avg 43ms over 90 calls)
+2026-02-08 18:13:32,679 - packet_capture.network_discovery - INFO - [N/A] New device discovered: 10.234.255.133 - F2:D5:64:2A:49:E7
+2026-02-08 18:13:32,680 - packet_capture.network_discovery - INFO - [N/A] ARP scan found 4 devices
+2026-02-08 18:13:36,099 - utils.query_cache - WARNING - [e6d330e4] Slow query: get_dashboard_data took 218ms (avg 166ms over 13 calls)
+2026-02-08 18:13:46,430 - utils.query_cache - WARNING - [e5d59069] Slow query: get_dashboard_data took 224ms (avg 170ms over 14 calls)
+2026-02-08 18:13:50,768 - alerts.anomaly_detector - INFO - [N/A] Insufficient samples: 5 < 60
+2026-02-08 18:13:52,697 - packet_capture.capture_base - INFO - [N/A] Capture stats: 51082 captured, 51078 processed, 0 dropped, 186.7 pps, 30 batches
+2026-02-08 18:13:56,692 - utils.query_cache - WARNING - [84e1679e] Slow query: get_active_device_count took 123ms (avg 44ms over 25 calls)
+2026-02-08 18:13:56,890 - utils.query_cache - WARNING - [84e1679e] Slow query: get_top_devices took 118ms (avg 79ms over 15 calls)
+2026-02-08 18:13:56,890 - utils.query_cache - WARNING - [84e1679e] Slow query: get_dashboard_data took 327ms (avg 181ms over 15 calls)
+2026-02-08 18:14:07,374 - utils.query_cache - WARNING - [5e6c7260] Slow query: get_top_devices took 137ms (avg 83ms over 16 calls)
+2026-02-08 18:14:07,375 - utils.query_cache - WARNING - [5e6c7260] Slow query: get_dashboard_data took 349ms (avg 191ms over 16 calls)
+2026-02-08 18:14:15,559 - utils.query_cache - WARNING - [8eb536fb] Slow query: get_realtime_stats took 105ms (avg 46ms over 105 calls)
+2026-02-08 18:14:17,961 - utils.query_cache - WARNING - [aa4cca5d] Slow query: get_top_devices took 158ms (avg 87ms over 17 calls)
+2026-02-08 18:14:17,961 - utils.query_cache - WARNING - [aa4cca5d] Slow query: get_dashboard_data took 471ms (avg 208ms over 17 calls)
+2026-02-08 18:14:20,998 - alerts.anomaly_detector - INFO - [N/A] Collecting samples: 6 < 60
+2026-02-08 18:14:21,004 - alerts.anomaly_detector - INFO - [N/A] Insufficient samples: 6 < 60
+2026-02-08 18:14:23,974 - utils.performance_logger - INFO - [N/A] System health: CPU=0.0%, Memory=283.5MB, Threads=36, Files=9, Conns=0
+2026-02-08 18:14:24,988 - utils.query_cache - WARNING - [8eb536fb] Slow query: get_realtime_stats took 139ms (avg 47ms over 109 calls)
+2026-02-08 18:14:26,406 - packet_capture.capture_base - INFO - [N/A] Capture stats: 56155 captured, 56155 processed, 0 dropped, 182.7 pps, 29 batches
+2026-02-08 18:14:28,336 - utils.query_cache - WARNING - [b27e3b07] Slow query: get_top_devices took 107ms (avg 88ms over 18 calls)
+2026-02-08 18:14:28,339 - utils.query_cache - WARNING - [b27e3b07] Slow query: get_dashboard_data took 249ms (avg 210ms over 18 calls)
+2026-02-08 18:14:28,540 - utils.query_cache - WARNING - [68fd4383] Slow query: get_bandwidth_history_dual took 108ms (avg 43ms over 36 calls)
+2026-02-08 18:14:32,683 - packet_capture.network_discovery - INFO - [N/A] NetworkDiscovery initialized (interface: Wi-Fi 2, subnet: 10.234.255.0/24)
+2026-02-08 18:14:32,683 - packet_capture.network_discovery - INFO - [N/A] Starting ARP scan on 10.234.255.0/24
+2026-02-08 18:14:34,419 - utils.query_cache - WARNING - [8eb536fb] Slow query: get_realtime_stats took 126ms (avg 48ms over 112 calls)
+2026-02-08 18:14:38,803 - utils.query_cache - WARNING - [fb19f7a8] Slow query: get_top_devices took 106ms (avg 89ms over 19 calls)
+2026-02-08 18:14:38,804 - utils.query_cache - WARNING - [fb19f7a8] Slow query: get_dashboard_data took 250ms (avg 212ms over 19 calls)
+2026-02-08 18:14:38,917 - packet_capture.network_discovery - INFO - [N/A] ARP scan found 0 devices
+2026-02-08 18:14:43,837 - utils.query_cache - WARNING - [8eb536fb] Slow query: get_realtime_stats took 112ms (avg 49ms over 115 calls)
+2026-02-08 18:14:49,183 - utils.query_cache - WARNING - [16b28ec1] Slow query: get_top_devices took 108ms (avg 90ms over 20 calls)
+2026-02-08 18:14:49,183 - utils.query_cache - WARNING - [16b28ec1] Slow query: get_dashboard_data took 252ms (avg 214ms over 20 calls)
+2026-02-08 18:14:50,252 - packet_capture.mode_detector - INFO - [N/A] Detected mode: PUBLIC_NETWORK
+2026-02-08 18:14:51,234 - alerts.anomaly_detector - INFO - [N/A] Insufficient samples: 6 < 60
+2026-02-08 18:14:54,485 - utils.query_cache - WARNING - [15260e50] Slow query: get_active_device_count took 116ms (avg 49ms over 33 calls)
+2026-02-08 18:14:54,668 - utils.query_cache - WARNING - [15260e50] Slow query: get_dashboard_data took 307ms (avg 219ms over 21 calls)
+2026-02-08 18:15:05,131 - utils.query_cache - WARNING - [19be027c] Slow query: get_top_devices took 200ms (avg 95ms over 22 calls)
+2026-02-08 18:15:05,131 - utils.query_cache - WARNING - [19be027c] Slow query: get_dashboard_data took 334ms (avg 224ms over 22 calls)
+2026-02-08 18:15:05,583 - utils.query_cache - WARNING - [b57000d8] Slow query: get_top_devices took 103ms (avg 96ms over 23 calls)
+2026-02-08 18:15:05,583 - utils.query_cache - WARNING - [b57000d8] Slow query: get_dashboard_data took 224ms (avg 224ms over 23 calls)
+2026-02-08 18:15:15,963 - utils.query_cache - WARNING - [2db94b66] Slow query: get_dashboard_data took 230ms (avg 224ms over 24 calls)
+2026-02-08 18:15:21,447 - alerts.anomaly_detector - INFO - [N/A] Insufficient samples: 6 < 60
+2026-02-08 18:15:24,734 - utils.performance_logger - INFO - [N/A] System health: CPU=12.5%, Memory=403.7MB, Threads=36, Files=9, Conns=0
+2026-02-08 18:15:26,293 - utils.query_cache - WARNING - [2ab06d90] Slow query: get_dashboard_data took 207ms (avg 223ms over 25 calls)
+2026-02-08 18:15:35,876 - utils.query_cache - WARNING - [0e6f03e0] Slow query: get_top_devices took 138ms (avg 98ms over 26 calls)
+2026-02-08 18:15:35,876 - utils.query_cache - WARNING - [0e6f03e0] Slow query: get_dashboard_data took 251ms (avg 225ms over 26 calls)
+2026-02-08 18:15:38,923 - packet_capture.network_discovery - INFO - [N/A] NetworkDiscovery initialized (interface: Wi-Fi 2, subnet: 10.234.255.0/24)
+2026-02-08 18:15:38,923 - packet_capture.network_discovery - INFO - [N/A] Starting ARP scan on 10.234.255.0/24
+2026-02-08 18:15:38,930 - packet_capture.capture_base - INFO - [N/A] Capture stats: 56686 captured, 56679 processed, 0 dropped, 149.2 pps, 8 batches
+2026-02-08 18:15:44,345 - utils.query_cache - WARNING - [fa89982b] Slow query: get_active_device_count took 123ms (avg 51ms over 40 calls)
+2026-02-08 18:15:44,550 - utils.query_cache - WARNING - [fa89982b] Slow query: get_top_devices took 114ms (avg 98ms over 27 calls)
+2026-02-08 18:15:44,550 - utils.query_cache - WARNING - [fa89982b] Slow query: get_dashboard_data took 325ms (avg 228ms over 27 calls)
+2026-02-08 18:15:45,141 - packet_capture.network_discovery - INFO - [N/A] ARP scan found 0 devices
+2026-02-08 18:15:47,707 - utils.query_cache - WARNING - [9adff1ed] Slow query: get_top_devices took 149ms (avg 100ms over 28 calls)
+2026-02-08 18:15:47,707 - utils.query_cache - WARNING - [9adff1ed] Slow query: get_dashboard_data took 278ms (avg 230ms over 28 calls)
+2026-02-08 18:15:47,846 - utils.query_cache - WARNING - [9adff1ed] Slow query: get_bandwidth_history_dual took 126ms (avg 50ms over 55 calls)
+2026-02-08 18:15:50,406 - packet_capture.interface_manager - INFO - [N/A] Mode change (stable): wifi_client → public_network
+2026-02-08 18:15:50,406 - __main__ - INFO - [N/A] Mode changed: wifi_client -> public_network — restarting capture engine
+2026-02-08 18:15:50,408 - database.queries.device_queries - INFO - [N/A] Subnet frozen to capture interface: 192.168.56.1 -> 192.168.56
+2026-02-08 18:15:50,408 - database.queries.device_queries - INFO - [N/A] Device queries: mode set to 'public_network'
+2026-02-08 18:15:50,408 - __main__ - INFO - [N/A] Device discovery updated for mode 'public_network' on 192.168.56.1
+2026-02-08 18:15:50,408 - packet_capture.capture_engine - INFO - [N/A] Stopping CaptureEngine…
+2026-02-08 18:15:50,422 - packet_capture.capture_base - INFO - [N/A] Processor thread exited
+2026-02-08 18:15:50,824 - packet_capture.capture_engine - INFO - [N/A] Capture thread exited
+2026-02-08 18:15:50,824 - packet_capture.capture_engine - INFO - [N/A] CaptureEngine stopped — captured=57188 processed=57188 dropped=0 batches=310
+2026-02-08 18:15:50,831 - __main__ - INFO - [N/A] Creating Scapy/Npcap capture engine on 'Ethernet 4'
+2026-02-08 18:15:50,832 - packet_capture.filter_manager - INFO - [N/A] Mode 'public_network': BPF filter = 'host 192.168.56.1'
+2026-02-08 18:15:50,833 - packet_capture.filter_manager - INFO - [N/A] Mode 'public_network': promiscuous = False
+2026-02-08 18:15:50,833 - packet_capture.capture_engine - INFO - [N/A] Starting CaptureEngine on 'Ethernet 4' | mode=public_network | filter='host 192.168.56.1' | promisc=False
+2026-02-08 18:15:50,834 - packet_capture.filter_manager - INFO - [N/A] Mode 'public_network': BPF filter = 'host 192.168.56.1'
+2026-02-08 18:15:50,834 - packet_capture.capture_base - INFO - [N/A] Processor thread started
+2026-02-08 18:15:50,834 - packet_capture.capture_engine - INFO - [N/A] CaptureEngine threads started
+2026-02-08 18:15:50,834 - packet_capture.filter_manager - INFO - [N/A] Mode 'public_network': promiscuous = False
+2026-02-08 18:15:50,835 - __main__ - INFO - [N/A] Capture engine restarted for mode 'public_network' on interface 'Ethernet 4'
+2026-02-08 18:15:50,835 - packet_capture.capture_engine - INFO - [N/A] Capture thread started — iface='Ethernet 4', filter='host 192.168.56.1', promisc=False
+2026-02-08 18:15:51,640 - alerts.anomaly_detector - INFO - [N/A] Collecting samples: 7 < 60
+2026-02-08 18:15:51,642 - alerts.anomaly_detector - INFO - [N/A] Insufficient samples: 7 < 60
+2026-02-08 18:15:58,106 - utils.query_cache - WARNING - [e29ac195] Slow query: get_dashboard_data took 170ms (avg 228ms over 29 calls)
+2026-02-08 18:16:08,402 - utils.query_cache - WARNING - [a961c9fd] Slow query: get_dashboard_data took 163ms (avg 226ms over 30 calls)
+2026-02-08 18:16:08,618 - utils.query_cache - WARNING - [920a9d6e] Slow query: get_dashboard_data took 144ms (avg 223ms over 31 calls)
+2026-02-08 18:16:21,854 - alerts.anomaly_detector - INFO - [N/A] Insufficient samples: 7 < 60
+2026-02-08 18:16:25,476 - utils.performance_logger - INFO - [N/A] System health: CPU=0.0%, Memory=393.4MB, Threads=36, Files=9, Conns=0
+2026-02-08 18:16:30,953 - utils.query_cache - WARNING - [c1bf8f07] Slow query: get_dashboard_data took 143ms (avg 221ms over 32 calls)
+2026-02-08 18:16:33,516 - packet_capture.capture_base - INFO - [N/A] Capture stats: 1 captured, 1 processed, 0 dropped, 0.0 pps, 1 batches
+2026-02-08 18:16:35,564 - __main__ - INFO - [N/A] Shutting down...
+2026-02-08 18:16:35,566 - packet_capture.capture_engine - INFO - [N/A] Stopping CaptureEngine…
+2026-02-08 18:16:35,614 - packet_capture.capture_base - INFO - [N/A] Processor thread exited
+2026-02-08 18:16:37,001 - packet_capture.capture_engine - INFO - [N/A] Capture thread exited
+2026-02-08 18:16:37,001 - packet_capture.capture_engine - INFO - [N/A] CaptureEngine stopped — captured=1 processed=1 dropped=0 batches=1
+2026-02-08 18:16:37,001 - __main__ - INFO - [N/A] Capture engine stopped
+2026-02-08 18:16:37,001 - packet_capture.interface_manager - INFO - [N/A] Interface monitoring stopped
+2026-02-08 18:16:37,001 - __main__ - INFO - [N/A] Interface manager stopped
+2026-02-08 18:16:37,001 - alerts.anomaly_detector - INFO - [N/A] AnomalyDetector stopped (checks=15, anomalies=0)
+2026-02-08 18:16:37,001 - __main__ - INFO - [N/A] Anomaly detector stopped
+2026-02-08 18:16:37,001 - utils.health_monitor - INFO - [N/A] HealthMonitor stopped
+2026-02-08 18:16:37,001 - __main__ - INFO - [N/A] Health monitor stopped
+2026-02-08 18:16:37,050 - database.connection - INFO - [N/A] Connection pool shut down
+2026-02-08 18:16:37,050 - __main__ - INFO - [N/A] Database connections closed
+2026-02-08 18:16:37,050 - __main__ - INFO - [N/A] Shutdown complete
