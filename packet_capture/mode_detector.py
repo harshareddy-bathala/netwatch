@@ -599,79 +599,50 @@ class ModeDetector:
             return self._check_hotspot_macos()
         return None
 
+
+
     def _check_hotspot_windows(self) -> Optional[HotspotMode]:
         """
-        Windows hotspot detection — TWO conditions must BOTH be true:
+        Modern Windows (10/11) Mobile Hotspot detection.
 
-        1. ``netsh wlan show hostednetwork`` reports ``Status: Started``
-        2. We have an interface on the expected ICS subnet (192.168.137.x)
-           **OR** a "Local Area Connection*" / "Wi-Fi Direct" virtual adapter
-           with a private IP.
-
-        Merely being connected to a WiFi network does NOT satisfy either
-        condition — this is the fix for the original bug.
+        Detection Strategy:
+        - Check if SharedAccess (ICS) service is running.
+        - If running, return the active primary interface.
         """
-        # ---- Condition 1: hosted network is running ----
-        # Use cached output if available (populated by _prefetch_windows_data)
-        out = ModeDetector._hostednet_cache
-        if out is None:
-            out = run_command(["netsh", "wlan", "show", "hostednetwork"])
-        hosted_started = False
-        if out and "Started" in out:
-            # Verify it says "Status" near "Started" (not some other field)
-            for line in out.splitlines():
-                if "status" in line.lower() and "started" in line.lower():
-                    hosted_started = True
-                    break
 
-        # Even if the legacy hosted-network is not started, Windows 10/11
-        # Mobile Hotspot uses a different mechanism.  Check for a virtual
-        # adapter with the well-known ICS IP range.
-        ics_interface: Optional[InterfaceInfo] = None
-        virtual_hotspot_interface: Optional[InterfaceInfo] = None
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["powershell", "-Command",
+                "(Get-Service SharedAccess).Status"],
+                capture_output=True,
+                text=True
+            )
 
+            status = result.stdout.strip().lower()
+
+            if status != "running":
+                print("SharedAccess service is NOT running.")
+                return None
+
+            print("SharedAccess (ICS) service is running. Hotspot likely ON.")
+
+        except Exception as e:
+            print(f"Failed to check SharedAccess service: {e}")
+            return None
+
+        # Return the primary active interface
         for iface in self._all_interfaces:
-            # ICS always uses 192.168.137.x
-            if iface.ip_address and iface.ip_address.startswith("192.168.137."):
-                ics_interface = iface
-                break
-            # Mobile Hotspot creates a "Local Area Connection*" or
-            # "Microsoft Wi-Fi Direct Virtual Adapter" interface
-            if iface.interface_type == "hotspot_virtual" and iface.ip_address:
-                virtual_hotspot_interface = iface
+            if (
+                iface.ip_address
+                and not iface.ip_address.startswith("169.254.")
+            ):
+                print(f"Returning active interface: {iface.name} ({iface.ip_address})")
+                return HotspotMode(iface)
 
-        if hosted_started:
-            # Prefer ICS interface, fall back to virtual adapter
-            target = ics_interface or virtual_hotspot_interface
-            if target:
-                return HotspotMode(target)
-            # hosted network is "started" but no matching interface — edge case
-            # Still return hotspot if we found any virtual adapter
-            for iface in self._all_interfaces:
-                if iface.interface_type == "hotspot_virtual" and iface.ip_address:
-                    return HotspotMode(iface)
-
-        # Not hosted_started — check ICS adapter alone (standalone ICS without
-        # the legacy hosted-network API, common on Win10/11 Mobile Hotspot)
-        if ics_interface:
-            # Verify that ICS is truly active by checking if the adapter has
-            # both an IP AND there are ARP entries on its subnet (clients exist)
-            return HotspotMode(ics_interface, hotspot_subnet="192.168.137.0/24")
-
-        # Mobile Hotspot virtual adapter without ICS range — might be on
-        # a different subnet.  Only accept if IP is in a private range
-        # and it's clearly a virtual hotspot adapter.
-        if virtual_hotspot_interface:
-            ip = virtual_hotspot_interface.ip_address
-            if ip:
-                try:
-                    addr = ipaddress.IPv4Address(ip)
-                    if addr.is_private and not ip.startswith("169.254."):
-                        return HotspotMode(virtual_hotspot_interface)
-                except ValueError:
-                    pass
-
+        print("ICS running but no valid interface found.")
         return None
+
 
     def _check_hotspot_linux(self) -> Optional[HotspotMode]:
         """
