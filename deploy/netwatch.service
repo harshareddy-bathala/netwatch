@@ -1,0 +1,45 @@
+[Unit]
+Description=NetWatch Network Monitor
+Documentation=https://github.com/netwatch/netwatchd
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=netwatch
+Group=netwatch
+WorkingDirectory=/opt/netwatch
+ExecStart=/opt/netwatch/venv/bin/python main.py
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Environment
+Environment=NETWATCH_ENV=production
+Environment=FLASK_HOST=127.0.0.1
+Environment=FLASK_PORT=5000
+Environment=NETWATCH_AUTH_ENABLED=true
+EnvironmentFile=-/etc/netwatch/netwatch.env
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/netwatch /opt/netwatch/logs
+PrivateTmp=true
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=1G
+CPUQuota=80%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=netwatch
+
+[Install]
+WantedBy=multi-user.target

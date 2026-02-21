@@ -1,0 +1,150 @@
+/**
+ * variables.css - Design System Tokens
+ * ======================================
+ * Claude.ai-inspired dark theme with minimal accent usage.
+ * All design decisions flow from these variables.
+ */
+
+:root {
+  /* ── Backgrounds ─────────────────────────────────────── */
+  --color-bg-primary:    #1a1a1a;
+  --color-bg-secondary:  #242424;
+  --color-bg-tertiary:   #2d2d2d;
+  --color-bg-elevated:   #303030;
+
+  /* ── Text ────────────────────────────────────────────── */
+  --color-text-primary:   #efefef;
+  --color-text-secondary: #a0a0a0;
+  --color-text-tertiary:  #6b6b6b;
+
+  /* ── Accent ──────────────────────────────────────────── */
+  --color-accent-primary: #d97706;
+  --color-success:        #10b981;
+  --color-warning:        #f59e0b;
+  --color-error:          #ef4444;
+  --color-info:           #3b82f6;
+
+  /* ── Borders ─────────────────────────────────────────── */
+  --color-border:         #3a3a3a;
+  --border-radius:        8px;
+  --border-radius-sm:     6px;
+  --border-radius-lg:     12px;
+
+  /* ── Spacing ─────────────────────────────────────────── */
+  --spacing-xs:  4px;
+  --spacing-sm:  8px;
+  --spacing-md:  16px;
+  --spacing-lg:  24px;
+  --spacing-xl:  32px;
+  --spacing-2xl: 48px;
+
+  /* ── Typography ──────────────────────────────────────── */
+  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter',
+                 Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono:   'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+
+  --font-size-xs:   0.75rem;   /* 12px */
+  --font-size-sm:   0.8125rem; /* 13px */
+  --font-size-base: 0.875rem;  /* 14px */
+  --font-size-md:   1rem;      /* 16px */
+  --font-size-lg:   1.25rem;   /* 20px */
+  --font-size-xl:   1.5rem;    /* 24px */
+  --font-size-2xl:  2rem;      /* 32px */
+  --font-size-3xl:  2.5rem;    /* 40px */
+
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold:   700;
+
+  --line-height-tight:  1.25;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.75;
+
+  /* ── Layout ──────────────────────────────────────────── */
+  --sidebar-width:      240px;
+  --sidebar-collapsed:  64px;
+  --header-height:      56px;
+  --content-max-width:  1400px;
+
+  /* ── Transitions ─────────────────────────────────────── */
+  --transition-fast:    0.15s ease;
+  --transition-normal:  0.2s ease;
+  --transition-slow:    0.3s ease;
+  --transition-theme:   0.6s ease;
+
+  /* ── Chart colors ─────────────────────────────────────── */
+  --chart-download:      #10b981;
+  --chart-download-fill:  rgba(16, 185, 129, 0.08);
+  --chart-upload:        #3b82f6;
+  --chart-upload-fill:    rgba(59, 130, 246, 0.08);
+  --chart-grid:          rgba(255,255,255,0.04);
+  --chart-text:          #6b6b6b;
+  --chart-tooltip-bg:    #1a1a1a;
+  --chart-tooltip-text:  #efefef;
+  --chart-tooltip-border:#3a3a3a;
+  --chart-legend-text:   #a0a0a0;
+
+  /* ── Z-index layers ──────────────────────────────────── */
+  --z-sidebar:   100;
+  --z-header:    90;
+  --z-overlay:   200;
+  --z-modal:     300;
+  --z-toast:     400;
+}
+
+/* ═══════════════════════════════════════════════════════
+   SMOOTH THEME TRANSITIONS — all themed elements fade
+   ═══════════════════════════════════════════════════════ */
+
+*,
+*::before,
+*::after {
+  transition: background-color var(--transition-theme),
+              color var(--transition-theme),
+              border-color var(--transition-theme),
+              box-shadow var(--transition-theme);
+}
+
+/* Exclude elements that need instant response (inputs, buttons hovering) */
+input, textarea, select,
+button:active,
+.time-btn:hover,
+canvas {
+  transition: none;
+}
+
+/* ═══════════════════════════════════════════════════════
+   LIGHT THEME OVERRIDES
+   ═══════════════════════════════════════════════════════ */
+
+[data-theme="light"] {
+  --color-bg-primary:    #f5f5f5;
+  --color-bg-secondary:  #ffffff;
+  --color-bg-tertiary:   #eaeaea;
+  --color-bg-elevated:   #f0f0f0;
+
+  --color-text-primary:   #1a1a1a;
+  --color-text-secondary: #555555;
+  --color-text-tertiary:  #888888;
+
+  --color-border:         #d4d4d4;
+
+  --color-accent-primary: #d97706;
+  --color-success:        #059669;
+  --color-warning:        #d97706;
+  --color-error:          #dc2626;
+  --color-info:           #2563eb;
+
+  /* ── Chart colors (light) ───────────────────────────── */
+  --chart-download:       #059669;
+  --chart-download-fill:  rgba(5, 150, 105, 0.10);
+  --chart-upload:         #2563eb;
+  --chart-upload-fill:    rgba(37, 99, 235, 0.10);
+  --chart-grid:           rgba(0,0,0,0.06);
+  --chart-text:           #555555;
+  --chart-tooltip-bg:     #ffffff;
+  --chart-tooltip-text:   #1a1a1a;
+  --chart-tooltip-border: #d4d4d4;
+  --chart-legend-text:    #555555;
+}

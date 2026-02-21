@@ -1,0 +1,125 @@
+/**
+ * animations.css - Transitions & Animations
+ * ==========================================
+ * Smooth, purposeful transitions. No gratuitous animation.
+ */
+
+/* ── View transitions ────────────────────────────────── */
+
+.view-enter {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.view-active {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.view-exit {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  position: absolute;
+  inset: 0;
+}
+
+/* ── Fade in on load ─────────────────────────────────── */
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.fade-in {
+  animation: fadeIn 0.3s ease forwards;
+}
+
+/* Stagger children */
+.stagger > * {
+  opacity: 0;
+  animation: fadeIn 0.3s ease forwards;
+}
+
+.stagger > *:nth-child(1) { animation-delay: 0.04s; }
+.stagger > *:nth-child(2) { animation-delay: 0.08s; }
+.stagger > *:nth-child(3) { animation-delay: 0.12s; }
+.stagger > *:nth-child(4) { animation-delay: 0.16s; }
+.stagger > *:nth-child(5) { animation-delay: 0.20s; }
+.stagger > *:nth-child(6) { animation-delay: 0.24s; }
+
+/* ── Number count-up ─────────────────────────────────── */
+
+.value-updated {
+  transition: color 0.3s ease;
+  color: var(--color-accent-primary);
+}
+
+/* Reset color after flash */
+.value-updated.settle {
+  color: var(--color-text-primary);
+}
+
+/* ── Skeleton loading ────────────────────────────────── */
+
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-bg-tertiary) 25%,
+    var(--color-bg-elevated) 50%,
+    var(--color-bg-tertiary) 75%
+  );
+  background-size: 800px 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: var(--border-radius-sm);
+}
+
+.skeleton--value {
+  height: 32px;
+  width: 40%;
+}
+
+/* ── Theme bloom overlay (clip-path reveal) ──────────── */
+
+.theme-bloom-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  transition: clip-path 1s cubic-bezier(0.4, 0, 0.15, 1);
+  will-change: clip-path;
+}
+
+/* Ensure text in bloom overlay inherits theme colors for readability */
+.theme-bloom-overlay[data-theme="light"] {
+  background: #f5f5f5;
+}
+.theme-bloom-overlay[data-theme="dark"] {
+  background: #1a1a1a;
+}
+
+/* ── Smooth chart draw-in animations ─────────────────── */
+
+@keyframes chartFadeIn {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.chart-card canvas {
+  animation: chartFadeIn 0.5s ease forwards;
+}
+
+/* ── Reduce motion for accessibility ─────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

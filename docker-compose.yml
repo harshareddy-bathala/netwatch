@@ -1,0 +1,32 @@
+# NetWatch — Docker Compose
+# Usage:  docker compose up -d
+
+version: "3.9"
+
+services:
+  netwatch:
+    build: .
+    container_name: netwatch
+    # ports mapping is incompatible with network_mode: host
+    # Port 5000 is exposed directly via host networking
+    volumes:
+      - netwatch-data:/data
+    environment:
+      - NETWATCH_ENV=production
+      - DATABASE_PATH=/data/netwatch.db
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY environment variable is required}
+    restart: unless-stopped
+    # Packet capture requires host networking + NET_ADMIN
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/api/status')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  netwatch-data:

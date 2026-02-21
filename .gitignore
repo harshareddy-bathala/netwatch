@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+*.spec
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Test output
+test_out.txt
+test_results.txt
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Deployment artifacts
+deploy/output/
+deploy/build/
+*.deb
+*.dmg
+*.msi
+*.exe
+
+# Secrets
+.env
+.env.local
+secret_key.txt
