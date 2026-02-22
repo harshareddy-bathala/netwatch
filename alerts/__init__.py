@@ -52,6 +52,11 @@ def _get_engine() -> "AlertEngine":
     return _shared_engine
 
 
+def get_shared_engine() -> "AlertEngine | None":
+    """Return the shared AlertEngine, or None if not yet configured."""
+    return _shared_engine
+
+
 def create_alert(alert_type, severity, message, details=None, **kw):
     """Backward-compat wrapper around AlertEngine.create_alert."""
     return _get_engine().create_alert(
@@ -90,6 +95,7 @@ __all__ = [
     
     # DI helper
     "set_shared_engine",
+    "get_shared_engine",
     
     # Functions
     "create_alert",

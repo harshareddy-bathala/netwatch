@@ -135,7 +135,7 @@ export default class AlertFeed {
             <span class="alert-item__severity alert-item__severity--${sev}">
               ${escapeHtml(a.severity || 'info')}
             </span>
-            <span style="font-size:var(--font-size-xs);color:var(--color-text-tertiary)">
+            <span class="alert-feed__timestamp">
               ${formatRelativeTime(a.created_at || a.timestamp)}
             </span>
           </div>

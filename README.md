@@ -1,8 +1,17 @@
-# NetWatch v2.1.0 — Intelligent Network Traffic Analysis System
+# NetWatch v3.0.0 — Intelligent Network Traffic Analysis System
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-469-green.svg)](#testing)
+
+## What's New in v3.0.0
+
+- **Accurate per-mode device filtering** — Multicast MACs (IPv4/IPv6/STP) are now rejected by the device tracker, eliminating phantom devices in WiFi Client and other modes.
+- **Public IP exclusion** — Public IPs are no longer assigned to device objects in the SSE top-devices payload; only private/RFC1918 addresses are shown.
+- **Stable bandwidth charts** — The DB-to-live data boundary uses a rounded 10-second cutoff, eliminating oscillation. The false zero-point bridge insertion has been removed.
+- **Graceful Ctrl+C shutdown** — The signal handler now raises `KeyboardInterrupt` to break out of blocking server calls, ensuring clean shutdown within 2–3 seconds on all platforms.
+- **CSS variable fix** — Corrected `--text-secondary` to `--color-text-secondary` for consistent theming.
+- **Hostname resolver improvement** — The local machine's own IP is resolved instantly to its hostname without DNS lookup.
 
 ## Overview
 

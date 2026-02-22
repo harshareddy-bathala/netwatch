@@ -63,17 +63,30 @@ class WiFiClientMode(BaseMode):
 
     def get_bpf_filter(self) -> str:
         """
-        BPF filter: only capture packets involving our own IP.
+        BPF filter: only capture packets involving our own machine.
 
         This is the single most important filter for fixing the original bug.
         Instead of capturing *all* wireless traffic (which is what an empty
-        filter does in promiscuous mode), we restrict to ``host <our_ip>``.
+        filter does in promiscuous mode), we restrict to our traffic only.
+
+        **Why ``ether host <mac>`` instead of ``host <ip>``?**
+        ``host <ip>`` only matches IPv4 packets.  Modern services (YouTube,
+        Google, Facebook, etc.) heavily use IPv6 for streaming.  A pure
+        IPv4 BPF filter silently drops all IPv6 video traffic, causing
+        bandwidth readings 10-100x lower than reality.
+        ``ether host <mac>`` matches on the Ethernet (L2) MAC address,
+        capturing IPv4, IPv6, ARP, and any other L3 protocol in a single
+        efficient kernel filter.
         """
+        mac = self._interface.mac_address
         ip = self._interface.ip_address
+        if mac:
+            return f"ether host {mac}"
         if ip:
-            return f"host {ip}"
+            # Fallback: IPv4 + all IPv6 (we can't filter IPv6 without MAC)
+            return f"host {ip} or ip6"
         # If we somehow don't know our IP, capture nothing rather than everything.
-        logger.warning("WiFiClientMode: no IP known — using restrictive fallback filter")
+        logger.warning("WiFiClientMode: no IP/MAC known — using restrictive fallback filter")
         return "host 0.0.0.0"
 
     def get_valid_ip_range(self) -> Optional[str]:
@@ -95,11 +108,13 @@ class WiFiClientMode(BaseMode):
             should_use_promiscuous=False,
             scope=NetworkScope.OWN_TRAFFIC_ONLY,
             can_arp_scan=False,
+            can_arp_cache_scan=True,
             can_do_passive_discovery=False,
             safe_for_public=True,
             description=(
                 "WiFi client mode — monitoring own traffic only. "
-                "Promiscuous mode disabled (AP isolation makes it useless)."
+                "Promiscuous mode disabled (AP isolation makes it useless). "
+                "ARP cache discovery enabled for passive neighbour visibility."
             ),
         )
 

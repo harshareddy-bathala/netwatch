@@ -89,6 +89,7 @@ class AlertEngine:
         # Per-instance mutable state (was incorrectly a class variable)
         self._mac_whitelist: set = set()
         self._known_macs: set = set()
+        self._known_ips: set = set()   # IPs belonging to our own machine
 
         logger.info("AlertEngine initialised (cooldown=%ds)", cooldown_seconds)
 
@@ -320,9 +321,14 @@ class AlertEngine:
         logger.info("MAC whitelist loaded: %d entries", len(self._mac_whitelist))
 
     def add_known_mac(self, mac: str):
-        """Mark a MAC as known (won't trigger future alerts)."""
+        """Mark a MAC (or IP) as known (won't trigger future alerts)."""
         if mac:
             self._known_macs.add(mac.lower().replace("-", ":"))
+
+    def add_known_ip(self, ip: str):
+        """Mark an IP as known so self-discoveries don't fire alerts."""
+        if ip:
+            self._known_ips.add(ip)
 
     def check_new_device(
         self,
@@ -355,8 +361,11 @@ class AlertEngine:
 
         mac_lower = mac.lower().replace("-", ":")
 
-        # Already known — skip
+        # Already known (by MAC or IP) — skip
         if mac_lower in self._known_macs or mac_lower in self._mac_whitelist:
+            return None
+        if ip and ip in self._known_ips:
+            self._known_macs.add(mac_lower)  # remember this MAC too
             return None
 
         # Mark as known for future

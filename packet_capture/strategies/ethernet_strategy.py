@@ -25,13 +25,21 @@ class EthernetCaptureStrategy:
     # ------------------------------------------------------------------ #
 
     def setup(self) -> None:
-        """Enable promiscuous mode and compile the BPF filter."""
+        """Enable promiscuous mode and compile the BPF filter.
+
+        On Windows, Npcap handles promiscuous mode internally via
+        ``sniff(promisc=True)`` \u2014 no OS-level command is needed.
+        We still set ``_promisc_was_enabled`` so ``teardown()`` knows
+        to request Scapy to revert the setting.
+
+        On Linux, we explicitly toggle promiscuous via ``ip link``.
+        """
         iface = self._mode.interface.name
         bpf = self._mode.get_bpf_filter()
         self._compiled_filter = bpf
 
         logger.info(
-            "EthernetCaptureStrategy.setup() — iface=%s, filter='%s'",
+            "EthernetCaptureStrategy.setup() \u2014 iface=%s, filter='%s'",
             iface, bpf,
         )
 
@@ -44,9 +52,12 @@ class EthernetCaptureStrategy:
                         check=True, capture_output=True, timeout=5,
                     )
                     self._promisc_was_enabled = True
-                    logger.info("Promiscuous mode enabled on %s", iface)
+                    logger.info("Promiscuous mode enabled on %s (ip link)", iface)
                 else:
+                    # Windows: Npcap/WinPcap handles promisc via sniff(promisc=True).
+                    # Mark as enabled so teardown() knows to clean up.
                     self._promisc_was_enabled = True
+                    logger.info("Promiscuous mode will be enabled on %s via Npcap", iface)
             except Exception as exc:
                 logger.warning("Could not enable promiscuous mode on %s: %s", iface, exc)
 
@@ -68,19 +79,28 @@ class EthernetCaptureStrategy:
                 logger.debug("BPF validation error: %s", exc)
 
     def teardown(self) -> None:
-        """Disable promiscuous mode if we enabled it."""
+        """Disable promiscuous mode if we enabled it.
+
+        On Linux, explicitly toggles via ``ip link``.
+        On Windows, Npcap reverts promiscuous mode when the sniff handle
+        is closed (handled by CaptureEngine.stop()), but we reset our
+        flag so a subsequent ``setup()`` starts from a clean state.
+        """
         iface = self._mode.interface.name
-        logger.info("EthernetCaptureStrategy.teardown() — iface=%s", iface)
-        if self._promisc_was_enabled and sys.platform != 'win32':
-            try:
-                import subprocess
-                subprocess.run(
-                    ['ip', 'link', 'set', iface, 'promisc', 'off'],
-                    check=True, capture_output=True, timeout=5,
-                )
-                logger.info("Promiscuous mode disabled on %s", iface)
-            except Exception as exc:
-                logger.warning("Could not disable promiscuous mode on %s: %s", iface, exc)
+        logger.info("EthernetCaptureStrategy.teardown() \u2014 iface=%s", iface)
+        if self._promisc_was_enabled:
+            if sys.platform != 'win32':
+                try:
+                    import subprocess
+                    subprocess.run(
+                        ['ip', 'link', 'set', iface, 'promisc', 'off'],
+                        check=True, capture_output=True, timeout=5,
+                    )
+                    logger.info("Promiscuous mode disabled on %s (ip link)", iface)
+                except Exception as exc:
+                    logger.warning("Could not disable promiscuous mode on %s: %s", iface, exc)
+            else:
+                logger.info("Promiscuous mode cleanup on %s \u2014 Npcap handle closed", iface)
         self._promisc_was_enabled = False
         self._compiled_filter = None
 

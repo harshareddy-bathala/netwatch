@@ -54,17 +54,24 @@ class EthernetMode(BaseMode):
 
     def get_bpf_filter(self) -> str:
         """
-        BPF filter: restrict to the local subnet CIDR.
+        BPF filter: restrict to the local subnet CIDR + IPv6.
 
         We do NOT hardcode ``/24``.  The actual prefix length is read from
         the OS (e.g. ``255.255.255.0`` → ``/24``, ``255.255.0.0`` → ``/16``).
+
+        ``or ip6`` is appended to also capture IPv6 traffic on the local
+        segment.  Without it, all IPv6 streaming/web traffic is silently
+        dropped, causing severe bandwidth under-reporting.
         """
         cidr = self.get_valid_ip_range()
         if cidr:
-            return f"net {cidr}"
-        # Fallback: own traffic only
+            return f"(net {cidr}) or ip6"
+        # Fallback: own traffic only (IPv4 + IPv6)
+        mac = self._interface.mac_address
+        if mac:
+            return f"ether host {mac}"
         if self._interface.ip_address:
-            return f"host {self._interface.ip_address}"
+            return f"host {self._interface.ip_address} or ip6"
         return ""
 
     def get_valid_ip_range(self) -> Optional[str]:

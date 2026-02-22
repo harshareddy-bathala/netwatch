@@ -13,7 +13,7 @@
 set -euo pipefail
 
 APP_NAME="netwatch"
-APP_VERSION="2.0.0"
+APP_VERSION=$(cat "$(dirname "$0")/../VERSION" 2>/dev/null || echo "0.0.0")
 ARCH="amd64"
 MAINTAINER="NetWatch Team <netwatch@example.com>"
 DESCRIPTION="Intelligent network traffic monitoring and analysis system"

@@ -31,11 +31,19 @@ logger = logging.getLogger(__name__)
 
 # Scapy imports with graceful fallback
 try:
-    from scapy.all import IP, IPv6, TCP, UDP, ICMP, Ether, ARP, DNS, Raw
+    from scapy.all import IP, IPv6, TCP, UDP, ICMP, Ether, ARP, DNS, DNSQR, DNSRR, Raw
     SCAPY_AVAILABLE = True
 except ImportError:
     SCAPY_AVAILABLE = False
-    IP = IPv6 = TCP = UDP = ICMP = Ether = ARP = DNS = Raw = None
+    IP = IPv6 = TCP = UDP = ICMP = Ether = ARP = DNS = DNSQR = DNSRR = Raw = None
+
+# Optional: DHCP layer for Option 12 hostname extraction
+try:
+    from scapy.all import DHCP as _DHCP, BOOTP as _BOOTP
+    _DHCP_AVAILABLE = True
+except ImportError:
+    _DHCP = _BOOTP = None
+    _DHCP_AVAILABLE = False
 
 # Project imports
 import os, sys
@@ -143,6 +151,12 @@ class PacketProcessor:
         if self._our_ip:
             self._local_ips.add(self._our_ip)
 
+        # Phase 5: For port mirror / ALL_TRAFFIC scope, populate _local_ips
+        # with all local interface IPs so direction detection works correctly
+        # even for traffic involving interfaces other than the capture one.
+        if self._scope == NetworkScope.ALL_TRAFFIC:
+            self._populate_all_local_ips()
+
     # ------------------------------------------------------------------ #
     #  Public API
     # ------------------------------------------------------------------ #
@@ -165,6 +179,12 @@ class PacketProcessor:
                     return self._process_arp(packet)
                 return None
 
+            # --- MAC addresses (extracted early for direction detection) ------
+            src_mac = dst_mac = None
+            if packet.haslayer(Ether):
+                src_mac = packet[Ether].src
+                dst_mac = packet[Ether].dst
+
             # --- Packet size (IP layer only, excludes Ethernet header) ------
             pkt_bytes = self._get_ip_layer_size(packet)
 
@@ -173,14 +193,10 @@ class PacketProcessor:
             raw_proto = self._get_raw_protocol(packet)
             app_proto = detect_protocol(src_port, dst_port, raw_proto)
 
-            # --- Direction (mode-aware) -------------------------------------
-            direction = self._determine_direction(src_ip, dst_ip)
-
-            # --- MAC addresses ----------------------------------------------
-            src_mac = dst_mac = None
-            if packet.haslayer(Ether):
-                src_mac = packet[Ether].src
-                dst_mac = packet[Ether].dst
+            # --- Direction (mode-aware, with MAC fallback for IPv6) ---------
+            direction = self._determine_direction(
+                src_ip, dst_ip, src_mac=src_mac, dst_mac=dst_mac,
+            )
 
             # Fallback: enrich with our known MAC when Ether layer is
             # missing (Windows WiFi/Npcap) or when the captured MAC is
@@ -188,10 +204,10 @@ class PacketProcessor:
             # In WiFi-client mode every packet involves our IP, so we
             # know exactly which side is "us".
             if self._our_mac:
-                if src_ip == self._our_ip:
+                if direction == "upload" or src_ip == self._our_ip:
                     if not src_mac or src_mac == 'ff:ff:ff:ff:ff:ff':
                         src_mac = self._our_mac
-                if dst_ip == self._our_ip:
+                if direction == "download" or dst_ip == self._our_ip:
                     if not dst_mac or dst_mac == 'ff:ff:ff:ff:ff:ff':
                         dst_mac = self._our_mac
 
@@ -214,8 +230,20 @@ class PacketProcessor:
             # Note: TCP seq/ack intentionally not stored — never persisted,
             # saves ~100 bytes per packet in memory.
 
+            # --- Passive hostname extraction (mDNS, NetBIOS, DNS) -----------
+            device_name = self._extract_hostname_from_packet(packet, app_proto, src_ip)
+
+            # Phase 3: use capture-time timestamp stamped by the capture
+            # thread (via _capture_ts) instead of datetime.now() so that
+            # bandwidth bucketing reflects the real capture instant.
+            if hasattr(packet, '_capture_ts') and packet._capture_ts:
+                import time as _time_mod
+                _ts = datetime.fromtimestamp(packet._capture_ts)
+            else:
+                _ts = datetime.now()
+
             return PacketData(
-                timestamp=datetime.now(),
+                timestamp=_ts,
                 source_ip=src_ip,
                 dest_ip=dst_ip,
                 source_port=src_port,
@@ -229,6 +257,7 @@ class PacketProcessor:
                 ip_version=ip_version,
                 ttl=ttl,
                 flags=flags,
+                device_name=device_name,
                 extra=extra,
             )
 
@@ -249,7 +278,10 @@ class PacketProcessor:
     #  Direction detection (the key Phase 2 fix)
     # ------------------------------------------------------------------ #
 
-    def _determine_direction(self, src_ip: str, dst_ip: str) -> str:
+    def _determine_direction(
+        self, src_ip: str, dst_ip: str,
+        src_mac: Optional[str] = None, dst_mac: Optional[str] = None,
+    ) -> str:
         """
         Determine whether the packet is *upload*, *download*, or *other*
         based on the active mode.
@@ -265,7 +297,32 @@ class PacketProcessor:
 
         **Port mirror** (scope = ALL_TRAFFIC):
             If we can identify local IPs we do our best; otherwise 'other'.
+
+        **MAC-based fallback (all scopes):**
+            When IP-based detection returns 'other' (common for IPv6 traffic
+            where ``self._our_ip`` is an IPv4 address), fall back to MAC
+            address comparison.  If the source MAC is ours → upload; if the
+            destination MAC is ours → download.
         """
+        result = self._determine_direction_by_ip(src_ip, dst_ip)
+        if result != "other":
+            return result
+
+        # ---- MAC-based fallback (critical for IPv6 traffic) ----
+        # When BPF uses ``ether host <mac>`` we capture IPv6 packets
+        # whose IPs don't match our known IPv4 address.  Use the MAC
+        # to determine direction instead.
+        if self._our_mac:
+            our_mac_lower = self._our_mac.lower()
+            if src_mac and src_mac.lower() == our_mac_lower:
+                return "upload"
+            if dst_mac and dst_mac.lower() == our_mac_lower:
+                return "download"
+
+        return "other"
+
+    def _determine_direction_by_ip(self, src_ip: str, dst_ip: str) -> str:
+        """IP-based direction detection (original logic, extracted for clarity)."""
         if self._scope == NetworkScope.CONNECTED_CLIENTS:
             # Hotspot mode — perspective is the client
             if self._is_in_monitored_subnet(src_ip) and src_ip != self._our_ip:
@@ -291,6 +348,17 @@ class PacketProcessor:
                 return "upload"
             if dst_local and not src_local:
                 return "download"
+            # Phase D: If _local_ips is empty (psutil unavailable or no
+            # interfaces detected) and subnet-based checks both returned
+            # False, fall back to RFC-1918 private-address heuristic
+            # instead of classifying everything as "other".
+            if not self._local_ips and not self._monitored_subnet:
+                src_priv = self._is_private_ip(src_ip)
+                dst_priv = self._is_private_ip(dst_ip)
+                if src_priv and not dst_priv:
+                    return "upload"
+                if dst_priv and not src_priv:
+                    return "download"
             return "other"
 
         return "other"
@@ -303,6 +371,39 @@ class PacketProcessor:
             return ipaddress.IPv4Address(ip) in self._monitored_subnet
         except (ValueError, TypeError):
             return False
+
+    @staticmethod
+    def _is_private_ip(ip: str) -> bool:
+        """Check if *ip* is an RFC-1918 private address.
+
+        Phase D: Used as a last-resort heuristic for port-mirror direction
+        detection when ``_local_ips`` is empty and no monitored subnet is
+        configured.  Private → local, public → remote.
+        """
+        try:
+            return ipaddress.ip_address(ip).is_private
+        except (ValueError, TypeError):
+            return False
+
+    def _populate_all_local_ips(self) -> None:
+        """Populate ``_local_ips`` with all local interface IPs.
+
+        Phase 5: Called for Port Mirror / ALL_TRAFFIC scope so that
+        direction detection can correctly classify traffic as upload
+        or download for any local host.
+        """
+        try:
+            import psutil
+            for _name, addrs in psutil.net_if_addrs().items():
+                for addr in addrs:
+                    if addr.family.name in ('AF_INET', 'AF_INET6'):
+                        ip = addr.address
+                        if ip and ip not in ('0.0.0.0', '127.0.0.1', '::1'):
+                            self._local_ips.add(ip)
+        except ImportError:
+            pass
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
     #  Low-level extraction helpers
@@ -402,3 +503,241 @@ class PacketProcessor:
             )
         except Exception:
             return None
+
+    @staticmethod
+    def _extract_hostname_from_packet(
+        packet, app_proto: str, src_ip: str,
+    ) -> Optional[str]:
+        """
+        Extract a hostname from mDNS, NetBIOS-NS, LLMNR, DNS, DHCP,
+        SSDP/UPnP, or HTTP packets.
+
+        This enables **passive** hostname learning — no active probing
+        needed.  When a device announces its name (mDNS, DHCP Option 12)
+        or responds to a name query (DNS / LLMNR / NetBIOS-NS), we
+        capture that name and feed it to the hostname resolver's cache.
+
+        Sources (Phase 2 expansion):
+        - mDNS/LLMNR PTR and A/AAAA responses
+        - DNS A/AAAA query names (the queried name itself is useful)
+        - DHCP Option 12 (hostname)
+        - SSDP/UPnP NOTIFY and M-SEARCH responses (friendly name)
+        - HTTP Host headers
+
+        Returns the hostname string or ``None``.
+        """
+        if not SCAPY_AVAILABLE:
+            return None
+
+        try:
+            # --- DHCP Option 12 (hostname) ---
+            result = PacketProcessor._extract_dhcp_hostname(packet)
+            if result:
+                return result
+
+            # --- SSDP / UPnP friendly name ---
+            result = PacketProcessor._extract_ssdp_hostname(packet)
+            if result:
+                return result
+
+            # --- HTTP Host header (for device identification) ---
+            result = PacketProcessor._extract_http_host(packet, src_ip)
+            if result:
+                return result
+
+            # --- DNS-based extraction (mDNS, LLMNR, DNS queries + responses) ---
+            if not packet.haslayer(DNS):
+                return None
+
+            dns_layer = packet[DNS]
+            proto_upper = app_proto.upper() if app_proto else ""
+
+            # DNS QUERIES (QR=0): extract the queried name itself
+            # A device querying for "myphone.local" is likely named "myphone"
+            if dns_layer.qr == 0 and dns_layer.qdcount > 0:
+                result = PacketProcessor._extract_dns_query_hostname(
+                    dns_layer, proto_upper, src_ip)
+                if result:
+                    return result
+
+            # DNS RESPONSES (QR=1): extract from answer records
+            if dns_layer.qr == 1 and dns_layer.ancount > 0:
+                result = PacketProcessor._extract_dns_response_hostname(
+                    dns_layer, proto_upper)
+                if result:
+                    return result
+
+        except Exception:
+            pass
+
+        return None
+
+    @staticmethod
+    def _extract_dhcp_hostname(packet) -> Optional[str]:
+        """Extract hostname from DHCP Option 12 (Hostname)."""
+        if not _DHCP_AVAILABLE:
+            return None
+        try:
+            if not packet.haslayer(_DHCP):
+                return None
+            dhcp_options = packet[_DHCP].options
+            for opt in dhcp_options:
+                if isinstance(opt, tuple) and len(opt) >= 2:
+                    if opt[0] == 'hostname':
+                        hostname = opt[1]
+                        if isinstance(hostname, bytes):
+                            hostname = hostname.decode('utf-8', errors='replace')
+                        hostname = hostname.strip().rstrip('.')
+                        if hostname and hostname.lower() not in ('', 'unknown', 'localhost'):
+                            return hostname
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _extract_ssdp_hostname(packet) -> Optional[str]:
+        """Extract friendly name from SSDP/UPnP NOTIFY and M-SEARCH responses."""
+        try:
+            if not packet.haslayer(UDP):
+                return None
+            # SSDP uses port 1900
+            if not (packet.haslayer(UDP) and
+                    (packet[UDP].sport == 1900 or packet[UDP].dport == 1900)):
+                return None
+            if not packet.haslayer(Raw):
+                return None
+
+            payload = packet[Raw].load
+            if isinstance(payload, bytes):
+                payload = payload.decode('utf-8', errors='replace')
+
+            # Look for SERVER: header which often contains device name
+            # e.g. "SERVER: Linux/3.x UPnP/1.1 MyDevice/1.0"
+            for line in payload.split('\r\n'):
+                line_upper = line.upper().strip()
+                if line_upper.startswith('X-FRIENDLY-NAME:'):
+                    name = line.split(':', 1)[1].strip()
+                    if name:
+                        return name
+                # Also try USN (Unique Service Name) for device names
+                if line_upper.startswith('SERVER:'):
+                    server_val = line.split(':', 1)[1].strip()
+                    # Many devices put their name in SERVER header
+                    # Try to extract meaningful name from common patterns
+                    parts = server_val.split()
+                    if parts:
+                        # Filter out generic OS/UPnP tokens
+                        for part in parts:
+                            if '/' in part:
+                                name_part = part.split('/')[0]
+                                if (name_part.lower() not in
+                                    ('linux', 'windows', 'macos', 'upnp',
+                                     'dlnadoc', 'http', 'miniupnpd', '')):
+                                    # Only return if it's a meaningful name
+                                    if len(name_part) > 2 and not name_part[0].isdigit():
+                                        return name_part
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _extract_http_host(packet, src_ip: str) -> Optional[str]:
+        """Extract hostname from HTTP Host header.
+
+        Only used for device identification (e.g. a device making requests
+        reveals what services it talks to). We do NOT return the Host
+        header as the device's hostname — instead we return None here
+        and let the passive callback handle learning.
+
+        However, if the HTTP request itself is from a device that is
+        advertising (e.g. local web UI at src_ip), we can learn its
+        server name from the response.
+        """
+        # Intentionally limited: we don't want to name devices after
+        # the websites they visit. HTTP Host extraction is primarily
+        # useful for _future_ service mapping, not hostname resolution.
+        return None
+
+    @staticmethod
+    def _extract_dns_query_hostname(dns_layer, proto_upper: str,
+                                     src_ip: str) -> Optional[str]:
+        """Extract hostname from DNS/mDNS/LLMNR query names.
+
+        When a device queries for its own name (common in mDNS), the
+        query name reveals the device's hostname. For regular DNS queries,
+        we don't use the queried name as a hostname since it's just
+        what the device is looking up (e.g., google.com).
+        """
+        try:
+            for i in range(dns_layer.qdcount):
+                try:
+                    qr = dns_layer.qd[i] if dns_layer.qd else None
+                    if qr is None:
+                        break
+
+                    qname = qr.qname
+                    if isinstance(qname, bytes):
+                        qname = qname.decode('utf-8', errors='replace')
+                    qname = qname.rstrip('.')
+
+                    # Only use query names from mDNS/LLMNR (local protocols)
+                    if proto_upper not in ("MDNS", "LLMNR"):
+                        continue
+
+                    # mDNS: device querying for "<hostname>.local" A record
+                    # is likely the device itself
+                    if qr.qtype in (1, 28):  # A or AAAA
+                        if '.local' in qname.lower():
+                            hostname = qname.split('.')[0]
+                            if (hostname and not hostname.startswith('_')
+                                    and not hostname[0].isdigit()):
+                                return hostname
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _extract_dns_response_hostname(dns_layer, proto_upper: str) -> Optional[str]:
+        """Extract hostname from DNS/mDNS/LLMNR response answer records."""
+        try:
+            for i in range(dns_layer.ancount):
+                try:
+                    rr = dns_layer.an[i] if dns_layer.an else None
+                    if rr is None:
+                        break
+
+                    rrname = rr.rrname
+                    if isinstance(rrname, bytes):
+                        rrname = rrname.decode('utf-8', errors='replace')
+                    rrname = rrname.rstrip('.')
+
+                    # mDNS / LLMNR: PTR answers with .local hostnames
+                    if rr.type == 12:  # PTR
+                        rdata = rr.rdata
+                        if isinstance(rdata, bytes):
+                            rdata = rdata.decode('utf-8', errors='replace')
+                        rdata = rdata.rstrip('.')
+
+                        # mDNS PTR: "<hostname>.local" or "<hostname>._tcp.local"
+                        if '.local' in rdata.lower():
+                            parts = rdata.split('.')
+                            if parts:
+                                hostname = parts[0]
+                                if hostname and not hostname.startswith('_'):
+                                    return hostname
+
+                    # A/AAAA record: the queried name itself is the hostname
+                    if rr.type in (1, 28) and proto_upper in ("MDNS", "LLMNR"):
+                        if '.local' in rrname.lower():
+                            hostname = rrname.split('.')[0]
+                            if hostname:
+                                return hostname
+                        elif rrname and not rrname[0].isdigit():
+                            return rrname.split('.')[0]
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return None

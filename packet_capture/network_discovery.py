@@ -231,8 +231,26 @@ class NetworkDiscovery:
     
     def _arp_scan_fallback(self) -> List[Dict]:
         """Fallback ARP scan using system arp command."""
+        return self.arp_cache_scan()
+
+    def arp_cache_scan(self) -> List[Dict]:
+        """
+        Scan the OS ARP cache for devices on our subnet.
+
+        Unlike ``_arp_scan_fallback`` (which was only called when Scapy
+        was unavailable), this is cheap and always useful — the cache may
+        contain entries for devices that don't respond to our ARP
+        broadcast (e.g. WiFi client isolation on mobile hotspots).
+        """
         discovered = []
-        
+        subnet_prefix = None
+        if self.subnet:
+            try:
+                net = ipaddress.IPv4Network(self.subnet, strict=False)
+                subnet_prefix = net
+            except (ValueError, TypeError):
+                pass
+
         try:
             if sys.platform == 'win32':
                 result = subprocess.run(
@@ -248,6 +266,16 @@ class NetworkDiscovery:
                     if match:
                         ip, mac = match.groups()
                         mac = mac.replace('-', ':').upper()
+                        # Filter to our subnet
+                        if subnet_prefix:
+                            try:
+                                if ipaddress.IPv4Address(ip) not in subnet_prefix:
+                                    continue
+                            except (ValueError, TypeError):
+                                continue
+                        # Skip broadcast / incomplete entries
+                        if mac in ('FF:FF:FF:FF:FF:FF', '00:00:00:00:00:00'):
+                            continue
                         device = {
                             'ip': ip,
                             'mac': mac,
@@ -270,9 +298,18 @@ class NetworkDiscovery:
                     )
                     if match:
                         ip, mac = match.groups()
+                        mac = mac.upper()
+                        if subnet_prefix:
+                            try:
+                                if ipaddress.IPv4Address(ip) not in subnet_prefix:
+                                    continue
+                            except (ValueError, TypeError):
+                                continue
+                        if mac in ('FF:FF:FF:FF:FF:FF', '00:00:00:00:00:00'):
+                            continue
                         device = {
                             'ip': ip,
-                            'mac': mac.upper(),
+                            'mac': mac,
                             'hostname': self._resolve_hostname(ip),
                             'discovery_method': 'arp_cache',
                             'first_seen': datetime.now(),
@@ -280,10 +317,12 @@ class NetworkDiscovery:
                         }
                         discovered.append(device)
                         self._add_device(device)
-                        
+
         except Exception as e:
-            logger.error("Fallback ARP scan error: %s", e)
-        
+            logger.error("ARP cache scan error: %s", e)
+
+        if discovered:
+            logger.info("ARP cache scan found %d devices on subnet", len(discovered))
         return discovered
     
     # =========================================================================
@@ -583,7 +622,15 @@ class NetworkDiscovery:
     # =========================================================================
     
     def _resolve_hostname(self, ip: str) -> Optional[str]:
-        """Attempt to resolve hostname from IP."""
+        """Attempt to resolve hostname from IP using the enhanced resolver."""
+        try:
+            from packet_capture.hostname_resolver import resolve_hostname
+            result = resolve_hostname(ip)
+            # resolve_hostname returns the IP itself on failure — treat that as None
+            return result if result != ip else None
+        except ImportError:
+            pass
+        # Fallback to basic DNS if hostname_resolver not available
         try:
             hostname, _, _ = socket.gethostbyaddr(ip)
             return hostname

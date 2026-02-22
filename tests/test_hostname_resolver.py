@@ -21,6 +21,7 @@ from packet_capture.hostname_resolver import (
     resolve_hostname,
     _CACHE_MAX_SIZE,
     _CACHE_TTL_SECONDS,
+    _PASSIVE_CACHE_TTL_SECONDS,
     _DNS_TIMEOUT_SECONDS,
 )
 
@@ -43,6 +44,7 @@ class TestBasicResolution:
         """When DNS and vendor both fail, the IP itself is returned."""
         resolver = HostnameResolver()
         with patch.object(resolver, '_reverse_dns', return_value=None), \
+             patch.object(resolver, '_mdns_lookup', return_value=None), \
              patch.object(resolver, '_get_vendor', return_value="Unknown"):
             result = resolver.resolve("192.168.1.99", mac="AA:BB:CC:DD:EE:FF")
             assert result == "192.168.1.99"
@@ -50,7 +52,8 @@ class TestBasicResolution:
     def test_dns_success(self):
         """When DNS succeeds, its result is returned."""
         resolver = HostnameResolver()
-        with patch.object(resolver, '_reverse_dns', return_value="myhost.local"):
+        with patch.object(resolver, '_mdns_lookup', return_value=None), \
+             patch.object(resolver, '_reverse_dns', return_value="myhost.local"):
             result = resolver.resolve("192.168.1.50")
             assert result == "myhost.local"
 
@@ -58,6 +61,7 @@ class TestBasicResolution:
         """When DNS fails but vendor succeeds, return 'Vendor (octet)'."""
         resolver = HostnameResolver()
         with patch.object(resolver, '_reverse_dns', return_value=None), \
+             patch.object(resolver, '_mdns_lookup', return_value=None), \
              patch.object(resolver, '_get_vendor', return_value="Apple"):
             result = resolver.resolve("192.168.1.114", mac="AA:BB:CC:DD:EE:FF")
             assert result == "Apple (114)"
@@ -73,7 +77,8 @@ class TestTTLCache:
     def test_cache_hit(self):
         """Second call with same args should return cached value (no DNS)."""
         resolver = HostnameResolver()
-        with patch.object(resolver, '_reverse_dns', return_value="cached.host") as dns:
+        with patch.object(resolver, '_mdns_lookup', return_value=None), \
+             patch.object(resolver, '_reverse_dns', return_value="cached.host") as dns:
             resolver.resolve("10.0.0.1")
             resolver.resolve("10.0.0.1")
             # DNS should only be called once — second is from cache
@@ -100,12 +105,99 @@ class TestTTLCache:
     def test_miss_is_cached(self):
         """DNS misses (fallback to IP) should be cached to avoid repeated look-ups."""
         resolver = HostnameResolver()
-        with patch.object(resolver, '_reverse_dns', return_value=None) as dns, \
+        with patch.object(resolver, '_mdns_lookup', return_value=None), \
+             patch.object(resolver, '_reverse_dns', return_value=None) as dns, \
              patch.object(resolver, '_get_vendor', return_value="Unknown"):
             resolver.resolve("192.168.1.200")
             resolver.resolve("192.168.1.200")
             # DNS should only be called once even though it failed
             assert dns.call_count == 1
+
+
+# ===================================================================
+# Passive Hostname Learning (Phase 2)
+# ===================================================================
+
+class TestPassiveLearning:
+    """Verify passive hostname learning with longer TTL."""
+
+    def test_passive_hostname_priority(self):
+        """Passively learned hostnames should take priority over DNS."""
+        resolver = HostnameResolver()
+        resolver.learn_hostname("192.168.1.10", "MyPhone")
+        # Should return the passive name without calling DNS
+        with patch.object(resolver, '_reverse_dns', return_value="dns-name") as dns:
+            result = resolver.resolve("192.168.1.10")
+            assert result == "MyPhone"
+            assert dns.call_count == 0
+
+    def test_passive_hostname_longer_ttl(self):
+        """Passive hostnames should use 1-hour TTL."""
+        resolver = HostnameResolver()
+        resolver.learn_hostname("192.168.1.20", "LongLived")
+        with resolver._lock:
+            _, expiry = resolver._passive_hostnames["192.168.1.20"]
+            expected_min = time.monotonic() + _PASSIVE_CACHE_TTL_SECONDS - 5
+            assert expiry >= expected_min
+
+    def test_passive_rejects_bare_ips(self):
+        """learn_hostname should ignore when hostname == ip."""
+        resolver = HostnameResolver()
+        resolver.learn_hostname("192.168.1.5", "192.168.1.5")
+        with resolver._lock:
+            assert "192.168.1.5" not in resolver._passive_hostnames
+
+    def test_passive_rejects_fe80(self):
+        """learn_hostname should filter out fe80:: addresses as hostnames."""
+        resolver = HostnameResolver()
+        resolver.learn_hostname("192.168.1.5", "fe80::1234:5678")
+        with resolver._lock:
+            assert "192.168.1.5" not in resolver._passive_hostnames
+
+    def test_passive_updates_active_cache(self):
+        """Passive learn should also update the active TTL cache."""
+        resolver = HostnameResolver()
+        # Pre-populate active cache
+        cache_key = "192.168.1.30:"
+        resolver._cache[cache_key] = ("old-name", time.monotonic() + 100)
+        # Learn a new passive name
+        resolver.learn_hostname("192.168.1.30", "NewDevice")
+        with resolver._lock:
+            name, _ = resolver._cache[cache_key]
+            assert name == "NewDevice"
+
+
+# ===================================================================
+# Background Resolution Queue (Phase 2)
+# ===================================================================
+
+class TestBackgroundQueue:
+    """Verify the background resolution queue."""
+
+    def test_enqueue_adds_to_queue(self):
+        """enqueue_for_resolution should add to the queue."""
+        resolver = HostnameResolver()
+        resolver.enqueue_for_resolution("10.0.0.1", "AA:BB:CC:DD:EE:FF")
+        assert len(resolver._resolve_queue) == 1
+
+    def test_enqueue_deduplicates(self):
+        """Same IP+MAC should not be enqueued twice."""
+        resolver = HostnameResolver()
+        resolver.enqueue_for_resolution("10.0.0.1", "AA:BB:CC:DD:EE:FF")
+        resolver.enqueue_for_resolution("10.0.0.1", "AA:BB:CC:DD:EE:FF")
+        assert len(resolver._resolve_queue) == 1
+
+    def test_enqueue_ignores_empty_ip(self):
+        """Empty IP should not be enqueued."""
+        resolver = HostnameResolver()
+        resolver.enqueue_for_resolution("", "AA:BB:CC:DD:EE:FF")
+        assert len(resolver._resolve_queue) == 0
+
+    def test_close_shuts_down(self):
+        """close() should shut down executor and signal background thread."""
+        resolver = HostnameResolver()
+        resolver.close()
+        assert resolver._bg_shutdown.is_set()
 
 
 # ===================================================================

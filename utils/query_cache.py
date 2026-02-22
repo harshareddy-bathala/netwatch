@@ -4,7 +4,8 @@ query_cache.py - Query Result Caching & Timing
 
 Provides:
 * ``TTLCache`` — time-based cache for expensive query results
-* ``time_query`` — decorator that logs slow queries (>100ms)
+* ``time_query`` — decorator that logs slow queries with categorization
+  (Phase 4: 200ms for critical-path, 500ms for background queries)
 
 Usage::
 
@@ -116,7 +117,14 @@ class TTLCache:
 
 def time_query(func):
     """
-    Decorator that logs a warning when a query function takes >100ms.
+    Decorator that logs a warning when a query function takes too long.
+
+    Phase 4 categorisation:
+    * **Critical-path** queries (called on every SSE cycle): 100ms threshold.
+    * **Background** queries (historical, full device list, etc.): 500ms.
+
+    Functions whose name starts with ``get_dashboard`` or ``get_top_devices``
+    are classified as critical-path; all others default to background.
 
     Also tracks cumulative call counts and total time for monitoring.
 
@@ -129,6 +137,11 @@ def time_query(func):
     _call_count = 0
     _total_time = 0.0
 
+    # Phase 4: categorise queries
+    _critical_names = ('get_dashboard_data', 'get_top_devices', 'get_realtime_stats')
+    _is_critical = func.__name__ in _critical_names
+    _threshold = 0.2 if _is_critical else 0.5  # 200ms critical, 500ms background
+
     @wraps(func)
     def wrapper(*args, **kwargs):
         nonlocal _call_count, _total_time
@@ -140,9 +153,11 @@ def time_query(func):
             duration = time.perf_counter() - start
             _call_count += 1
             _total_time += duration
-            if duration > 0.2:  # >200ms
+            if duration > _threshold:
+                category = 'critical' if _is_critical else 'background'
                 logger.warning(
-                    "Slow query: %s took %.0fms (avg %.0fms over %d calls)",
+                    "Slow query [%s]: %s took %.0fms (avg %.0fms over %d calls)",
+                    category,
                     func.__name__,
                     duration * 1000,
                     (_total_time / _call_count) * 1000,

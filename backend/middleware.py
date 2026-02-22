@@ -205,12 +205,18 @@ def register_middleware(app: Flask) -> None:
         response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
         response.headers['Content-Security-Policy'] = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
-            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "script-src 'self' https://cdn.jsdelivr.net; "
+            "style-src 'self' https://fonts.googleapis.com; "
             "img-src 'self' data:; "
             "connect-src 'self'; "
             "font-src 'self' https://fonts.gstatic.com"
         )
+
+        # HSTS header when behind HTTPS reverse proxy
+        if request.headers.get('X-Forwarded-Proto') == 'https':
+            response.headers['Strict-Transport-Security'] = (
+                'max-age=31536000; includeSubDomains'
+            )
 
         # Rate-limit headers
         if ENABLE_RATE_LIMITING:

@@ -56,6 +56,13 @@ from database.queries.device_queries import (
 )
 from packet_capture.network_discovery import NetworkDiscovery
 from utils.health_monitor import HealthMonitor
+from packet_capture.hostname_resolver import (
+    learn_hostname as _learn_hostname,
+    enqueue_for_resolution as _enqueue_resolution,
+    start_background_resolver as _start_bg_resolver,
+    start_mdns_browser as _start_mdns_browser,
+    close_resolver as _close_resolver,
+)
 
 # Production logging / metrics
 try:
@@ -72,10 +79,13 @@ shutdown_event = threading.Event()
 _interface_manager = None
 _capture_engine = None
 _engine_lock = threading.Lock()   # protects _capture_engine mutations
+_mode_transition_lock = threading.Lock()  # held during mode transitions; DB writer skips writes while held
 _detector = None
 _detector_thread = None
 _cleanup_thread = None
 _discovery_thread = None
+_cached_discovery = None              # NetworkDiscovery singleton for discovery_loop
+_cached_discovery_lock = threading.Lock()  # protects _cached_discovery lifecycle
 _health_monitor = None
 _health_log_thread = None
 _app = None
@@ -176,15 +186,25 @@ def parse_args():
 
 
 def signal_handler(signum, frame):
-    """Handle shutdown signals gracefully."""
+    """Handle shutdown signals gracefully.
+
+    Sets the shutdown event and raises ``KeyboardInterrupt`` to break
+    out of blocking calls (e.g. ``waitress_serve()``).  The exception
+    is caught by the ``except KeyboardInterrupt`` in ``__main__`` or
+    the ``finally`` block in ``main()``.
+    """
     shutdown_event.set()
-    shutdown()
-    sys.exit(0)
+    raise KeyboardInterrupt
 
 
 def shutdown():
-    """Graceful shutdown of all services."""
-    global _shutting_down
+    """Graceful shutdown of all services.
+
+    Protected by ``_shutdown_lock`` so only the first caller runs the
+    teardown sequence.  A 10-second watchdog forces ``sys.exit(1)`` if
+    any step hangs (e.g. a blocking ``join()`` on a stuck thread).
+    """
+    global _shutting_down, _cached_discovery
     with _shutdown_lock:
         if _shutting_down:
             return
@@ -193,6 +213,24 @@ def shutdown():
     logger = _logger or logging.getLogger(__name__)
     logger.info("Shutting down...")
 
+    # ── 10-second watchdog ──────────────────────────────────────────
+    # Only spawn the watchdog if there's actually something to shut
+    # down (capture engine, interface manager, etc.).  During tests,
+    # shutdown() is called at atexit with nothing initialised, and
+    # the watchdog's ``os._exit(1)`` would kill the pytest process.
+    _has_work = any([
+        _capture_engine, _interface_manager, _detector, _health_monitor,
+    ])
+    if _has_work:
+        def _watchdog():
+            """Force-exit if shutdown hangs for longer than 10 seconds."""
+            time.sleep(10)
+            logger.error("Shutdown watchdog triggered — forcing exit")
+            os._exit(1)
+
+        wd = threading.Thread(target=_watchdog, name="ShutdownWatchdog", daemon=True)
+        wd.start()
+
     if _capture_engine:
         try:
             _capture_engine.stop()
@@ -200,12 +238,29 @@ def shutdown():
         except Exception as e:
             logger.error("Error stopping capture engine: %s", e)
 
+    # Shut down hostname resolver (ThreadPoolExecutor + background thread)
+    try:
+        _close_resolver()
+        logger.info("Hostname resolver stopped")
+    except Exception as e:
+        logger.error("Error stopping hostname resolver: %s", e)
+
     if _interface_manager:
         try:
             _interface_manager.stop_monitoring()
             logger.info("Interface manager stopped")
         except Exception as e:
             logger.error("Error stopping interface manager: %s", e)
+
+    # Phase 5: stop any running NetworkDiscovery
+    with _cached_discovery_lock:
+        disc = _cached_discovery
+        _cached_discovery = None
+    if disc is not None:
+        try:
+            disc.stop_continuous_discovery()
+        except Exception:
+            pass
 
     if _detector:
         try:
@@ -216,9 +271,9 @@ def shutdown():
     if _health_monitor:
         try:
             _health_monitor.stop()
-            _logger.info("Health monitor stopped")
+            logger.info("Health monitor stopped")
         except Exception as e:
-            _logger.error("Error stopping health monitor: %s", e)
+            logger.error("Error stopping health monitor: %s", e)
     try:
         shutdown_pool()
         logger.info("Database connections closed")
@@ -246,7 +301,123 @@ def _create_capture_engine(mode):
         "Creating Scapy/Npcap capture engine on '%s' (strategy=%s)",
         iface, type(strategy).__name__ if strategy else 'None',
     )
-    return CaptureEngine(mode, interface=iface, strategy=strategy)
+    engine = CaptureEngine(mode, interface=iface, strategy=strategy)
+
+    # Register a callback that passively learns hostnames from
+    # mDNS, NetBIOS-NS, and DNS response packets so the hostname
+    # resolver can display them without active probing.
+    engine.on_packet(_passive_hostname_callback)
+
+    # Register interface-lost callback so the InterfaceManager
+    # immediately re-detects when the capture interface disappears
+    # (e.g. hotspot turned off → virtual adapter gone).
+    engine.on_interface_lost(_on_interface_lost)
+
+    return engine
+
+
+def _on_interface_lost():
+    """Callback fired by CaptureEngine when the interface vanishes.
+
+    Forces the InterfaceManager to skip the stability threshold and
+    immediately switch to the best available mode.
+
+    **Important:** This callback is invoked *from* the capture thread.
+    The mode-change handler will try to ``stop()`` the old capture
+    engine, which calls ``join()`` on that same capture thread —
+    creating a deadlock.  We therefore dispatch the re-detection to
+    a short-lived background thread so the capture thread can exit.
+    """
+    logger = _logger or logging.getLogger(__name__)
+    logger.warning("Capture interface lost — triggering immediate mode re-detection")
+    if _interface_manager:
+        def _redetect():
+            try:
+                _interface_manager.notify_interface_lost()
+            except Exception as e:
+                logger.error("Error during interface-lost re-detection: %s", e)
+
+        t = threading.Thread(target=_redetect, name="InterfaceLost-Redetect", daemon=True)
+        t.start()
+
+
+def _passive_hostname_callback(pkt_data):
+    """
+    Extract hostnames from mDNS, NetBIOS-NS, DNS, DHCP, and SSDP packets
+    and feed them to the hostname resolver's passive cache.
+
+    Also enqueues devices without known hostnames for background resolution.
+    """
+    try:
+        proto = (pkt_data.protocol or "").upper()
+        if proto in ("MDNS", "NETBIOS-NS", "LLMNR", "DNS", "DHCP", "SSDP"):
+            # For mDNS/LLMNR/NetBIOS/DHCP/SSDP: the device_name field may carry the hostname
+            if pkt_data.device_name:
+                ip = pkt_data.source_ip
+                if ip:
+                    _learn_hostname(ip, pkt_data.device_name)
+        else:
+            # For any other protocol: enqueue the source device for
+            # background resolution if we haven't resolved it yet
+            ip = pkt_data.source_ip
+            mac = pkt_data.source_mac
+            if ip and mac:
+                _enqueue_resolution(ip, mac)
+    except Exception:
+        pass  # Never fail the capture pipeline
+
+
+def _resolve_gateway_mac(gateway_ip: str) -> str:
+    """Look up the MAC address corresponding to a gateway IP.
+
+    Tries:
+    1. The ``devices`` table (gateway already discovered via ARP/traffic).
+    2. Platform ARP table (``arp -a`` / ``ip neigh``).
+
+    Returns an empty string when resolution fails — callers treat that as
+    "unknown gateway MAC" and simply don't tag the gateway.
+    """
+    if not gateway_ip:
+        return ""
+
+    # 1. Check the devices table
+    try:
+        from database.connection import get_connection
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT mac_address FROM devices "
+                "WHERE ipv4_address = ? OR ip_address = ? LIMIT 1",
+                (gateway_ip, gateway_ip),
+            )
+            row = cur.fetchone()
+            if row:
+                mac = row["mac_address"] if isinstance(row, dict) else row[0]
+                if mac and mac.lower() not in ("", "ff:ff:ff:ff:ff:ff", "00:00:00:00:00:00"):
+                    return mac.lower()
+    except Exception:
+        pass
+
+    # 2. Parse platform ARP table
+    try:
+        import subprocess, re, sys as _sys
+        if _sys.platform == "win32":
+            out = subprocess.check_output(
+                ["arp", "-a", gateway_ip],
+                text=True, timeout=3,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        else:
+            out = subprocess.check_output(
+                ["arp", "-n", gateway_ip], text=True, timeout=3,
+            )
+        mac_re = re.search(r"([\da-fA-F]{2}[:-]){5}[\da-fA-F]{2}", out)
+        if mac_re:
+            return mac_re.group(0).replace("-", ":").lower()
+    except Exception:
+        pass
+
+    return ""
 
 
 def _on_mode_change(old_mode, new_mode):
@@ -259,8 +430,15 @@ def _on_mode_change(old_mode, new_mode):
 
 
 def _on_mode_change_locked(old_mode, new_mode, logger):
-    """Inner implementation — must be called while holding *_engine_lock*."""
-    global _capture_engine
+    """Inner implementation — must be called while holding *_engine_lock*.
+
+    Phase 5: Acquires ``_mode_transition_lock`` during the critical window
+    between ``reset_subnet_cache()`` and the new engine being ready.  The
+    ``DatabaseWriter`` / ``_flush_processed_batch`` checks this lock and
+    re-queues (skips) DB writes while it is held, eliminating the race
+    where packets are written against the wrong subnet.
+    """
+    global _capture_engine, _cached_discovery
     old_name = old_mode.get_mode_name().value if old_mode else 'None'
     new_name = new_mode.get_mode_name().value
 
@@ -292,68 +470,161 @@ def _on_mode_change_locked(old_mode, new_mode, logger):
                 logger.error("Error stopping capture engine: %s", e)
         _capture_engine = None
         _expose_engine_to_routes()
+        # Send SSE event so frontend shows disconnected state
+        _send_mode_changed_sse(new_name, is_disconnected=True)
         return
 
-    # Update subnet cache and mode for device filtering
+    # ── Phase 5: acquire mode-transition lock ────────────────────────
+    # While this lock is held the DatabaseWriter skips writes so no
+    # packets are committed against the stale subnet.
+    _mode_transition_lock.acquire()
     try:
-        from database.queries.device_queries import (
-            set_subnet_from_ip, set_current_mode, reset_subnet_cache,
-            set_gateway_ip, set_capture_interface, deactivate_stale_devices,
-        )
-        # Reset first so _detect_subnet() picks up the new interface
-        reset_subnet_cache()
-        if new_mode.interface.name:
-            set_capture_interface(new_mode.interface.name)
-        if new_mode.interface.ip_address:
-            set_subnet_from_ip(new_mode.interface.ip_address)
-            # Deactivate devices from the old subnet so they stop
-            # appearing as "active" in the dashboard (fixes ghost devices).
-            new_parts = new_mode.interface.ip_address.split('.')
-            if len(new_parts) == 4:
-                new_prefix = f"{new_parts[0]}.{new_parts[1]}.{new_parts[2]}"
-                deactivate_stale_devices(new_prefix)
-        # Pass gateway IP from mode detector — avoids re-parsing ipconfig
-        gw = getattr(new_mode.interface, "gateway", None)
-        set_gateway_ip(gw or "")
-        set_current_mode(new_name)
-        logger.info(
-            "Device discovery updated for mode '%s' on %s (gw=%s)",
-            new_name, new_mode.interface.ip_address, gw,
-        )
-    except Exception as e:
-        logger.warning("Could not update subnet for new mode: %s", e)
+        # ── Phase 5: full state reset ────────────────────────────────
+        # 1. Clear BandwidthCalculator on the old engine
+        if _capture_engine and hasattr(_capture_engine, 'bandwidth'):
+            try:
+                bw = _capture_engine.bandwidth
+                with bw._lock:
+                    bw._records.clear()
+                    bw._packet_count = 0
+            except Exception:
+                pass
 
-    # Stop the old engine
-    if _capture_engine and _capture_engine.is_running:
+        # 2. Clear InMemoryDashboardState
         try:
-            _capture_engine.stop()
-        except Exception as e:
-            logger.error("Error stopping old capture engine: %s", e)
-
-    # Wait briefly for the interface to be ready (avoids "interface not found" errors)
-    iface_name = new_mode.interface.name
-    for attempt in range(3):
-        try:
-            import psutil
-            if any(iface_name.lower() in name.lower() for name in psutil.net_if_addrs()):
-                break
-        except ImportError:
-            break  # psutil not available — skip check
+            from utils.realtime_state import dashboard_state
+            dashboard_state.clear()
         except Exception:
             pass
-        logger.debug("Waiting for interface '%s' to be ready (%d/3)…", iface_name, attempt + 1)
-        time.sleep(1)
 
-    # Start a new engine with the new mode
+        # 3. Invalidate SSE cache + clear all route-level TTL caches
+        try:
+            from backend.blueprints.bandwidth_bp import invalidate_sse_cache
+            invalidate_sse_cache()
+        except ImportError:
+            pass
+        try:
+            from backend.helpers import clear_response_cache
+            clear_response_cache()
+        except ImportError:
+            pass
+
+        # ── Phase 5: stop old NetworkDiscovery before creating new ──
+        with _cached_discovery_lock:
+            if _cached_discovery is not None:
+                try:
+                    _cached_discovery.stop_continuous_discovery()
+                    logger.debug("Old NetworkDiscovery stopped")
+                except Exception:
+                    pass
+                _cached_discovery = None
+
+        # Update subnet cache and mode for device filtering
+        try:
+            from database.queries.device_queries import (
+                set_subnet_from_ip, set_current_mode, reset_subnet_cache,
+                set_gateway_ip, set_capture_interface, scope_devices_to_mode,
+            )
+            # Reset first so _detect_subnet() picks up the new interface
+            reset_subnet_cache()
+            if new_mode.interface.name:
+                set_capture_interface(new_mode.interface.name)
+            if new_mode.interface.ip_address:
+                set_subnet_from_ip(new_mode.interface.ip_address)
+                # Scope devices to the new mode so only matching devices
+                # appear in the dashboard (fixes ghost / cross-mode devices).
+                new_parts = new_mode.interface.ip_address.split('.')
+                if len(new_parts) == 4:
+                    new_prefix = f"{new_parts[0]}.{new_parts[1]}.{new_parts[2]}"
+                    # Pass our MAC and gateway MAC so restrictive modes
+                    # (wifi_client, public_network) only tag self + gateway.
+                    our_mac = getattr(new_mode.interface, 'mac_address', None) or ''
+                    gw_mac = _resolve_gateway_mac(
+                        getattr(new_mode.interface, 'gateway', None) or ''
+                    )
+                    scope_devices_to_mode(
+                        new_name, new_prefix,
+                        our_mac=our_mac,
+                        gateway_mac=gw_mac,
+                    )
+            # Pass gateway IP from mode detector — avoids re-parsing ipconfig
+            gw = getattr(new_mode.interface, "gateway", None)
+            set_gateway_ip(gw or "")
+            set_current_mode(new_name)
+            logger.info(
+                "Device discovery updated for mode '%s' on %s (gw=%s)",
+                new_name, new_mode.interface.ip_address, gw,
+            )
+        except Exception as e:
+            logger.warning("Could not update subnet for new mode: %s", e)
+
+        # Register the new interface's MAC and IP as "known" so the alert
+        # engine does not fire a "new device" alert for our own machine
+        # when it appears on the new subnet/interface.
+        try:
+            from alerts import get_shared_engine as _get_shared_engine
+            ae = _get_shared_engine()
+            if ae:
+                new_mac = getattr(new_mode.interface, 'mac_address', None)
+                if new_mac:
+                    ae.add_known_mac(new_mac)
+                new_ip_addr = new_mode.interface.ip_address
+                if new_ip_addr:
+                    ae.add_known_ip(new_ip_addr)
+        except Exception:
+            pass
+
+        # Stop the old engine
+        if _capture_engine and _capture_engine.is_running:
+            try:
+                _capture_engine.stop()
+            except Exception as e:
+                logger.error("Error stopping old capture engine: %s", e)
+
+        # Wait briefly for the interface to be ready (avoids "interface not found" errors)
+        iface_name = new_mode.interface.name
+        for attempt in range(3):
+            try:
+                import psutil
+                if any(iface_name.lower() in name.lower() for name in psutil.net_if_addrs()):
+                    break
+            except ImportError:
+                break  # psutil not available — skip check
+            except Exception:
+                pass
+            logger.debug("Waiting for interface '%s' to be ready (%d/3)…", iface_name, attempt + 1)
+            time.sleep(1)
+
+        # Start a new engine with the new mode
+        try:
+            _capture_engine = _create_capture_engine(new_mode)
+            _capture_engine.start()
+            # Expose the new engine to Flask routes
+            _expose_engine_to_routes()
+            logger.info("Capture engine restarted for mode '%s' on interface '%s'",
+                        new_name, new_mode.interface.name)
+        except Exception as e:
+            logger.error("Failed to restart capture engine: %s", e)
+    finally:
+        _mode_transition_lock.release()
+
+    # Send mode_changed SSE event so the frontend can show transition indicator
+    _send_mode_changed_sse(new_name, is_disconnected=False)
+
+
+def _send_mode_changed_sse(mode_name, is_disconnected=False):
+    """Push a ``mode_changed`` SSE event to connected frontends."""
     try:
-        _capture_engine = _create_capture_engine(new_mode)
-        _capture_engine.start()
-        # Expose the new engine to Flask routes
-        _expose_engine_to_routes()
-        logger.info("Capture engine restarted for mode '%s' on interface '%s'",
-                    new_name, new_mode.interface.name)
-    except Exception as e:
-        logger.error("Failed to restart capture engine: %s", e)
+        import json
+        from backend.blueprints.bandwidth_bp import _sse_push_event
+        payload = json.dumps({
+            'event': 'mode_changed',
+            'mode': mode_name,
+            'disconnected': is_disconnected,
+        })
+        _sse_push_event(payload)
+    except Exception:
+        pass  # SSE push is best-effort
 
 
 def _expose_engine_to_routes():
@@ -430,8 +701,8 @@ def start_cleanup_task():
             try:
                 now = datetime.now()
 
-                # Hourly: rollup traffic data
-                if now - last_cleanup >= timedelta(hours=1):
+                # Every 15 minutes: rollup traffic data (Phase 4: increased frequency)
+                if now - last_cleanup >= timedelta(minutes=15):
                     # Aggregate raw traffic into hourly rollup, keep last 24h raw
                     try:
                         result = rollup_traffic(raw_retention_hours=24)
@@ -508,10 +779,139 @@ def start_discovery_task():
     """Periodically run NetworkDiscovery.scan() and upsert device names into DB."""
     global _discovery_thread
 
+    def _upsert_devices(devices, current_mode_name):
+        """Upsert discovered devices into the devices table.
+
+        Filters out our own machine's IP before alerting so we don't
+        create a spurious "new device" alert for ourselves when the
+        capture interface changes (e.g. Wi-Fi → hotspot).
+
+        Also enqueues newly-discovered devices for background hostname
+        resolution so hostnames are resolved without waiting for the
+        next API request.
+        """
+        if not devices:
+            return
+
+        # Determine our own IP so we can skip alerting for it
+        own_ip = None
+        if _interface_manager:
+            try:
+                cur_mode = _interface_manager.get_current_mode()
+                if cur_mode:
+                    own_ip = cur_mode.interface.ip_address
+            except Exception:
+                pass
+
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            for dev in devices:
+                hostname = dev.get('hostname') or ''
+                mac = dev.get('mac', '')
+                ip = dev.get('ip', '')
+                vendor = dev.get('vendor', '')
+
+                # Security: alert on new/unknown devices
+                # Skip alerting for our own device (IP match)
+                if _detector and hasattr(_detector, 'alert_engine'):
+                    if ip and ip != own_ip:
+                        try:
+                            _detector.alert_engine.check_new_device(
+                                mac=mac, ip=ip,
+                                hostname=hostname,
+                                vendor=vendor,
+                                mode_name=current_mode_name,
+                            )
+                        except Exception:
+                            pass
+
+                if hostname and ip:
+                    cursor.execute("""
+                        UPDATE devices
+                        SET hostname = CASE WHEN (hostname IS NULL OR hostname = '' OR hostname = ip_address) THEN ? ELSE hostname END,
+                            vendor = CASE WHEN (vendor IS NULL OR vendor = '') THEN ? ELSE vendor END,
+                            last_seen = datetime('now')
+                        WHERE ip_address = ? OR mac_address = ?
+                    """, (hostname, vendor, ip, mac))
+
+                # ARP-based hostname learning: enqueue every discovered
+                # device for background hostname resolution immediately
+                # instead of waiting for the next API request.
+                if ip:
+                    _enqueue_resolution(ip, mac or None)
+            conn.commit()
+
+    def _upsert_arp_cache_devices(devices, current_mode_name):
+        """Upsert ARP-cache-discovered devices with active_mode=NULL.
+
+        These devices are visible on the Devices page (detected_mode is set)
+        but do NOT count as "active" for the dashboard card because
+        active_mode stays NULL — only traffic-producing devices get
+        active_mode set via ``save_packet()``.
+        """
+        if not devices:
+            return
+
+        own_ip = None
+        if _interface_manager:
+            try:
+                cur_mode = _interface_manager.get_current_mode()
+                if cur_mode:
+                    own_ip = cur_mode.interface.ip_address
+            except Exception:
+                pass
+
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            for dev in devices:
+                hostname = dev.get('hostname') or ''
+                mac = dev.get('mac', '')
+                ip = dev.get('ip', '')
+                vendor = dev.get('vendor', '')
+
+                if not mac or mac in ('FF:FF:FF:FF:FF:FF', '00:00:00:00:00:00'):
+                    continue
+
+                # Skip our own device
+                if ip and ip == own_ip:
+                    continue
+
+                # INSERT with detected_mode set, active_mode=NULL.
+                # ON CONFLICT: only update fields that are still empty
+                # and refresh last_seen.  Never overwrite active_mode
+                # if it was already set by traffic capture.
+                cursor.execute("""
+                    INSERT INTO devices
+                        (mac_address, ip_address, ipv4_address,
+                         hostname, vendor,
+                         first_seen, last_seen,
+                         detected_mode, active_mode)
+                    VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'),
+                            ?, NULL)
+                    ON CONFLICT(mac_address) DO UPDATE SET
+                        ip_address   = COALESCE(NULLIF(ip_address, ''), excluded.ip_address),
+                        ipv4_address = COALESCE(NULLIF(ipv4_address, ''), excluded.ipv4_address),
+                        hostname     = CASE
+                            WHEN (hostname IS NULL OR hostname = '' OR hostname = ip_address)
+                            THEN COALESCE(NULLIF(excluded.hostname, ''), hostname)
+                            ELSE hostname END,
+                        vendor       = CASE
+                            WHEN (vendor IS NULL OR vendor = '')
+                            THEN COALESCE(NULLIF(excluded.vendor, ''), vendor)
+                            ELSE vendor END,
+                        last_seen    = datetime('now'),
+                        detected_mode = COALESCE(detected_mode, excluded.detected_mode)
+                """, (mac, ip, ip, hostname, vendor, current_mode_name))
+
+                if ip:
+                    _enqueue_resolution(ip, mac or None)
+            conn.commit()
+
     def discovery_loop():
-        _cached_discovery = None     # reuse across iterations
+        global _cached_discovery
         _cached_iface = None
         _cached_network = None
+        _iteration = 0               # counter for periodic ping sweep
 
         while not shutdown_event.is_set():
             try:
@@ -520,6 +920,90 @@ def start_discovery_task():
                     mode = _interface_manager.get_current_mode()
                     iface_name = mode.interface.name if mode else None
                     ip_addr = mode.interface.ip_address if mode else None
+
+                    # ── Mode-aware discovery gating ──────────────────────
+                    # In wifi_client / public_network modes we must NOT
+                    # probe or scan the network — only our own traffic is
+                    # relevant.  However, if the mode allows ARP cache
+                    # scanning (passive, no packets sent), we can still
+                    # discover neighbours from the OS ARP table.
+                    can_arp = mode.capabilities.can_arp_scan if mode else False
+                    can_passive = mode.capabilities.can_do_passive_discovery if mode else False
+                    can_arp_cache = mode.capabilities.can_arp_cache_scan if mode else False
+
+                    if not can_arp and not can_passive and not can_arp_cache:
+                        # Nothing to discover in this mode — sleep and retry
+                        # Phase 5: stop any running discovery thread
+                        with _cached_discovery_lock:
+                            if _cached_discovery is not None:
+                                try:
+                                    _cached_discovery.stop_continuous_discovery()
+                                except Exception:
+                                    pass
+                                _cached_discovery = None
+                                _cached_iface = None
+                                _cached_network = None
+                        shutdown_event.wait(60)
+                        continue
+
+                    # ── ARP-cache-only path (wifi_client / public_network) ─
+                    # When active scanning is disabled but ARP cache is
+                    # allowed, read the OS ARP table every 30 seconds.
+                    # Devices found this way get detected_mode set but
+                    # active_mode=NULL so they appear on the Devices page
+                    # without inflating the "Active Devices" dashboard count.
+                    if not can_arp and not can_passive and can_arp_cache:
+                        if iface_name and ip_addr:
+                            try:
+                                prefix_len = 24
+                                try:
+                                    import netifaces
+                                    addrs = netifaces.ifaddresses(iface_name)
+                                    ipv4_list = addrs.get(netifaces.AF_INET, [])
+                                    for entry in ipv4_list:
+                                        if entry.get('addr') == ip_addr:
+                                            netmask = entry.get('netmask', '255.255.255.0')
+                                            prefix_len = ipaddress.IPv4Network(f"0.0.0.0/{netmask}").prefixlen
+                                            break
+                                except Exception:
+                                    pass
+                                network = str(ipaddress.IPv4Network(f"{ip_addr}/{prefix_len}", strict=False))
+
+                                # Ensure a NetworkDiscovery instance exists
+                                need_new = (
+                                    _cached_discovery is None
+                                    or iface_name != _cached_iface
+                                    or network != _cached_network
+                                )
+                                if need_new:
+                                    with _cached_discovery_lock:
+                                        if _cached_discovery is not None:
+                                            try:
+                                                _cached_discovery.stop_continuous_discovery()
+                                            except Exception:
+                                                pass
+                                        _cached_discovery = NetworkDiscovery(interface=iface_name, subnet=network)
+                                    _cached_iface = iface_name
+                                    _cached_network = network
+
+                                current_mode_name = mode.get_mode_name().value if mode else ""
+                                # Phase D: use local-copy pattern to avoid race
+                                with _cached_discovery_lock:
+                                    disc = _cached_discovery
+                                if disc is not None:
+                                    cache_devices = disc.arp_cache_scan()
+                                    _upsert_arp_cache_devices(cache_devices, current_mode_name)
+                                else:
+                                    cache_devices = []
+                                _logger.debug(
+                                    "ARP cache scan (%s): %d device(s) found",
+                                    current_mode_name, len(cache_devices),
+                                )
+                            except Exception as e:
+                                _logger.debug("ARP cache discovery error: %s", e)
+                        # 30-second interval for passive cache scanning
+                        shutdown_event.wait(30)
+                        continue
 
                     if iface_name and ip_addr:
                         try:
@@ -546,54 +1030,69 @@ def start_discovery_task():
                                 or network != _cached_network
                             )
                             if need_new:
-                                if _cached_discovery is not None:
-                                    _logger.info(
-                                        "Interface/subnet changed (%s/%s → %s/%s) — creating new NetworkDiscovery",
-                                        _cached_iface, _cached_network, iface_name, network,
-                                    )
-                                _cached_discovery = NetworkDiscovery(interface=iface_name, subnet=network)
+                                # Phase 5: stop old discovery before creating new
+                                with _cached_discovery_lock:
+                                    if _cached_discovery is not None:
+                                        _logger.info(
+                                            "Interface/subnet changed (%s/%s → %s/%s) — creating new NetworkDiscovery",
+                                            _cached_iface, _cached_network, iface_name, network,
+                                        )
+                                        try:
+                                            _cached_discovery.stop_continuous_discovery()
+                                        except Exception:
+                                            pass
+                                    _cached_discovery = NetworkDiscovery(interface=iface_name, subnet=network)
                                 _cached_iface = iface_name
                                 _cached_network = network
+                                _iteration = 0  # reset on interface change
 
                             # Always call scan() on the EXISTING instance
-                            discovery = _cached_discovery
-                            devices = discovery.arp_scan(timeout=3)
-
-                            # Get current mode name for security alerting
+                            # Phase D: use local-copy pattern with lock
+                            with _cached_discovery_lock:
+                                discovery = _cached_discovery
+                            if discovery is None:
+                                shutdown_event.wait(10)
+                                continue
                             current_mode_name = mode.get_mode_name().value if mode else ""
 
-                            # Upsert discovered hostnames into the devices table
-                            if devices:
-                                with get_connection() as conn:
-                                    cursor = conn.cursor()
-                                    for dev in devices:
-                                        hostname = dev.get('hostname') or ''
-                                        mac = dev.get('mac', '')
-                                        ip = dev.get('ip', '')
-                                        vendor = dev.get('vendor', '')
+                            # 1. ARP scan (primary — fast, L2)
+                            devices = discovery.arp_scan(timeout=3)
+                            _upsert_devices(devices, current_mode_name)
 
-                                        # Security: alert on new/unknown devices
-                                        if _detector and hasattr(_detector, 'alert_engine'):
-                                            try:
-                                                _detector.alert_engine.check_new_device(
-                                                    mac=mac, ip=ip,
-                                                    hostname=hostname,
-                                                    vendor=vendor,
-                                                    mode_name=current_mode_name,
-                                                )
-                                            except Exception:
-                                                pass
+                            # 2. ARP cache scan (supplement — catches devices
+                            #    that don't respond to our ARP broadcast, e.g.
+                            #    on WiFi hotspots with client isolation)
+                            try:
+                                cache_devices = discovery.arp_cache_scan()
+                                _upsert_devices(cache_devices, current_mode_name)
+                            except Exception:
+                                pass
 
-                                        if hostname and ip:
-                                            cursor.execute("""
-                                                UPDATE devices
-                                                SET hostname = CASE WHEN (hostname IS NULL OR hostname = '' OR hostname = ip_address) THEN ? ELSE hostname END,
-                                                    vendor = CASE WHEN (vendor IS NULL OR vendor = '') THEN ? ELSE vendor END,
-                                                    last_seen = datetime('now')
-                                                WHERE ip_address = ? OR mac_address = ?
-                                            """, (hostname, vendor, ip, mac))
-                                    conn.commit()
-                                _logger.debug("Discovery scan: upserted %d device(s)", len(devices))
+                            # 3. Ping sweep — run on first iteration and then
+                            #    every 5th cycle (~5 min) to find devices behind
+                            #    L2 client isolation on mobile hotspots.  Ping is
+                            #    routed at L3 so the hotspot will forward it.
+                            if _iteration == 0 or _iteration % 5 == 0:
+                                try:
+                                    ping_devices = discovery.ping_sweep(
+                                        max_workers=20,
+                                    )
+                                    _upsert_devices(ping_devices, current_mode_name)
+                                    # Re-check ARP cache after pinging — new
+                                    # entries may have been created by the OS
+                                    if ping_devices:
+                                        try:
+                                            cache2 = discovery.arp_cache_scan()
+                                            _upsert_devices(cache2, current_mode_name)
+                                        except Exception:
+                                            pass
+                                except Exception as e:
+                                    _logger.debug("Ping sweep error: %s", e)
+
+                            _iteration += 1
+
+                            total = len(discovery.get_all_devices()) if hasattr(discovery, 'get_all_devices') else len(devices)
+                            _logger.debug("Discovery scan: %d device(s) known", total)
                         except ImportError:
                             pass
                         except Exception as e:
@@ -628,20 +1127,59 @@ def start_health_monitor(alert_engine: AlertEngine):
         return False
 
 
+# ---------------------------------------------------------------------------
+# Thread watchdog — detects silently dead daemon threads
+# ---------------------------------------------------------------------------
+
+_WATCHED_THREAD_NAMES = [
+    "CaptureThread",
+    "AnomalyDetector",
+    "HealthMonitor",
+    "DiscoveryTask",
+    "CleanupTask",
+    "BackgroundResolver",
+]
+
+
+def _thread_watchdog():
+    """Periodically check that critical daemon threads are alive.
+
+    Runs every 30 s.  If a watched thread has disappeared, logs a
+    warning so operators can detect silent crashes.
+    """
+    logger = _logger or logging.getLogger(__name__)
+    while not shutdown_event.is_set():
+        alive_names = {t.name for t in threading.enumerate() if t.is_alive()}
+        for name in _WATCHED_THREAD_NAMES:
+            if name not in alive_names:
+                logger.warning(
+                    "Thread watchdog: '%s' is not alive — it may have crashed silently",
+                    name,
+                )
+        shutdown_event.wait(30)
+
+
+def start_thread_watchdog():
+    """Start the thread watchdog in a daemon thread."""
+    t = threading.Thread(target=_thread_watchdog, daemon=True, name="ThreadWatchdog")
+    t.start()
+    return True
+
+
 def print_banner():
     """Print the NetWatch startup banner."""
     print(f"""
-    ╔════════════════════════════════════════════════════════════════════════╗
-    ║                                                                        ║
-    ║  ███╗   ██╗███████╗████████╗██╗    ██╗ █████╗ ████████╗ ██████╗██╗  ██╗║
-    ║  ████╗  ██║██╔════╝╚══██╔══╝██║    ██║██╔══██╗╚══██╔══╝██╔════╝██║  ██║║
-    ║  ██╔██╗ ██║█████╗     ██║   ██║ █╗ ██║███████║   ██║   ██║     ███████║║
-    ║  ██║╚██╗██║██╔══╝     ██║   ██║███╗██║██╔══██║   ██║   ██║     ██╔══██║║
-    ║  ██║ ╚████║███████╗   ██║   ╚███╔███╔╝██║  ██║   ██║   ╚██████╗██║  ██║║
-    ║  ╚═╝  ╚═══╝╚══════╝   ╚═╝    ╚══╝╚══╝ ╚═╝  ╚═╝   ╚═╝    ╚═════╝╚═╝  ╚═╝║
-    ║                                                                        ║
-    ║   v{APP_VERSION}  |  {APP_ENV}                                               ║
-    ╚════════════════════════════════════════════════════════════════════════╝
+    ╔══════════════════════════════════════════════════════════════════════════╗
+    ║                                                                          ║
+    ║  ███╗   ██╗███████╗████████╗██╗    ██╗ █████╗ ████████╗ ██████╗██╗  ██╗  ║
+    ║  ████╗  ██║██╔════╝╚══██╔══╝██║    ██║██╔══██╗╚══██╔══╝██╔════╝██║  ██║  ║
+    ║  ██╔██╗ ██║█████╗     ██║   ██║ █╗ ██║███████║   ██║   ██║     ███████║  ║
+    ║  ██║╚██╗██║██╔══╝     ██║   ██║███╗██║██╔══██║   ██║   ██║     ██╔══██║  ║
+    ║  ██║ ╚████║███████╗   ██║   ╚███╔███╔╝██║  ██║   ██║   ╚██████╗██║  ██║  ║
+    ║  ╚═╝  ╚═══╝╚══════╝   ╚═╝    ╚══╝╚══╝ ╚═╝  ╚═╝   ╚═╝    ╚═════╝╚═╝  ╚═╝  ║
+    ║                                                                          ║
+    ║   v{APP_VERSION}  |  {APP_ENV}                                                  ║
+    ╚══════════════════════════════════════════════════════════════════════════╝
     """)
 
 
@@ -742,6 +1280,13 @@ def main():
     # Register our own MAC as known so it won't trigger security alerts
     if '_own_mac' in dir() and _own_mac:  # noqa: F821 – set earlier in capture block
         alert_engine.add_known_mac(_own_mac)
+    # Also register our own IP so discovery won't alert on self
+    try:
+        mode = _interface_manager.get_current_mode() if _interface_manager else None
+        if mode and mode.interface.ip_address:
+            alert_engine.add_known_ip(mode.interface.ip_address)
+    except Exception:
+        pass
 
     # Wire the shared engine into the alerts package for backward-compat shims
     set_shared_engine(alert_engine)
@@ -756,6 +1301,10 @@ def main():
     if health_started:
         logger.info("System health monitor started")
 
+    # Start thread watchdog (detect silently dead daemon threads)
+    start_thread_watchdog()
+    logger.info("Thread watchdog started")
+
     # Start periodic cleanup
     start_cleanup_task()
     logger.info("Periodic cleanup task started (daily at 3 AM)")
@@ -763,6 +1312,17 @@ def main():
     # Start periodic device discovery (ARP + hostname resolution)
     if capture_started:
         start_discovery_task()
+
+    # Start background hostname resolver and mDNS browser
+    # (runs independently, periodically resolving devices with hostname IS NULL)
+    try:
+        _start_bg_resolver()
+        logger.info("Background hostname resolver started")
+        if capture_started:
+            _start_mdns_browser()
+            logger.info("mDNS browser started for proactive device discovery")
+    except Exception as e:
+        logger.warning("Could not start background hostname resolver: %s", e)
 
     # Start Flask server
     host = args.host or FLASK_HOST
@@ -819,6 +1379,14 @@ def main():
     finally:
         shutdown_event.set()
         shutdown()
+
+
+# ── atexit guard (Phase D) ─────────────────────────────────────────
+# Ensures shutdown() runs exactly once regardless of how the process
+# exits (signal, exception, normal return).  The _shutdown_lock inside
+# shutdown() prevents duplicate work if the finally block already ran.
+import atexit
+atexit.register(shutdown)
 
 
 if __name__ == "__main__":

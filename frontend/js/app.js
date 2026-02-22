@@ -129,6 +129,20 @@ class App {
         if (this._timerId) { clearTimeout(this._timerId); this._timerId = null; }
       };
 
+      // Phase 5: listen for named 'mode_changed' events from backend
+      this._sse.addEventListener('mode_changed', (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (data.disconnected) {
+            showToast('Network disconnected', 'warning');
+          } else {
+            showToast(`Switching to ${data.mode || 'new'} mode…`, 'info');
+          }
+          // Dispatch so Sidebar shows transition indicator
+          window.dispatchEvent(new CustomEvent('netwatch:mode_transition', { detail: data }));
+        } catch (_) { /* ignore */ }
+      });
+
       this._sse.onmessage = (e) => {
         try {
           const data = JSON.parse(e.data);
@@ -167,9 +181,12 @@ class App {
               : null;
 
             if (dbHistory && liveHistory) {
-              // Merge: DB points + live tail (de-dup by timestamp)
-              const lastDbTs = dbHistory[dbHistory.length - 1].timestamp || '';
-              const newLive = liveHistory.filter(p => (p.timestamp || '') > lastDbTs);
+              // Merge: DB points + live tail (numeric timestamp comparison)
+              const lastDbTime = new Date(dbHistory[dbHistory.length - 1].timestamp).getTime();
+              const newLive = liveHistory.filter(p => new Date(p.timestamp).getTime() > lastDbTime);
+
+              // Clean concatenation — the rounded cutoff on the server ensures
+              // DB and live data meet without a gap, so no synthetic bridge needed.
               const merged = [...dbHistory, ...newLive].slice(-360);
               store.setState('bandwidth', { history: merged });
             } else if (dbHistory) {

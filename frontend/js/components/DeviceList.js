@@ -23,6 +23,7 @@ export default class DeviceList {
     this._isEditing = false;   // guard: skip re-render while editing
     this._editingIp = null;    // IP of device currently being edited
     this._openModal = null;    // track currently open DeviceDetail modal (#48)
+    this._modeData = null;     // current mode capabilities from store
   }
 
   render() {
@@ -37,6 +38,11 @@ export default class DeviceList {
                  placeholder="Search by IP, MAC, or hostname…" type="text" />
         </div>
         <span class="device-count" id="device-count">— devices</span>
+      </div>
+
+      <div id="device-discovery-banner" class="discovery-banner" style="display:none">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <span id="device-discovery-banner-text">Device discovery is not available in this mode. Only your own traffic is monitored.</span>
       </div>
 
       <div class="chart-card">
@@ -61,6 +67,34 @@ export default class DeviceList {
       if (!this._isEditing) {
         this._renderRows();
       }
+    }));
+
+    // Phase 5 + Phase B: show/hide discovery banner based on mode capabilities
+    this._unsubs.push(store.subscribe('mode', data => {
+      this._modeData = data || null;
+      const banner = this.container.querySelector('#device-discovery-banner');
+      const bannerText = this.container.querySelector('#device-discovery-banner-text');
+      if (banner && data) {
+        const canArp = data.can_arp_scan;
+        const canArpCache = data.can_arp_cache_scan;
+        if (canArp === false && canArpCache) {
+          // ARP cache scanning enabled — show informational banner
+          banner.style.display = '';
+          if (bannerText) {
+            bannerText.textContent = 'Showing devices from network ARP cache. Only your own traffic is monitored.';
+          }
+        } else if (canArp === false) {
+          // No discovery at all
+          banner.style.display = '';
+          if (bannerText) {
+            bannerText.textContent = 'Device discovery is not available in this mode. Only your own traffic is monitored.';
+          }
+        } else {
+          banner.style.display = 'none';
+        }
+      }
+      // Re-render rows to update ARP-only styling
+      if (!this._isEditing) this._renderRows();
     }));
   }
 
@@ -226,7 +260,7 @@ export default class DeviceList {
         div.dataset.ip = ip;
         div.dataset.mac = d.mac_address || '';
         div.innerHTML = `
-          <div class="device-row__ip">${escapeHtml(ip)}</div>
+          <div class="device-row__ip">${this._statusDot(d)}${escapeHtml(ip)}</div>
           <div class="device-row__mac">${escapeHtml(d.mac_address || '—')}</div>
           <div class="device-row__hostname">
             <span class="hostname-text">${escapeHtml(d.hostname || d.ip_address)}</span>
@@ -236,6 +270,13 @@ export default class DeviceList {
           <div class="device-row__seen">${formatRelativeTime(d.last_seen)}</div>
         `;
         fragment.appendChild(div);
+      }
+
+      // Apply ARP-only styling (dimmed) for devices with no traffic
+      const rowEl = fragment.lastElementChild || row;
+      if (rowEl) {
+        const isArpOnly = this._isArpOnlyDevice(d);
+        rowEl.classList.toggle('device-row--arp-only', isArpOnly);
       }
     }
 
@@ -247,6 +288,38 @@ export default class DeviceList {
     // Replace contents in correct sorted order
     rowsEl.textContent = '';
     rowsEl.appendChild(fragment);
+  }
+
+  /* ── ARP-only device helpers ─────────────── */
+
+  /**
+   * Returns true when a device was discovered via ARP cache only
+   * (no traffic recorded).  We check: total_bytes === 0 and the mode
+   * is wifi_client or public_network (i.e. can_arp_scan is false).
+   */
+  _isArpOnlyDevice(d) {
+    const hasTraffic = (d.total_bytes || 0) > 0
+                    || (d.total_bytes_sent || 0) > 0
+                    || (d.total_bytes_received || 0) > 0;
+    if (hasTraffic) return false;
+    // In modes with full discovery, zero-traffic devices are still
+    // actively scanned — only flag them in ARP-cache-only modes.
+    const mode = this._modeData;
+    if (mode && mode.can_arp_scan === false && mode.can_arp_cache_scan) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Render a small status dot before the IP address.
+   * Green = traffic-active, grey = ARP-only (no traffic observed).
+   */
+  _statusDot(d) {
+    const isArpOnly = this._isArpOnlyDevice(d);
+    const color = isArpOnly ? 'var(--text-muted,#666)' : 'var(--success,#4caf50)';
+    const title = isArpOnly ? 'ARP cache only — no traffic observed' : 'Traffic active';
+    return `<span class="device-status-dot" title="${title}" style="background:${color}"></span>`;
   }
 
   /* ── Inline hostname edit ────────────────── */

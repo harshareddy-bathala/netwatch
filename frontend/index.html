@@ -28,16 +28,11 @@
   <script type="module" src="js/app.js"></script>
 
   <!-- Apply saved theme before first paint -->
-  <script>
-    (function() {
-      var t = localStorage.getItem('netwatch-theme') || 'dark';
-      document.documentElement.setAttribute('data-theme', t);
-    })();
-  </script>
+  <script src="js/theme-init.js"></script>
 </head>
 <body>
   <noscript>
-    <div style="padding:2rem;text-align:center;font-family:system-ui,sans-serif">
+    <div class="noscript-message">
       <h1>JavaScript Required</h1>
       <p>NetWatch requires JavaScript to be enabled in your browser.</p>
     </div>

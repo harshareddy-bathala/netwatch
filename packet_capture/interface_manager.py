@@ -189,10 +189,44 @@ class InterfaceManager:
             self._callbacks = [cb for cb in self._callbacks if cb is not callback]
 
     def refresh_now(self) -> BaseMode:
-        """Force an immediate re-detection and return the new mode."""
-        self._do_detect()
+        """Force an immediate re-detection and return the new mode.
+
+        Phase 5: Bypasses the stability threshold so that user-initiated
+        refreshes (via ``/api/interface/refresh``) take effect immediately
+        instead of requiring 2 consecutive matching detections.
+        """
+        with self._lock:
+            saved_threshold = self._stability_threshold
+            self._stability_threshold = 1
+            self._pending_mode = None
+            self._pending_count = 0
+        try:
+            self._do_detect()
+        finally:
+            with self._lock:
+                self._stability_threshold = saved_threshold
         with self._lock:
             return self._current_mode  # type: ignore[return-value]
+
+    def notify_interface_lost(self) -> None:
+        """Called when the capture engine detects its interface has disappeared.
+
+        Resets any pending stability counter and forces an immediate
+        re-detection that bypasses the stability threshold, so the system
+        switches to the correct mode without delay.
+        """
+        logger.info("Interface lost notification — forcing immediate re-detection")
+        with self._lock:
+            self._pending_mode = None
+            self._pending_count = 0
+            # Temporarily set threshold to 1 so the FIRST detection is accepted
+            saved_threshold = self._stability_threshold
+            self._stability_threshold = 1
+        try:
+            self._do_detect()
+        finally:
+            with self._lock:
+                self._stability_threshold = saved_threshold
 
     @property
     def is_monitoring(self) -> bool:

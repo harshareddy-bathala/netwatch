@@ -167,22 +167,34 @@ sudo systemctl status netwatch
 sudo journalctl -u netwatch -f
 ```
 
-### Windows (as a Service)
+### Windows (as a Service via NSSM)
 
 Using NSSM (Non-Sucking Service Manager):
 
 ```powershell
-# Download NSSM from https://nssm.cc
-nssm install NetWatch "C:\Program Files\NetWatch\NetWatch.exe"
-nssm set NetWatch AppDirectory "C:\Program Files\NetWatch"
-nssm set NetWatch AppEnvironmentExtra "NETWATCH_ENV=production"
+# Install NSSM from https://nssm.cc and add to PATH
+
+# Automated install — generates SECRET_KEY, configures log rotation
+.\deploy\install-windows-service.ps1 -InstallDir C:\NetWatch -Port 5000
+
+# Or manual NSSM commands:
+nssm install NetWatch "C:\NetWatch\venv\Scripts\python.exe" "C:\NetWatch\main.py"
+nssm set NetWatch AppDirectory "C:\NetWatch"
+nssm set NetWatch AppEnvironmentExtra "NETWATCH_ENV=production" "SECRET_KEY=<random>"
+nssm set NetWatch AppRotateFiles 1
+nssm set NetWatch AppRotateBytes 52428800
+
 nssm start NetWatch
+nssm status NetWatch
 ```
 
-Or using Task Scheduler:
-```powershell
-schtasks /create /tn "NetWatch" /tr "python C:\netwatch\main.py" /sc onstart /ru SYSTEM /rl HIGHEST
-```
+**UAC / Npcap Note:** The Windows installer embeds a UAC manifest
+(`deploy/netwatch.exe.manifest`) that requests Administrator elevation.
+Npcap requires admin privileges for raw socket capture. If running
+from source, launch PowerShell as Administrator.
+
+**Windows Defender:** See [SECURITY.md](SECURITY.md#windows-defender-exclusions)
+for recommended exclusions to prevent false positives.
 
 ### macOS (launchd)
 
@@ -257,9 +269,13 @@ python main.py --port 5000
 ### Log Rotation
 
 Production mode automatically enables file-based logging with rotation:
-- Max file size: 10 MB
-- Keeps 10 backup files
-- Total max: ~110 MB
+- Max file size: 50 MB
+- Keeps 5 backup files
+- Total max: ~300 MB
+
+A thread watchdog runs every 30 seconds and logs warnings if any
+critical daemon thread (capture, anomaly detector, health monitor,
+discovery, cleanup, hostname resolver) has died silently.
 
 ---
 
@@ -364,17 +380,48 @@ rm -rf ~/.netwatch
 
 ## Security Hardening
 
+For comprehensive security documentation, see **[SECURITY.md](SECURITY.md)**.
+
 ### Production Checklist
 
 - [ ] Set `NETWATCH_ENV=production`
 - [ ] Set a strong `SECRET_KEY` environment variable
+- [ ] Set `NETWATCH_API_KEY` for API authentication
 - [ ] Flask debug mode is `OFF` (automatic in production)
 - [ ] Bind only to `127.0.0.1` (use reverse proxy for external access)
 - [ ] Set proper file permissions (`chmod 750` on database directory)
 - [ ] Configure firewall to allow only port 5000 from trusted IPs
 - [ ] Use HTTPS via reverse proxy (nginx/Apache)
+- [ ] Windows: add Defender exclusions (see [SECURITY.md](SECURITY.md#windows-defender-exclusions))
 
 ### Nginx Reverse Proxy
+
+A production-ready Nginx config is provided at
+[deploy/nginx.conf.example](../deploy/nginx.conf.example).
+
+Key features:
+- HTTPS with TLS 1.2+ and strong ciphers
+- HTTP → HTTPS redirect
+- SSE proxy with buffering disabled and 24h timeout
+- Static asset caching (30 days)
+- HSTS, X-Content-Type-Options, X-Frame-Options headers
+
+Quick setup:
+
+```bash
+# Copy config
+sudo cp deploy/nginx.conf.example /etc/nginx/sites-available/netwatch
+sudo ln -s /etc/nginx/sites-available/netwatch /etc/nginx/sites-enabled/
+
+# Edit server_name and SSL paths
+sudo nano /etc/nginx/sites-available/netwatch
+
+# Test and reload
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+### Minimal Nginx Example
 
 ```nginx
 server {
@@ -389,6 +436,15 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # SSE — disable buffering
+    location /api/stream {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 86400s;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 }

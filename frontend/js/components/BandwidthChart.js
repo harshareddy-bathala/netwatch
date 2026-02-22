@@ -76,8 +76,8 @@ export default class BandwidthChart {
       },
       options: {
         animation: {
-          duration: 750,
-          easing: 'easeOutQuart',
+          duration: 300,
+          easing: 'easeInOutQuart',
         },
         transitions: {
           active: {
@@ -167,18 +167,15 @@ export default class BandwidthChart {
 
     this.chart.data.labels = history.map(d => formatTimestamp(d.timestamp));
     this.chart.data.datasets[0].data = history.map(d => d.download_mbps ?? d.bytes_per_second ?? 0);
-    this.chart.data.datasets[1].data = history.map(d => d.upload_mbps ?? 0);
+    this.chart.data.datasets[1].data = history.map(d => d.upload_mbps ?? d.upload_bytes_per_second ?? 0);
 
     if (this._firstUpdate) {
       // Smooth initial draw
       this._firstUpdate = false;
       this.chart.update();
     } else {
-      // Smooth transition for real-time updates (300ms)
-      this.chart.update({
-        duration: 300,
-        easing: 'easeInOutQuart',
-      });
+      // Let chart-level animation config handle transitions
+      this.chart.update();
     }
   }
 

@@ -8,7 +8,7 @@ import store from '../store.js';
 import StatsCard from './StatsCard.js';
 import BandwidthChart from './BandwidthChart.js';
 import ProtocolChart from './ProtocolChart.js';
-import { formatBytes, formatBandwidthRate, formatMbps, splitBandwidthRate, escapeHtml } from '../utils/formatters.js';
+import { formatBytes, formatMbps, escapeHtml } from '../utils/formatters.js';
 
 export default class Dashboard {
   constructor(container) {
@@ -18,6 +18,8 @@ export default class Dashboard {
     this._bandwidthChart = null;
     this._protocolChart = null;
     this._prevStats = null;
+    this._isArpCacheMode = false;
+    this._currentMode = 'none';
   }
 
   render() {
@@ -95,6 +97,7 @@ export default class Dashboard {
       this._unsubs.push(store.subscribe('health', d => this._onHealth(d)));
       this._unsubs.push(store.subscribe('alertStats', d => this._onAlertStats(d)));
       this._unsubs.push(store.subscribe('devices', d => this._onDevices(d)));
+      this._unsubs.push(store.subscribe('mode', d => this._onMode(d)));
 
       // Replay current store values so charts render immediately
       // if data arrived before subscription was set up
@@ -123,19 +126,39 @@ export default class Dashboard {
 
   _onStats(stats) {
     if (!stats) return;
-    const bw = stats.bandwidth_bps || 0;
 
-    // Use splitBandwidthRate for consistent formatting
-    // Thresholds: >= 1 Mbps → Mbps, >= 1 Kbps → Kbps, else B/s
-    const { value: val, unit } = splitBandwidthRate(bw);
+    // Use pre-computed Mbps from the backend directly.
+    // NOTE: bandwidth_bps is in *bits*/sec (backend already converts bytes→bits).
+    // splitBandwidthRate() expects *bytes*/sec and would multiply by 8 again,
+    // causing an 8× inflation (e.g. 4 Mbps displayed as 40 Mbps).
+    const mbps = stats.bandwidth_mbps || 0;
+    let val, unit;
+    if (mbps >= 1) {
+      val = mbps.toFixed(1);
+      unit = 'Mbps';
+    } else if (mbps >= 0.001) {
+      const kbps = mbps * 1000;
+      val = kbps.toFixed(1);
+      unit = 'Kbps';
+    } else {
+      // Sub-Kbps: convert Mbps → bytes/sec for readable display
+      const bytesPerSec = (mbps * 1_000_000) / 8;
+      if (bytesPerSec >= 1) {
+        val = Math.round(bytesPerSec).toString();
+        unit = 'B/s';
+      } else {
+        val = '0';
+        unit = 'B/s';
+      }
+    }
 
-    // Show upload/download breakdown as trend line (in Mbps)
+    // Show upload/download breakdown as trend line using pre-computed Mbps
     let trend = '', dir = '';
-    const dlBps = stats.download_bps || 0;
-    const ulBps = stats.upload_bps || 0;
-    if (dlBps > 0 || ulBps > 0) {
-      trend = `↓ ${formatBandwidthRate(dlBps)}  ↑ ${formatBandwidthRate(ulBps)}`;
-      dir = dlBps > ulBps ? 'down' : 'up';
+    const dlMbps = stats.download_mbps || 0;
+    const ulMbps = stats.upload_mbps || 0;
+    if (dlMbps > 0 || ulMbps > 0) {
+      trend = `↓ ${formatMbps(dlMbps)}  ↑ ${formatMbps(ulMbps)}`;
+      dir = dlMbps > ulMbps ? 'down' : 'up';
     } else {
       trend = '— idle';
     }
@@ -143,8 +166,31 @@ export default class Dashboard {
     this._cards.bandwidth.update(val, unit, trend, dir);
     this._prevStats = stats;
 
-    // Device count from stats
-    this._cards.devices.update(stats.active_devices ?? '--', 'devices');
+    // Device count from stats — traffic-active only
+    const devCount = stats.active_devices ?? '--';
+    const devTrend = this._getDeviceTrend();
+    this._cards.devices.update(devCount, 'devices', devTrend);
+  }
+
+  _onMode(data) {
+    if (!data) return;
+    this._currentMode = data.mode || 'none';
+    this._isArpCacheMode = data.can_arp_scan === false && !!data.can_arp_cache_scan;
+    // Re-render the device card trend text when mode changes
+    if (this._prevStats) {
+      const devCount = this._prevStats.active_devices ?? '--';
+      const devTrend = this._getDeviceTrend();
+      this._cards.devices.update(devCount, 'devices', devTrend);
+    }
+  }
+
+  /** Build device-card trend text based on mode + capabilities. */
+  _getDeviceTrend() {
+    const ownTrafficModes = ['wifi_client', 'public_network'];
+    if (ownTrafficModes.includes(this._currentMode)) {
+      return 'own traffic only';
+    }
+    return this._isArpCacheMode ? 'traffic-active only' : '';
   }
 
   _onHealth(health) {

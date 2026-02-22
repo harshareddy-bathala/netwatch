@@ -39,10 +39,18 @@ Desktop.ini
 
 # Test output
 test_out.txt
+test_output.txt
+test_full_output.txt
+test_full.xml
+test_results*.xml
 test_results.txt
+tests/*.txt
 .pytest_cache/
 htmlcov/
 .coverage
+
+# Runtime logs at project root
+log.txt
 
 # Deployment artifacts
 deploy/output/

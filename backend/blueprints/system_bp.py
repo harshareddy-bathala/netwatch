@@ -3,12 +3,13 @@ system_bp.py - System Health, Maintenance & Status Endpoints Blueprint
 ========================================================================
 """
 
+import hmac
 import logging
 from datetime import datetime
 
 from flask import Blueprint, jsonify, request
 
-from config import APP_VERSION
+from config import APP_VERSION, API_KEY, AUTH_ENABLED
 from backend.helpers import handle_errors, get_engine, get_iface_manager, APP_START_TIME
 
 logger = logging.getLogger(__name__)
@@ -163,15 +164,28 @@ def get_production_metrics():
 @system_bp.route('/api/status', methods=['GET'])
 @handle_errors
 def get_production_status():
-    """Complete system status."""
+    """Complete system status.  Version is stripped for unauthenticated callers."""
     from flask import current_app
 
     uptime = (datetime.now() - APP_START_TIME).total_seconds()
     status_payload = {
         'uptime_seconds': round(uptime, 1),
-        'version': APP_VERSION,
         'timestamp': datetime.now().isoformat(),
     }
+
+    # Only include version when authenticated
+    _provided_key = (
+        request.headers.get('X-API-Key')
+        or request.headers.get('Authorization', '').removeprefix('Bearer ').strip()
+        or request.args.get('api_key')
+    )
+    _authenticated = (
+        not AUTH_ENABLED
+        or not API_KEY
+        or (bool(_provided_key) and hmac.compare_digest(_provided_key, API_KEY))
+    )
+    if _authenticated:
+        status_payload['version'] = APP_VERSION
 
     monitor = current_app.config.get('HEALTH_MONITOR')
     status_payload['health'] = monitor.get_metrics() if monitor else {'status': 'unknown'}

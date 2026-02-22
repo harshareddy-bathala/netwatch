@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _pool: Optional["ConnectionPool"] = None
 _pool_lock = threading.Lock()
+_pool_permanently_closed = False  # set by shutdown_pool(); prevents re-creation
 
 
 class ConnectionPool:
@@ -199,8 +200,9 @@ def init_pool(db_path: str = DATABASE_PATH, pool_size: int = DB_CONNECTION_POOL_
 
 def shutdown_pool():
     """Shut down the global pool (call on application exit)."""
-    global _pool
+    global _pool, _pool_permanently_closed
     with _pool_lock:
+        _pool_permanently_closed = True
         if _pool is not None:
             _pool.shutdown()
             _pool = None
@@ -212,10 +214,15 @@ def get_connection():
     Module-level context manager that lazily creates the pool.
 
     Drop-in replacement for the old ``db_handler.get_connection()``.
+    After ``shutdown_pool()`` has been called, raises ``RuntimeError``
+    instead of re-creating the pool (prevents lingering Waitress
+    threads from spawning a new pool after shutdown).
     """
     global _pool
     if _pool is None:
         with _pool_lock:
+            if _pool_permanently_closed:
+                raise RuntimeError("Connection pool has been shut down")
             if _pool is None:
                 _pool = ConnectionPool()
     with _pool.get_connection() as conn:

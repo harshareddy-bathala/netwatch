@@ -218,6 +218,10 @@ class CaptureProcessorMixin:
         Shared flush: feed bandwidth, fire callbacks, write to DB.
 
         ``processed`` is a list of ``PacketData`` objects.
+
+        Phase 3 change: DB writes are now enqueued to the ``DatabaseWriter``
+        background thread instead of running synchronously.  This ensures
+        the processor thread is never blocked by SQLite I/O.
         """
         if not processed:
             return
@@ -234,8 +238,15 @@ class CaptureProcessorMixin:
                 except Exception:
                     logger.debug("Error in packet callback", exc_info=True)
 
-        # Batch write to database
-        if save_packets_batch is not None:
+        # Phase 3: Enqueue batch to DatabaseWriter (non-blocking)
+        if hasattr(self, '_db_writer') and self._db_writer is not None:
+            dicts = [pd.to_dict() for pd in processed]
+            self._db_writer.enqueue(dicts)
+            with self._stats_lock:
+                self._packets_processed += len(processed)
+                self._batches_written += 1
+        elif save_packets_batch is not None:
+            # Fallback: synchronous write (legacy path)
             try:
                 dicts = [pd.to_dict() for pd in processed]
                 count = save_packets_batch(dicts)

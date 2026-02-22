@@ -76,7 +76,7 @@ class ModeDetector:
     _ssid_cache_time: float = 0
     _hostednet_cache: Optional[str] = None
     _hostednet_cache_time: float = 0
-    _CACHE_TTL = 10  # seconds — all subprocess caches share this TTL
+    _CACHE_TTL = 3  # seconds — reduced from 10s (Phase 5) for faster reaction to network changes
 
     # Track last detected mode to avoid log spam
     _last_logged_mode: Optional[str] = None

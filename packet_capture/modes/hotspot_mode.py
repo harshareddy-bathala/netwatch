@@ -70,20 +70,27 @@ class HotspotMode(BaseMode):
 
     def get_bpf_filter(self) -> str:
         """
-        BPF filter that restricts capture to the hotspot subnet.
+        BPF filter that restricts capture to the hotspot subnet + IPv6.
 
         **Why this filter?**
         When hosting a hotspot the OS creates a virtual adapter on a dedicated
         subnet (e.g. 192.168.137.0/24 on Windows ICS). We only want packets
         that belong to that subnet — this prevents accidentally capturing
         traffic from the upstream (Internet-facing) interface.
+
+        ``or ip6`` is appended so that IPv6 traffic from connected clients
+        is also measured.  Without it, clients streaming over IPv6 will
+        show near-zero bandwidth.
         """
         subnet = self.get_valid_ip_range()
         if subnet:
-            return f"net {subnet}"
-        # Fallback: capture only traffic involving our hotspot IP
+            return f"(net {subnet}) or ip6"
+        # Fallback: capture traffic involving our hotspot IP (IPv4 + IPv6)
+        mac = self._interface.mac_address
+        if mac:
+            return f"ether host {mac}"
         if self._interface.ip_address:
-            return f"host {self._interface.ip_address}"
+            return f"host {self._interface.ip_address} or ip6"
         return ""
 
     def get_valid_ip_range(self) -> Optional[str]:
@@ -136,7 +143,13 @@ class HotspotMode(BaseMode):
     # ------------------------------------------------------------------ #
 
     def _detect_hotspot_subnet(self) -> Optional[str]:
-        """Auto-detect the hotspot subnet from the interface state."""
+        """Auto-detect the hotspot subnet from the interface state.
+
+        Phase 5: Handles Wi-Fi Direct adapters that may use subnets other
+        than the traditional 192.168.137.0/24 (e.g. 192.168.49.0/24 or
+        172.x ranges).  The IP+mask from the interface snapshot is always
+        preferred; platform defaults are only used as a last resort.
+        """
         ip = self._interface.ip_address
         mask = self._interface.netmask
 
@@ -146,7 +159,18 @@ class HotspotMode(BaseMode):
             if cidr:
                 return cidr
 
-        # Platform defaults
+        # Phase 5: if we have an IP but no mask, derive a /24 from
+        # the IP address (better than falling back to hard-coded
+        # 192.168.137.0/24 when the hotspot is Wi-Fi Direct).
+        if ip:
+            import ipaddress as _ipaddress
+            try:
+                net = _ipaddress.IPv4Network(f"{ip}/24", strict=False)
+                return str(net)
+            except ValueError:
+                pass
+
+        # Platform defaults (absolute last resort)
         if IS_WINDOWS:
             if ip and ip.startswith("192.168.137."):
                 return _DEFAULT_HOTSPOT_SUBNETS["windows_ics"]

@@ -259,6 +259,34 @@ pip install -r requirements.txt
 
 ---
 
+## v3.0.0 — Resolved Issues
+
+### WiFi Client Shows Too Many Devices
+
+**Symptom:** Dashboard reports 6+ devices in WiFi Client mode when only 2 are expected (self + gateway).
+
+**Cause:** Multicast MAC addresses (`01:00:5e:*` for IPv4 multicast, `33:33:*` for IPv6 multicast, `01:80:c2:*` for STP/LLDP) were being tracked as real devices. Public IPs from CDN/DNS servers were also being assigned to device objects.
+
+**Fix (v3.0.0):** `_is_trackable_mac()` now rejects all multicast prefixes. IP assignments are guarded by `is_private_ip()` so only RFC1918 addresses appear as device IPs.
+
+### Bandwidth Chart Oscillates
+
+**Symptom:** The bandwidth chart line fluctuates or shows periodic dips to zero every few seconds.
+
+**Cause:** The 60-second cutoff between DB history and live data used `datetime.now()`, which shifted every SSE frame. Data points near the boundary alternated between the two sources. Additionally, a synthetic zero-point "bridge" was inserted at the boundary, creating false dips.
+
+**Fix (v3.0.0):** The cutoff is now rounded down to the nearest 10-second boundary, creating a stable split. The zero-point bridge insertion has been removed entirely — DB and live data are concatenated directly.
+
+### Ctrl+C Doesn't Stop the App
+
+**Symptom:** Pressing Ctrl+C in the terminal does nothing, or the app hangs after Ctrl+C.
+
+**Cause:** The signal handler only set a threading event but did not interrupt the blocking `waitress_serve()` / Flask server call.
+
+**Fix (v3.0.0):** The signal handler now raises `KeyboardInterrupt` after setting the shutdown event. This interrupts the blocking server call and allows the `finally` block and `except KeyboardInterrupt` handler to run `shutdown()` for clean teardown.
+
+---
+
 ## Getting Help
 
 1. **Check logs:** Look at terminal output or `/var/log/netwatch/`

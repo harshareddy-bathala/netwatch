@@ -68,6 +68,8 @@ class ModeCapabilities:
         should_use_promiscuous: True if the NIC should be set to promiscuous.
         scope:                  NetworkScope enum value.
         can_arp_scan:           True if active ARP discovery is allowed.
+        can_arp_cache_scan:     True if reading the OS ARP cache is allowed
+                                (passive — no packets sent).
         can_do_passive_discovery: True if passive MAC/IP snooping is useful.
         safe_for_public:        True if safe to run on untrusted networks.
         description:            Human-readable summary.
@@ -76,6 +78,7 @@ class ModeCapabilities:
     should_use_promiscuous: bool
     scope: NetworkScope
     can_arp_scan: bool = True
+    can_arp_cache_scan: bool = True
     can_do_passive_discovery: bool = True
     safe_for_public: bool = False
     description: str = ""
@@ -250,6 +253,7 @@ class BaseMode(ABC):
             "scope": self.get_scope().name,
             "safe_for_public": self.is_safe_for_public_network(),
             "can_arp_scan": self.can_arp_scan(),
+            "can_arp_cache_scan": self.capabilities.can_arp_cache_scan,
             "interface": {
                 "name": self._interface.name,
                 "friendly_name": self._interface.friendly_name,

@@ -37,8 +37,13 @@ IS_TESTING = APP_ENV == 'testing'
 # Application name
 APP_NAME = "NetWatch"
 
-# Application version
-APP_VERSION = "2.1.0"
+# Application version — single source of truth from VERSION file
+_VERSION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'VERSION')
+try:
+    with open(_VERSION_FILE, encoding='utf-8') as _vf:
+        APP_VERSION = _vf.read().strip()
+except FileNotFoundError:
+    APP_VERSION = '0.0.0'
 
 # Platform detection
 IS_WINDOWS = sys.platform == 'win32'
@@ -234,8 +239,8 @@ LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "net
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 # Rotating log file settings
-LOG_FILE_MAX_SIZE = 10 * 1024 * 1024   # 10 MB per file
-LOG_FILE_BACKUP_COUNT = 10             # keep 10 rotated copies
+LOG_FILE_MAX_SIZE = 50 * 1024 * 1024   # 50 MB per file
+LOG_FILE_BACKUP_COUNT = 5              # keep 5 rotated copies
 
 # Log directory for production structured logs (JSON)
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
@@ -248,7 +253,12 @@ LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 # localhost:3000 is included for development with a separate frontend dev server
 # Read from CORS_ORIGINS env var (comma-separated) or use defaults
 _cors_env = os.getenv('CORS_ORIGINS')
-CORS_ORIGINS = _cors_env.split(',') if _cors_env else ["http://localhost:5000", "http://127.0.0.1:5000"]
+CORS_ORIGINS = _cors_env.split(',') if _cors_env else [
+    "http://localhost:5000",
+    "http://127.0.0.1:5000",
+    "https://localhost:5000",
+    "https://127.0.0.1:5000",
+]
 
 # Allow credentials in CORS requests
 CORS_ALLOW_CREDENTIALS = True
@@ -487,8 +497,9 @@ PACKET_BUFFER_MAX_SIZE = 100000 if IS_PRODUCTION else 50000
 SHOW_OWN_DEVICE = True
 
 # Whether to show the gateway/router in device list
-# Disabled by default — gateway shows as a phantom device in WiFi client mode
-SHOW_GATEWAY = False
+# Enabled so all network devices (including the router) are visible.
+# In WiFi client mode the gateway is legitimately part of the network.
+SHOW_GATEWAY = True
 
 # Only show devices in the current subnet
 FILTER_TO_SUBNET = True
@@ -543,7 +554,7 @@ AUTH_ENABLED = os.getenv('NETWATCH_AUTH_ENABLED', 'false').lower() in ('1', 'tru
 API_KEY = os.getenv('NETWATCH_API_KEY', '')
 
 # Routes that bypass authentication (health checks, static assets)
-AUTH_EXEMPT_ROUTES = ['/health', '/', '/index.html', '/api/status', '/api/info', '/api/stream']
+AUTH_EXEMPT_ROUTES = ['/health', '/', '/index.html', '/api/status', '/api/info']
 AUTH_EXEMPT_PREFIXES = ['/css/', '/js/', '/assets/']
 
 # Enable CORS (Cross-Origin Resource Sharing)

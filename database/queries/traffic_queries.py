@@ -16,8 +16,10 @@ from utils.query_cache import time_query, TTLCache
 
 logger = logging.getLogger(__name__)
 
-# Cache for frequently-polled queries (3s TTL matches SSE push interval)
-_traffic_cache = TTLCache(ttl_seconds=3)
+# Cache for frequently-polled queries (5s TTL — slightly longer than SSE
+# push interval so that bandwidth_history_dual is usually served from cache
+# when dashboard and SSE both request it within the same cycle).
+_traffic_cache = TTLCache(ttl_seconds=5)
 
 
 # ---------------------------------------------------------------------------

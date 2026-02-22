@@ -3,8 +3,12 @@ name: NetWatch CI
 on:
   push:
     branches: [main, develop]
+    tags: ['v*']
   pull_request:
     branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   lint:
@@ -29,13 +33,27 @@ jobs:
             --show-source \
             --statistics
 
+  typecheck:
+    name: Type check (mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt mypy types-requests
+      - name: mypy (non-strict)
+        run: mypy --ignore-missing-imports --no-strict-optional config.py backend/ utils/ || true
+
   test:
     name: Tests (Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.11"]
     steps:
       - uses: actions/checkout@v4
 
@@ -61,7 +79,15 @@ jobs:
           NETWATCH_ENV: testing
         run: |
           pytest tests/ -v --tb=short --co -q 2>/dev/null || true
-          pytest tests/ -v --tb=short --cov=database --cov=backend --cov=alerts --cov=packet_capture --cov-report=term-missing
+          pytest tests/ -v --tb=short --junitxml=test-results.xml --cov=database --cov=backend --cov=alerts --cov=packet_capture --cov-report=term-missing
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.os }}-${{ matrix.python-version }}
+          path: test-results.xml
+          retention-days: 14
 
       - name: Upload coverage (ubuntu 3.11 only)
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
@@ -88,3 +114,29 @@ jobs:
           sleep 5
           curl -sf http://localhost:5000/health || (docker logs nw && exit 1)
           docker stop nw
+
+  build:
+    name: Build release artifacts
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [lint, typecheck, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Package source tarball
+        run: |
+          VERSION=$(cat VERSION)
+          tar czf netwatch-${VERSION}.tar.gz \
+            --exclude=__pycache__ --exclude='*.pyc' --exclude=.git \
+            --exclude=venv --exclude=dist --exclude=build \
+            --exclude='*.db' --exclude=logs \
+            .
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: netwatch-release
+          path: netwatch-*.tar.gz

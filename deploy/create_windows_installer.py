@@ -21,7 +21,12 @@ BUILD_DIR = os.path.join(PROJECT_ROOT, "build")
 INSTALLER_DIR = os.path.join(DIST_DIR, "NetWatch-Windows")
 
 APP_NAME = "NetWatch"
-APP_VERSION = "2.0.0"
+_version_file = os.path.join(PROJECT_ROOT, "VERSION")
+try:
+    with open(_version_file, encoding="utf-8") as _vf:
+        APP_VERSION = _vf.read().strip()
+except FileNotFoundError:
+    APP_VERSION = "0.0.0"
 
 
 def check_dependencies():

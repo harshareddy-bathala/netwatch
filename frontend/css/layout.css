@@ -219,6 +219,24 @@ body {
   text-overflow: ellipsis;
 }
 
+/* Mode info (hint + transition below the badge row) */
+
+.mode-info {
+  padding: 4px 12px 8px;
+}
+
+.mode-hint {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary, #a0a0a0);
+  white-space: normal;
+}
+
+.mode-transition {
+  font-size: 0.7rem;
+  color: var(--color-accent-primary, #d97706);
+  display: none;
+}
+
 .btn-refresh {
   width: 32px;
   height: 32px;

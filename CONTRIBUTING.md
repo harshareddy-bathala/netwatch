@@ -79,6 +79,21 @@ test: add integration tests for mode changes
 - **API** is Flask, served from `backend/app.py` with blueprints in `backend/blueprints/`
 - **Frontend** is a vanilla JS SPA — no build step required
 
+### IP Address Convention
+
+Any code that assigns an IP address to a device object **must** guard the
+assignment with `is_private_ip()` from `utils.network_utils`:
+
+```python
+from utils.network_utils import is_private_ip
+
+if source_ip and is_private_ip(source_ip):
+    dev.ip_address = source_ip
+```
+
+This prevents public IPs (e.g. CDN servers, DNS resolvers) from appearing
+as device addresses in the dashboard.
+
 ## Running Locally
 
 Admin/root privileges are required for packet capture (Scapy needs raw sockets).

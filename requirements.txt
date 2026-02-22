@@ -23,6 +23,7 @@ psutil==5.9.7
 mac-vendor-lookup==0.1.12
 netifaces==0.11.0
 requests==2.31.0
+zeroconf==0.131.0            # mDNS/DNS-SD resolution (Phase 2 hostname fix)
 
 # ─── Testing ───────────────────────────────────────
 pytest==7.4.4

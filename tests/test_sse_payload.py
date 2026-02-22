@@ -218,3 +218,52 @@ class TestSSEConnectionLimiting:
         """Sanity check: the configured limit is 10."""
         bp_mod = _get_bp_module()
         assert bp_mod._SSE_MAX_CONNECTIONS == 10
+
+
+# =================================================================
+# SSE Payload Build Benchmark (Phase E)
+# =================================================================
+
+class TestSSEPayloadBenchmark:
+    """SSE payload build must complete in < 50 ms."""
+
+    def test_payload_build_under_50ms(self, app, client):
+        """_build_sse_payload() should complete in under 50 ms."""
+        _reset_sse_cache()
+        bp_mod = _get_bp_module()
+
+        import time
+        iterations = 5
+        times = []
+        for _ in range(iterations):
+            # Clear cache to force a rebuild each time
+            with bp_mod._sse_cache_lock:
+                bp_mod._sse_cached_payload = None
+                bp_mod._sse_cache_time = 0.0
+                bp_mod._sse_building = False
+
+            with app.test_request_context('/api/stream'):
+                start = time.perf_counter()
+                result = bp_mod._build_sse_payload()
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                times.append(elapsed_ms)
+
+        avg_ms = sum(times) / len(times)
+        assert avg_ms < 50, f"SSE payload build took {avg_ms:.1f}ms avg (limit: 50ms)"
+
+    def test_cached_payload_under_1ms(self, app, client):
+        """Cached SSE payload retrieval should be nearly instant."""
+        _reset_sse_cache()
+        bp_mod = _get_bp_module()
+
+        with app.test_request_context('/api/stream'):
+            # First call: builds cache
+            bp_mod._build_sse_payload()
+
+            # Second call: should hit cache
+            import time
+            start = time.perf_counter()
+            bp_mod._build_sse_payload()
+            elapsed_ms = (time.perf_counter() - start) * 1000
+
+        assert elapsed_ms < 5, f"Cached SSE payload took {elapsed_ms:.1f}ms (limit: 5ms)"

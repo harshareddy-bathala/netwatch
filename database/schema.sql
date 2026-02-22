@@ -10,13 +10,16 @@
 -- DEVICES TABLE
 -- =============================================================================
 -- Stores information about devices seen on the network.
--- Each unique IP address gets one record. Updated as traffic is captured.
+-- Each unique MAC address gets one record. Updated as traffic is captured.
+-- Phase 1 migration 008: MAC-primary keying replaces IP-primary keying.
 
 CREATE TABLE IF NOT EXISTS devices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ip_address TEXT NOT NULL UNIQUE,
+    mac_address TEXT NOT NULL UNIQUE,
+    ip_address TEXT DEFAULT NULL,
+    ipv4_address TEXT DEFAULT NULL,
+    ipv6_address TEXT DEFAULT NULL,
     hostname TEXT DEFAULT NULL,
-    mac_address TEXT DEFAULT NULL,
     device_name TEXT DEFAULT NULL,
     vendor TEXT DEFAULT NULL,
     first_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -26,7 +29,9 @@ CREATE TABLE IF NOT EXISTS devices (
     total_packets INTEGER DEFAULT 0,
     is_local INTEGER DEFAULT 0,
     device_type TEXT DEFAULT 'unknown',
-    notes TEXT DEFAULT NULL
+    notes TEXT DEFAULT NULL,
+    detected_mode TEXT DEFAULT NULL,
+    active_mode TEXT DEFAULT NULL
 );
 
 -- =============================================================================
@@ -162,9 +167,11 @@ CREATE INDEX IF NOT EXISTS idx_traffic_src_mac_ts_bytes ON traffic_summary(sourc
 CREATE INDEX IF NOT EXISTS idx_traffic_dst_mac_ts_bytes ON traffic_summary(dest_mac, timestamp, bytes_transferred);
 
 -- Device indexes
-CREATE INDEX IF NOT EXISTS idx_devices_ip ON devices(ip_address);
-CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen);
 CREATE INDEX IF NOT EXISTS idx_devices_mac ON devices(mac_address);
+CREATE INDEX IF NOT EXISTS idx_devices_ip ON devices(ip_address);
+CREATE INDEX IF NOT EXISTS idx_devices_ipv4 ON devices(ipv4_address);
+CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen);
+CREATE INDEX IF NOT EXISTS idx_devices_active_mode ON devices(active_mode);
 
 -- Alert indexes
 CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp);

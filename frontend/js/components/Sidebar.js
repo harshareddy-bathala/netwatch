@@ -15,12 +15,12 @@ const MODE_SVG = {
 };
 
 const MODE_CONFIG = {
-  hotspot:        { label: 'Hotspot Mode' },
-  wifi_client:    { label: 'Wi-Fi Client' },
-  ethernet:       { label: 'Ethernet' },
-  port_mirror:    { label: 'Port Mirror' },
-  public_network: { label: 'Public Network' },
-  none:           { label: 'Disconnected' },
+  hotspot:        { label: 'Hotspot Mode',    hint: 'Device discovery: ON' },
+  wifi_client:    { label: 'Wi-Fi Client',    hint: 'Monitoring own traffic only' },
+  ethernet:       { label: 'Ethernet',        hint: 'LAN monitoring: ON' },
+  port_mirror:    { label: 'Port Mirror',     hint: 'Full traffic visibility' },
+  public_network: { label: 'Public Network',  hint: 'Safe mode — own traffic only' },
+  none:           { label: 'Disconnected',    hint: 'No network connection' },
 };
 
 export default class Sidebar {
@@ -34,7 +34,7 @@ export default class Sidebar {
 
   render() {
     this.el.innerHTML = `
-      <div class="sidebar__logo" style="width:239px;height:81px;">
+      <div class="sidebar__logo">
         <a href="/" class="sidebar__logo-link" data-route="/">
           <div class="sidebar__logo-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -75,6 +75,10 @@ export default class Sidebar {
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
           </button>
         </div>
+        <div class="mode-info">
+          <div class="mode-hint" id="mode-hint"></div>
+          <div class="mode-transition" id="mode-transition">Switching mode…</div>
+        </div>
       </div>
     `;
   }
@@ -109,6 +113,13 @@ export default class Sidebar {
 
     // Subscribe to alert count
     this._unsubs.push(store.subscribe('alertStats', data => this._updateAlertBadge(data)));
+
+    // Phase 5: listen for mode transition events to show indicator
+    this._modeTransitionHandler = () => {
+      const transEl = this.el.querySelector('#mode-transition');
+      if (transEl) transEl.style.display = 'block';
+    };
+    window.addEventListener('netwatch:mode_transition', this._modeTransitionHandler);
   }
 
   setActive(route) {
@@ -130,6 +141,24 @@ export default class Sidebar {
     }
 
     badge.querySelector('.mode-text').textContent = data.mode_display || cfg.label;
+
+    // Phase 5: update mode capability hint
+    const hintEl = this.el.querySelector('#mode-hint');
+    if (hintEl) {
+      hintEl.textContent = cfg.hint || '';
+    }
+
+    // Phase 5: hide transition indicator once new mode data arrives
+    const transEl = this.el.querySelector('#mode-transition');
+    if (transEl) {
+      transEl.style.display = 'none';
+    }
+
+    // Show mode-info container only when there is hint text
+    const infoEl = this.el.querySelector('.mode-info');
+    if (infoEl) {
+      infoEl.style.display = (cfg.hint) ? '' : 'none';
+    }
   }
 
   _updateAlertBadge(data) {
@@ -142,5 +171,8 @@ export default class Sidebar {
 
   destroy() {
     this._unsubs.forEach(fn => fn());
+    if (this._modeTransitionHandler) {
+      window.removeEventListener('netwatch:mode_transition', this._modeTransitionHandler);
+    }
   }
 }

@@ -127,13 +127,49 @@ class AnomalyDetector:
             logger.warning("Failed to persist model: %s", exc)
 
     def _load_model(self) -> None:
-        """Reload a previously persisted model from disk (if available)."""
+        """Reload a previously persisted model from disk (if available).
+
+        If the model was trained with a different major.minor sklearn
+        version, discard it and retrain from scratch to avoid silent
+        prediction errors.
+        """
         if joblib is None:
             return
         try:
             if _os.path.exists(_MODEL_PATH) and _os.path.exists(_SCALER_PATH):
-                self.model = joblib.load(_MODEL_PATH)
-                self.scaler = joblib.load(_SCALER_PATH)
+                import warnings
+                import sklearn
+
+                # Load with warnings captured
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    loaded_model = joblib.load(_MODEL_PATH)
+                    loaded_scaler = joblib.load(_SCALER_PATH)
+
+                # Check if any InconsistentVersionWarning was raised
+                version_mismatch = any(
+                    issubclass(w.category, UserWarning)
+                    and "InconsistentVersionWarning" in str(w.category.__name__)
+                    for w in caught
+                )
+
+                if version_mismatch:
+                    logger.warning(
+                        "Persisted model was trained with a different sklearn "
+                        "version — discarding and will retrain from scratch "
+                        "(current sklearn %s)",
+                        sklearn.__version__,
+                    )
+                    # Delete stale model files so they don't trip again
+                    try:
+                        _os.remove(_MODEL_PATH)
+                        _os.remove(_SCALER_PATH)
+                    except OSError:
+                        pass
+                    return  # leave is_trained = False → will retrain
+
+                self.model = loaded_model
+                self.scaler = loaded_scaler
                 self.is_trained = True
                 self.last_training_time = datetime.fromtimestamp(
                     _os.path.getmtime(_MODEL_PATH)

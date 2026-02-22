@@ -37,7 +37,7 @@ export default class AlertRules {
             <polyline points="6 9 12 15 18 9"/>
           </svg>
         </button>
-        <div class="alert-rules__body" id="rules-body" style="display:none;">
+        <div class="alert-rules__body" id="rules-body" style="display:none">
           <div id="rules-list">Loading…</div>
           <button class="btn btn--sm" id="add-rule-btn">+ New Rule</button>
         </div>

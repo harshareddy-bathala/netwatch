@@ -59,11 +59,19 @@ class PublicNetworkMode(BaseMode):
         return ModeName.PUBLIC_NETWORK
 
     def get_bpf_filter(self) -> str:
-        """Only capture our own traffic — no exceptions."""
+        """Only capture our own traffic — no exceptions.
+
+        Uses ``ether host <mac>`` to capture both IPv4 and IPv6 traffic.
+        A pure ``host <ip>`` filter only matches IPv4, silently dropping
+        all IPv6 video/web traffic and causing bandwidth under-reporting.
+        """
+        mac = self._interface.mac_address
         ip = self._interface.ip_address
+        if mac:
+            return f"ether host {mac}"
         if ip:
-            return f"host {ip}"
-        logger.warning("PublicNetworkMode: no IP known — using restrictive fallback")
+            return f"host {ip} or ip6"
+        logger.warning("PublicNetworkMode: no IP/MAC known — using restrictive fallback")
         return "host 0.0.0.0"
 
     def get_valid_ip_range(self) -> Optional[str]:
@@ -83,11 +91,13 @@ class PublicNetworkMode(BaseMode):
             should_use_promiscuous=False,
             scope=NetworkScope.OWN_TRAFFIC_ONLY,
             can_arp_scan=False,
+            can_arp_cache_scan=True,
             can_do_passive_discovery=False,
             safe_for_public=True,
             description=(
-                "Public / safe mode — own traffic only, no scanning, "
-                "no promiscuous mode. Respects network policies."
+                "Public / safe mode — own traffic only, no active scanning, "
+                "no promiscuous mode. ARP cache discovery enabled for "
+                "passive neighbour visibility."
             ),
         )
 

@@ -8,7 +8,7 @@ Aggregates raw ``traffic_summary`` rows into hourly buckets in the
 This keeps the hot ``traffic_summary`` table small (last 24 h) while
 preserving historical data in a compact format for long-term charts.
 
-Designed to run periodically (e.g. hourly) from a background thread.
+Designed to run periodically (e.g. every 15 minutes, Phase 4) from a background thread.
 """
 
 import sqlite3

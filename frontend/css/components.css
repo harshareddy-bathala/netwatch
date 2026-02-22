@@ -273,6 +273,14 @@
   color: var(--color-text-tertiary);
 }
 
+/* ARP-only devices: dimmed appearance */
+.device-row--arp-only {
+  opacity: 0.55;
+}
+.device-row--arp-only:hover {
+  opacity: 0.8;
+}
+
 /* Inline edit */
 .hostname-input {
   background: var(--color-bg-primary);
@@ -907,4 +915,63 @@
   display: flex;
   gap: var(--spacing-sm);
   justify-content: flex-end;
+}
+
+/* ═══════════════════════════════════════════════════════
+   NOSCRIPT FALLBACK
+   ═══════════════════════════════════════════════════════ */
+
+.noscript-message {
+  padding: 2rem;
+  text-align: center;
+  font-family: system-ui, sans-serif;
+}
+
+/* ═══════════════════════════════════════════════════════
+   DEVICE STATUS DOT (inline-style replacement)
+   ═══════════════════════════════════════════════════════ */
+
+.device-status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+/* ═══════════════════════════════════════════════════════
+   DISCOVERY BANNER (inline-style replacement)
+   ═══════════════════════════════════════════════════════ */
+
+.discovery-banner {
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  background: var(--surface-alt, #2a2a3a);
+  border-radius: 6px;
+  font-size: 0.82rem;
+  color: var(--color-text-secondary, #aaa);
+}
+
+.discovery-banner svg {
+  vertical-align: -2px;
+  margin-right: 4px;
+}
+
+/* ═══════════════════════════════════════════════════════
+   SIDEBAR LOGO SIZE (inline-style replacement)
+   ═══════════════════════════════════════════════════════ */
+
+.sidebar__logo {
+  width: 239px;
+  height: 81px;
+}
+
+/* ═══════════════════════════════════════════════════════
+   ALERT FEED TIMESTAMP (inline-style replacement)
+   ═══════════════════════════════════════════════════════ */
+
+.alert-feed__timestamp {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
 }

@@ -121,14 +121,14 @@ class TestLogConfiguration:
     """Log rotation settings."""
 
     def test_log_rotation_size(self):
-        """Log files should rotate at 10 MB."""
+        """Log files should rotate at 50 MB."""
         import config
-        assert config.LOG_FILE_MAX_SIZE == 10 * 1024 * 1024
+        assert config.LOG_FILE_MAX_SIZE == 50 * 1024 * 1024
 
     def test_log_backup_count(self):
-        """Keep 10 rotated log files."""
+        """Keep 5 rotated log files."""
         import config
-        assert config.LOG_FILE_BACKUP_COUNT == 10
+        assert config.LOG_FILE_BACKUP_COUNT == 5
 
     def test_log_dir_exists(self):
         """Log directory should exist or be creatable."""

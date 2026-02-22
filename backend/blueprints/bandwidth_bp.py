@@ -22,6 +22,7 @@ from database.queries.alert_queries import get_alert_stats_aggregated
 from backend.helpers import (
     handle_errors, cached_response, get_engine, get_iface_manager,
 )
+from utils.realtime_state import dashboard_state
 
 logger = logging.getLogger(__name__)
 
@@ -207,7 +208,9 @@ def get_metrics():
 _sse_cache_lock = threading.Lock()
 _sse_cached_payload: Optional[str] = None
 _sse_cache_time: float = 0.0
-_SSE_CACHE_TTL = 3.0
+# Phase 3: lowered from 3s → 1s.  Build cost is negligible since
+# bandwidth data now comes from in-memory BandwidthCalculator.
+_SSE_CACHE_TTL = 1.0
 _sse_building = False
 
 # SSE connection limiting
@@ -216,8 +219,52 @@ _sse_active_lock = threading.Lock()
 _SSE_MAX_CONNECTIONS = 10
 
 
+def invalidate_sse_cache():
+    """
+    Invalidate the SSE payload cache.
+
+    Called after mode changes / engine restarts so that the next SSE push
+    fetches fresh data instead of serving stale cached values from the
+    old engine.
+
+    Phase 4: also clears the in-memory dashboard state.
+    """
+    global _sse_cached_payload, _sse_cache_time
+    with _sse_cache_lock:
+        _sse_cached_payload = None
+        _sse_cache_time = 0.0
+    # Phase 4: clear in-memory state on mode change
+    try:
+        dashboard_state.clear()
+    except Exception:
+        pass
+
+
+# Phase 5: pending out-of-band events pushed alongside the next SSE frame
+_sse_pending_events: list = []
+_sse_pending_lock = threading.Lock()
+
+
+def _sse_push_event(payload: str) -> None:
+    """Queue an out-of-band SSE event (e.g. ``mode_changed``).
+
+    The pending event will be sent alongside the next regular SSE frame
+    in ``_generate()``.  This avoids needing a separate push channel.
+    """
+    with _sse_pending_lock:
+        _sse_pending_events.append(payload)
+
+
 def _build_sse_payload() -> str:
-    """Build the SSE JSON payload with 3-second server-side cache."""
+    """Build the SSE JSON payload with 1-second server-side cache (Phase 3).
+
+    Phase 3 bandwidth unification:
+    * The in-memory ``BandwidthCalculator`` is the **sole source** for the
+      last 60 seconds of bandwidth history (served via ``bandwidth_live``).
+    * ``get_bandwidth_history_dual()`` only serves data **older than 60s**
+      (by requesting hours=1 and filtering out the last minute).
+    * This clear boundary eliminates the merge-mismatch / staleness problem.
+    """
     global _sse_cached_payload, _sse_cache_time, _sse_building
 
     now = time.time()
@@ -238,44 +285,73 @@ def _build_sse_payload() -> str:
             live_bw = engine.bandwidth.get_current_bps()
             try:
                 bw_stats = engine.bandwidth.get_stats()
+                # Phase 3: In-memory calculator is sole source for last 60s.
+                # Use 2s buckets × 30 points = 60s of live data.
                 data['bandwidth_live'] = {
                     'stats': bw_stats,
-                    'history': engine.bandwidth.get_recent_history(bucket_seconds=2, max_points=10),
+                    'history': engine.bandwidth.get_recent_history(
+                        bucket_seconds=2, max_points=30,
+                    ),
                 }
             except Exception:
                 pass
 
-        dashboard = get_dashboard_data()
+        # Phase 4: Read dashboard data from in-memory state (zero DB queries)
+        # instead of calling get_dashboard_data() which scans traffic_summary.
+        mem_state = dashboard_state.snapshot()
 
-        stats = dashboard.get('stats', {})
-        if live_bw is not None and stats:
+        # Build stats dict from in-memory bandwidth + state
+        stats = {}
+        if engine and engine.is_running:
+            bw = engine.bandwidth.get_stats()
+            stats['bandwidth_bps'] = round(bw['total_bps'] * 8, 2)
+            stats['bandwidth_mbps'] = bw['total_mbps']
+            stats['upload_bps'] = round(bw['upload_bps'] * 8, 2)
+            stats['download_bps'] = round(bw['download_bps'] * 8, 2)
+            stats['upload_mbps'] = bw['upload_mbps']
+            stats['download_mbps'] = bw['download_mbps']
+            stats['packets_per_second'] = bw['packets_per_second']
+        elif live_bw is not None:
             stats['bandwidth_bps'] = round(live_bw * 8, 2)
             stats['bandwidth_mbps'] = round((live_bw * 8) / 1_000_000, 4)
-            if engine and engine.is_running:
-                try:
-                    bw = engine.bandwidth.get_stats()
-                    stats['upload_bps'] = round(bw['upload_bps'] * 8, 2)
-                    stats['download_bps'] = round(bw['download_bps'] * 8, 2)
-                    stats['upload_mbps'] = bw['upload_mbps']
-                    stats['download_mbps'] = bw['download_mbps']
-                    stats['packets_per_second'] = bw['packets_per_second']
-                except Exception:
-                    pass
-        data['stats'] = stats
-        data['health'] = dashboard.get('health', {})
+        else:
+            stats['bandwidth_bps'] = 0
+            stats['bandwidth_mbps'] = 0
 
-        alert_counts = dashboard.get('alert_counts', {})
-        data['alert_stats'] = {
-            'total_unresolved': alert_counts.get('total', 0),
-            'unacknowledged': alert_counts.get('unacknowledged', 0),
-            'by_severity': {
-                k: v for k, v in alert_counts.items()
-                if k not in ('total', 'unacknowledged')
-            },
-        }
-        data['alerts'] = dashboard.get('alerts', [])
-        data['protocols'] = dashboard.get('protocols', [])
-        data['devices'] = dashboard.get('top_devices', [])
+        stats['active_devices'] = mem_state.get('active_devices', 0)
+        stats['total_bytes_today'] = mem_state.get('today_bytes', 0)
+        stats['total_packets_today'] = mem_state.get('today_packets', 0)
+        stats['timestamp'] = datetime.now().isoformat()
+
+        data['stats'] = stats
+
+        # Health: still query DB (lightweight — alerts table is small)
+        try:
+            data['health'] = get_health_score()
+        except Exception:
+            data['health'] = {'score': 0, 'status': 'unknown'}
+
+        # Alerts: query DB (alerts table is small, not a bottleneck)
+        try:
+            from database.queries.alert_queries import get_alerts, get_alert_counts
+            alerts = get_alerts(limit=5, resolved=False)
+            alert_counts = get_alert_counts()
+            data['alert_stats'] = {
+                'total_unresolved': alert_counts.get('total', 0),
+                'unacknowledged': alert_counts.get('unacknowledged', 0),
+                'by_severity': {
+                    k: v for k, v in alert_counts.items()
+                    if k not in ('total', 'unacknowledged')
+                },
+            }
+            data['alerts'] = alerts
+        except Exception:
+            data['alert_stats'] = {'total_unresolved': 0, 'unacknowledged': 0, 'by_severity': {}}
+            data['alerts'] = []
+
+        # Phase 4: protocols + top devices from in-memory state
+        data['protocols'] = mem_state.get('protocols', [])
+        data['devices'] = mem_state.get('top_devices', [])
 
         try:
             mgr = get_iface_manager()
@@ -283,8 +359,17 @@ def _build_sse_payload() -> str:
         except Exception:
             data['mode'] = {'mode': 'none', 'mode_display': 'Unknown'}
 
+        # Phase 3: DB-backed bandwidth_history serves data OLDER than 60s
+        # only.  The live window (last 60s) comes from bandwidth_live above.
         try:
-            data['bandwidth_history'] = get_bandwidth_history_dual(hours=1, interval='10s')
+            db_history = get_bandwidth_history_dual(hours=1, interval='10s')
+            # Filter out the last 60 seconds — in-memory calculator owns that.
+            cutoff_dt = datetime.now() - timedelta(seconds=60)
+            cutoff_dt = cutoff_dt.replace(second=cutoff_dt.second // 10 * 10, microsecond=0)
+            cutoff = cutoff_dt.strftime('%Y-%m-%d %H:%M:%S')
+            data['bandwidth_history'] = [
+                dp for dp in db_history if dp.get('timestamp', '') < cutoff
+            ]
         except Exception:
             data['bandwidth_history'] = []
 
@@ -320,6 +405,13 @@ def sse_stream():
         try:
             while True:
                 try:
+                    # Phase 5: drain any pending out-of-band events first
+                    with _sse_pending_lock:
+                        pending = list(_sse_pending_events)
+                        _sse_pending_events.clear()
+                    for evt in pending:
+                        yield f"event: mode_changed\ndata: {evt}\n\n"
+
                     payload = _build_sse_payload()
                     yield f"data: {payload}\n\n"
                 except GeneratorExit:
@@ -340,6 +432,5 @@ def sse_stream():
         headers={
             'Cache-Control': 'no-cache',
             'X-Accel-Buffering': 'no',
-            'Connection': 'keep-alive',
         },
     )

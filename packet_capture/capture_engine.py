@@ -46,7 +46,7 @@ import logging
 import queue
 import threading
 import time
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Any
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +88,7 @@ from .filter_manager import FilterManager
 from .packet_processor import PacketProcessor, PacketData
 from .bandwidth_calculator import BandwidthCalculator
 from .capture_base import CaptureProcessorMixin, PacketCallback
+from .database_writer import DatabaseWriter
 
 # Database batch write
 try:
@@ -166,6 +167,27 @@ class CaptureEngine(CaptureProcessorMixin):
         self._pps_second = 0           # which second we're in (int epoch)
         self._sample_counter = 0       # running counter for sampling
 
+        # Phase 3: DatabaseWriter — async DB writes so processor never blocks
+        # Phase 5: pass mode_transition_lock from main so writer can skip
+        # writes during mode transitions
+        _mtl = None
+        try:
+            from main import _mode_transition_lock
+            _mtl = _mode_transition_lock
+        except (ImportError, AttributeError):
+            pass
+        self._db_writer = DatabaseWriter(
+            max_queue_size=200,
+            stats_lock=self._stats_lock,
+            mode_transition_lock=_mtl,
+        )
+
+        # Interface-loss detection — consecutive OS errors trigger callbacks
+        self._consecutive_os_errors = 0
+        self._MAX_CONSECUTIVE_OS_ERRORS = 5
+        self._interface_lost = False
+        self._interface_lost_callbacks: List[Callable] = []
+
     # ================================================================== #
     #  PUBLIC API
     # ================================================================== #
@@ -197,6 +219,9 @@ class CaptureEngine(CaptureProcessorMixin):
         self._stop_event.clear()
         self._start_time = time.monotonic()
 
+        # Start the async DB writer thread (Phase 3)
+        self._db_writer.start()
+
         self._capture_thread = threading.Thread(
             target=self._capture_loop,
             args=(bpf, promisc),
@@ -223,6 +248,9 @@ class CaptureEngine(CaptureProcessorMixin):
         if self._process_thread and self._process_thread.is_alive():
             self._process_thread.join(timeout=timeout)
 
+        # Stop the DB writer thread (drains remaining batches)
+        self._db_writer.stop(timeout=timeout)
+
         # Run capture strategy teardown (e.g. disable promiscuous mode)
         if self._strategy:
             try:
@@ -246,6 +274,16 @@ class CaptureEngine(CaptureProcessorMixin):
     def on_packet(self, callback: PacketCallback) -> None:
         """Register a callback invoked for every processed ``PacketData``."""
         self._callbacks.append(callback)
+
+    def on_interface_lost(self, callback: Callable[[], Any]) -> None:
+        """Register a callback invoked when the capture interface disappears.
+
+        The callback is fired from the capture thread after
+        ``_MAX_CONSECUTIVE_OS_ERRORS`` consecutive failures.  It should
+        trigger an immediate mode re-detection (e.g. via
+        ``InterfaceManager.notify_interface_lost()``).
+        """
+        self._interface_lost_callbacks.append(callback)
 
     def get_stats(self) -> dict:
         """Return engine statistics for the REST API."""
@@ -281,31 +319,37 @@ class CaptureEngine(CaptureProcessorMixin):
         )
 
         def _enqueue(pkt):
-            """Put packet into queue; drop if full (back-pressure) or rate-limited."""
-            with self._stats_lock:
-                self._packets_captured += 1
+            """Put packet into queue; drop if full (back-pressure) or rate-limited.
+
+            **Performance note:** The captured-packets counter is incremented
+            without holding ``_stats_lock``.  On CPython the GIL makes simple
+            integer increments thread-safe (the stat is advisory anyway), and
+            removing the lock avoids contention that was throttling capture
+            throughput on high-bandwidth connections (e.g. HD video streaming
+            at 1000+ pps).  The lock is still used for *reads* in
+            ``_build_stats_dict`` and for the rare ``_packets_dropped``
+            increment where accuracy matters more than speed.
+            """
+            # Lock-free increment — safe under CPython GIL, advisory stat only
+            self._packets_captured += 1
 
             # Rate limiting via shared mixin
             if not self._should_accept_packet():
                 return
 
-            # Backpressure warning at 80% capacity
-            qsize = self._packet_queue.qsize()
-            if qsize > self._queue_size * 0.8:
-                if not hasattr(self, '_bp_warned') or not self._bp_warned:
-                    logger.warning(
-                        "Queue at %d/%d (%d%%) — backpressure active",
-                        qsize, self._queue_size, qsize * 100 // self._queue_size
-                    )
-                    self._bp_warned = True
-            else:
-                self._bp_warned = False
+            # Phase 3: stamp capture time onto the packet so the processor
+            # thread uses the real capture instant, not processing time.
+            # Prefer Scapy's pkt.time (set by libpcap) when available;
+            # fall back to time.time().
+            try:
+                pkt._capture_ts = float(pkt.time) if hasattr(pkt, 'time') and pkt.time else time.time()
+            except Exception:
+                pkt._capture_ts = time.time()
 
             try:
                 self._packet_queue.put_nowait(pkt)
             except queue.Full:
-                with self._stats_lock:
-                    self._packets_dropped += 1
+                self._packets_dropped += 1
                 # Log once per 5000 drops to avoid log flooding
                 if self._packets_dropped % 5000 == 1:
                     logger.error(
@@ -325,6 +369,8 @@ class CaptureEngine(CaptureProcessorMixin):
                     timeout=2,                    # yield every 2 seconds
                     count=0,                      # unlimited within burst
                 )
+                # Successful sniff resets the error counter
+                self._consecutive_os_errors = 0
             except PermissionError:
                 logger.error(
                     "Permission denied — packet capture requires admin/root privileges"
@@ -334,7 +380,25 @@ class CaptureEngine(CaptureProcessorMixin):
             except OSError as exc:
                 if self._stop_event.is_set():
                     break
+                self._consecutive_os_errors += 1
                 logger.error("OS error in capture loop: %s", exc)
+                # If the interface has been gone for several consecutive
+                # attempts, stop the capture and notify listeners so the
+                # InterfaceManager can switch to the correct mode.
+                if self._consecutive_os_errors >= self._MAX_CONSECUTIVE_OS_ERRORS:
+                    logger.error(
+                        "Interface '%s' appears gone after %d consecutive errors "
+                        "— stopping capture and requesting mode re-detection",
+                        self._interface, self._consecutive_os_errors,
+                    )
+                    self._interface_lost = True
+                    self._stop_event.set()
+                    for cb in self._interface_lost_callbacks:
+                        try:
+                            cb()
+                        except Exception:
+                            logger.exception("Error in interface-lost callback")
+                    break
                 time.sleep(1)  # back off before retrying
             except Exception as exc:
                 if self._stop_event.is_set():

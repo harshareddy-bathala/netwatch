@@ -38,6 +38,12 @@ logger = logging.getLogger(__name__)
 # Cache for dashboard data (3s TTL matches SSE push interval)
 _stats_cache = TTLCache(ttl_seconds=3)
 
+# Separate caches for expensive sub-queries with longer TTLs.
+# These degrade as traffic_summary grows, and don't need sub-second
+# freshness.
+_today_totals_cache = TTLCache(ttl_seconds=10)
+_hourly_traffic_cache = TTLCache(ttl_seconds=15)
+
 
 # ---------------------------------------------------------------------------
 # Real-time stats
@@ -89,12 +95,19 @@ def get_realtime_stats(live_bandwidth_bps: float = None) -> dict:
             # AND include gateway/own-device exclusion logic.
             active_devices = get_active_device_count(minutes=5, conn=conn)
 
-            # Today totals
-            cursor.execute("""
-                SELECT SUM(bytes_transferred) AS bytes, COUNT(*) AS packets
-                FROM traffic_summary WHERE timestamp >= ?
-            """, (today_start,))
-            today = cursor.fetchone()
+            # Today totals — reuse the dashboard's 10s cache
+            today_cached = _today_totals_cache.get("today_totals")
+            if today_cached is not None:
+                today_bytes, today_packets = today_cached
+            else:
+                cursor.execute("""
+                    SELECT SUM(bytes_transferred) AS bytes, COUNT(*) AS packets
+                    FROM traffic_summary WHERE timestamp >= ?
+                """, (today_start,))
+                today = cursor.fetchone()
+                today_bytes = (today["bytes"] or 0) if today else 0
+                today_packets = (today["packets"] or 0) if today else 0
+                _today_totals_cache.set("today_totals", (today_bytes, today_packets))
 
             # Use live bandwidth if provided, otherwise fall back to DB
             effective_bps = live_bandwidth_bps if live_bandwidth_bps is not None else bandwidth_bps
@@ -113,8 +126,8 @@ def get_realtime_stats(live_bandwidth_bps: float = None) -> dict:
                 "upload_mbps": upload_mbps,
                 "active_devices": active_devices,
                 "packets_per_second": round(packets_recent / 10, 2),
-                "total_bytes_today": (today["bytes"] or 0) if today else 0,
-                "total_packets_today": (today["packets"] or 0) if today else 0,
+                "total_bytes_today": today_bytes,
+                "total_packets_today": today_packets,
                 "timestamp": now.isoformat(),
             }
 
@@ -167,8 +180,15 @@ def get_health_score() -> dict:
             # Device count — SINGLE SOURCE OF TRUTH (IP-based counting)
             # Uses IP addresses (not MAC) as the dedup key so that devices
             # with randomised MACs are not double-counted.
+            # Phase 1: also filter by active_mode for mode-scoped counting.
             five_min_ago = (now - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
             from database.queries.device_queries import VALID_DEVICE_IP_FILTER as _VDIF_HS
+            from database.queries.device_queries import _current_mode_name as _cur_mode
+            _mode_filter = ""
+            _mode_params: list = []
+            if _cur_mode:
+                _mode_filter = "AND active_mode = ?"
+                _mode_params = [_cur_mode]
             cursor.execute(f"""
                 SELECT COUNT(DISTINCT ip_address) AS count
                 FROM (
@@ -184,15 +204,16 @@ def get_health_score() -> dict:
                         AND {_VALID_MAC_FILTER_DEST}
                         AND ({_PRIVATE_IP_FILTER_DEST})
                     UNION
-                    SELECT ip_address
+                    SELECT COALESCE(ipv4_address, ip_address) AS ip_address
                     FROM devices
                     WHERE last_seen >= ?
                         AND mac_address IS NOT NULL AND mac_address != ''
                         AND mac_address != 'ff:ff:ff:ff:ff:ff'
                         AND mac_address != '00:00:00:00:00:00'
                         AND {_VDIF_HS}
+                        {_mode_filter}
                 )
-            """, (five_min_ago, five_min_ago, five_min_ago))
+            """, (five_min_ago, five_min_ago, five_min_ago, *_mode_params))
             device_count = (cursor.fetchone()["count"] or 0)
 
             # Traffic in last hour
@@ -300,12 +321,20 @@ def get_dashboard_data() -> dict:
             from database.queries.device_queries import get_active_device_count
             active_devices = get_active_device_count(minutes=5, conn=conn)
 
-            # Today totals
-            cursor.execute("""
-                SELECT SUM(bytes_transferred) AS bytes, COUNT(*) AS packets
-                FROM traffic_summary WHERE timestamp >= ?
-            """, (today_start,))
-            today = cursor.fetchone()
+            # Today totals — cached separately (10s TTL) because scanning
+            # the entire day's traffic_summary is expensive and changes slowly.
+            today_cached = _today_totals_cache.get("today_totals")
+            if today_cached is not None:
+                today_bytes, today_packets = today_cached
+            else:
+                cursor.execute("""
+                    SELECT SUM(bytes_transferred) AS bytes, COUNT(*) AS packets
+                    FROM traffic_summary WHERE timestamp >= ?
+                """, (today_start,))
+                today = cursor.fetchone()
+                today_bytes = (today["bytes"] or 0) if today else 0
+                today_packets = (today["packets"] or 0) if today else 0
+                _today_totals_cache.set("today_totals", (today_bytes, today_packets))
 
             stats = {
                 "bandwidth_bps": round(bandwidth_bps, 2),
@@ -316,8 +345,8 @@ def get_dashboard_data() -> dict:
                 "upload_mbps": round(upload_bps / 1_000_000, 4),
                 "active_devices": active_devices,
                 "packets_per_second": round(packets_recent / 10, 2),
-                "total_bytes_today": (today["bytes"] or 0) if today else 0,
-                "total_packets_today": (today["packets"] or 0) if today else 0,
+                "total_bytes_today": today_bytes,
+                "total_packets_today": today_packets,
                 "timestamp": now.isoformat(),
             }
 
@@ -334,10 +363,17 @@ def get_dashboard_data() -> dict:
             critical_alerts = (alert_row["critical_count"] or 0) if alert_row else 0
             warning_alerts = (alert_row["warning_count"] or 0) if alert_row else 0
 
-            cursor.execute("""
-                SELECT COUNT(*) AS count FROM traffic_summary WHERE timestamp >= ?
-            """, (one_hour,))
-            traffic_count = (cursor.fetchone()["count"] or 0)
+            # Hourly traffic count — cached (15s TTL) to avoid a full
+            # COUNT(*) scan on every dashboard rebuild.
+            traffic_cached = _hourly_traffic_cache.get("hourly_traffic")
+            if traffic_cached is not None:
+                traffic_count = traffic_cached
+            else:
+                cursor.execute("""
+                    SELECT COUNT(*) AS count FROM traffic_summary WHERE timestamp >= ?
+                """, (one_hour,))
+                traffic_count = (cursor.fetchone()["count"] or 0)
+                _hourly_traffic_cache.set("hourly_traffic", traffic_count)
 
             score = 100
             factors: List[str] = []

@@ -127,9 +127,9 @@ def setup_logging(
     enable_console: bool = True,
     enable_json_file: bool = True,
     enable_error_file: bool = True,
-    max_bytes: int = 10 * 1024 * 1024,  # 10 MB
+    max_bytes: int = 50 * 1024 * 1024,  # 50 MB
     backup_count: int = 5,
-    error_max_bytes: int = 5 * 1024 * 1024,  # 5 MB
+    error_max_bytes: int = 10 * 1024 * 1024,  # 10 MB
     error_backup_count: int = 3,
 ) -> logging.Logger:
     """
