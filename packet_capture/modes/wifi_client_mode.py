@@ -8,25 +8,30 @@ Active when this device is connected to a WiFi network **as a client**
 Key behaviour:
     - Promiscuous mode: OFF
     - Scope: OWN_TRAFFIC_ONLY
-    - BPF filter: ``host <our_ip>`` — only our own packets
-    - ARP scan: disabled (not our network to probe)
-    - Safe for public networks
+    - BPF filter: ``ether host <our_mac>`` — only our own packets
+    - ARP scan: ENABLED (discovers other LAN devices for display)
+    - Traffic capture: own traffic only (BPF filter enforced)
+    - Safe for private/trusted WiFi networks
 
-**Why should WiFi client mode NOT use promiscuous mode?**
+**Why does WiFi client mode enable ARP scanning but only capture own
+traffic?**
+
+The user wants to see what devices are on their local network (awareness)
+without eavesdropping on other clients' traffic.  ARP scanning (L2
+broadcast) is safe on private networks — the AP will respond to ARP
+requests for all directly connected clients.  However, promiscuous mode
+remains OFF because:
 
 1. AP isolation: Most access points enable client isolation, so the NIC
    will never receive other clients' unicast frames regardless of
    promiscuous mode.  Enabling it wastes CPU for no benefit.
-2. Privacy & legality: Capturing other clients' traffic on a network we
-   don't own may violate laws (CFAA, GDPR, etc.) and the network's
-   acceptable use policy.
-3. Noise: Even when frames *are* visible (open networks without
+2. Noise: Even when frames *are* visible (open networks without
    isolation), they are almost always encrypted at L2 (WPA2/3) and
    therefore useless without the per-client PTK.
-4. Performance: Promiscuous mode forces the NIC driver to deliver every
+3. Performance: Promiscuous mode forces the NIC driver to deliver every
    frame to the kernel, increasing CPU and memory pressure on laptops.
 
-The correct filter is  ``host <our_ip>``  which tells the kernel to
+The correct filter is  ``ether host <our_mac>``  which tells the kernel to
 discard everything that isn't to/from us before it even reaches Scapy.
 """
 
@@ -114,7 +119,9 @@ class WiFiClientMode(BaseMode):
             description=(
                 "WiFi client mode — monitoring own traffic only. "
                 "Promiscuous mode disabled (AP isolation makes it useless). "
-                "ARP cache discovery enabled for passive neighbour visibility."
+                "No active ARP scanning; only passive ARP cache reads to avoid "
+                "probing other clients on the WLAN. Traffic capture is "
+                "restricted to own MAC via BPF filter."
             ),
         )
 

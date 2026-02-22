@@ -7,7 +7,7 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from flask import Blueprint, Response, jsonify, request, stream_with_context
@@ -300,6 +300,16 @@ def _build_sse_payload() -> str:
         # instead of calling get_dashboard_data() which scans traffic_summary.
         mem_state = dashboard_state.snapshot()
 
+        # Detect current mode early — needed for wifi_client fallbacks below.
+        current_mode = ''
+        mode_info = {}
+        try:
+            mgr = get_iface_manager()
+            mode_info = mgr.get_status() if mgr else {}
+            current_mode = mode_info.get('mode', '')
+        except Exception:
+            pass
+
         # Build stats dict from in-memory bandwidth + state
         stats = {}
         if engine and engine.is_running:
@@ -319,6 +329,15 @@ def _build_sse_payload() -> str:
             stats['bandwidth_mbps'] = 0
 
         stats['active_devices'] = mem_state.get('active_devices', 0)
+        # In wifi_client mode, in-memory state only counts traffic-producing
+        # devices (just our own).  Use the DB count to include ARP-discovered
+        # devices on the LAN.
+        if current_mode == 'wifi_client' and stats['active_devices'] <= 1:
+            try:
+                from database.queries.device_queries import get_active_device_count
+                stats['active_devices'] = get_active_device_count(minutes=5)
+            except Exception:
+                pass
         stats['total_bytes_today'] = mem_state.get('today_bytes', 0)
         stats['total_packets_today'] = mem_state.get('today_packets', 0)
         stats['timestamp'] = datetime.now().isoformat()
@@ -351,25 +370,29 @@ def _build_sse_payload() -> str:
 
         # Phase 4: protocols + top devices from in-memory state
         data['protocols'] = mem_state.get('protocols', [])
-        data['devices'] = mem_state.get('top_devices', [])
+        mem_devices = mem_state.get('top_devices', [])
 
-        try:
-            mgr = get_iface_manager()
-            data['mode'] = mgr.get_status() if mgr else {'mode': 'none', 'mode_display': 'Unknown'}
-        except Exception:
-            data['mode'] = {'mode': 'none', 'mode_display': 'Unknown'}
+        # In wifi_client mode the in-memory state only tracks OWN traffic,
+        # but ARP scans have populated the devices DB table.  Fall back to
+        # the DB-backed query so the SSE push includes all discovered devices.
+        if current_mode == 'wifi_client' and len(mem_devices) <= 1:
+            try:
+                from database.queries.device_queries import get_top_devices
+                data['devices'] = get_top_devices(limit=10, hours=1)
+            except Exception:
+                data['devices'] = mem_devices
+        else:
+            data['devices'] = mem_devices
 
-        # Phase 3: DB-backed bandwidth_history serves data OLDER than 60s
-        # only.  The live window (last 60s) comes from bandwidth_live above.
+        data['mode'] = mode_info if mode_info else {'mode': 'none', 'mode_display': 'Unknown'}
+
+        # DB-backed bandwidth history; keep last ~1 hour at 10s resolution.
+        # The frontend merges this with the live in-memory tail, so we no
+        # longer drop the most recent buckets here (avoids apparent “fall to
+        # zero” when DB writes temporarily lag the live stream).
         try:
             db_history = get_bandwidth_history_dual(hours=1, interval='10s')
-            # Filter out the last 60 seconds — in-memory calculator owns that.
-            cutoff_dt = datetime.now() - timedelta(seconds=60)
-            cutoff_dt = cutoff_dt.replace(second=cutoff_dt.second // 10 * 10, microsecond=0)
-            cutoff = cutoff_dt.strftime('%Y-%m-%d %H:%M:%S')
-            data['bandwidth_history'] = [
-                dp for dp in db_history if dp.get('timestamp', '') < cutoff
-            ]
+            data['bandwidth_history'] = db_history[-360:] if len(db_history) > 360 else db_history
         except Exception:
             data['bandwidth_history'] = []
 

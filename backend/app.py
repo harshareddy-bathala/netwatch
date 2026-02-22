@@ -57,11 +57,17 @@ def create_app(config_override: dict = None) -> Flask:
         app.config.update(config_override)
     
     # Enable CORS — restrict origins in production, allow all in development
-    _dev_origins = os.getenv('CORS_ORIGINS', '*').split(',') if APP_ENV != 'production' else CORS_ORIGINS
+    # Dev defaults now mirror production allowlist to avoid '*' + credentials
+    raw_origins = os.getenv('CORS_ORIGINS')
+    origins = CORS_ORIGINS if raw_origins is None else raw_origins.split(',')
+
+    # If wildcard is explicitly requested, disable credentials to satisfy CORS spec
+    allow_credentials = CORS_ALLOW_CREDENTIALS and origins != ['*']
+
     CORS(
         app,
-        origins=_dev_origins,
-        supports_credentials=CORS_ALLOW_CREDENTIALS
+        origins=origins,
+        supports_credentials=allow_credentials,
     )
     
     # Reduce werkzeug logging verbosity to WARNING level

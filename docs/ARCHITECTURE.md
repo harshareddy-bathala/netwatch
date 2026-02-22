@@ -325,13 +325,14 @@ print(f"Description: {detector.interface_description}")
 
 | Mode | Connection Type | Visibility | Use Case |
 |------|----------------|------------|----------|
-| `ETHERNET` | Wired connection | Own + broadcasts | Office networks |
-| `WIFI_CLIENT` | Connected TO WiFi | Own device only | Personal monitoring |
+| `ETHERNET` | Wired connection | Own + broadcasts + ARP discovery | Office networks |
+| `WIFI_CLIENT` | Connected TO WiFi | Own traffic + passive ARP cache | Personal monitoring |
 | `WIFI_HOTSPOT` | Laptop IS hotspot | All connected devices | Full network monitoring |
-| `VIRTUAL` | VPN/Docker/VM | Virtual network only | Development/testing |
-| `LOOPBACK` | 127.0.0.1 | Local only | Not useful for monitoring |
+| `PUBLIC_NETWORK` | Untrusted WiFi | Own traffic + passive ARP cache | Coffee shops, airports |
+| `PORT_MIRROR` | SPAN port | Full network segment | Enterprise monitoring |
+| `DISCONNECTED` | No network | Capture paused | Dashboard-only |
 
-### Mode 1: WiFi Client Mode ⚠️ Limited
+### Mode 1: WiFi Client Mode — Own Traffic + Passive Discovery
 
 **When It Happens:**
 ```
@@ -340,8 +341,8 @@ You → WiFi Router → Internet
 
 **What You See:**
 - ✅ Your laptop's traffic (outgoing/incoming)
-- ✅ Broadcast packets (ARP, mDNS, DHCP)
-- ❌ Other clients' traffic (phones, tablets, etc.)
+- ✅ Nearby devices via passive ARP cache reads (no packets sent)
+- ❌ Other clients' unicast traffic (phones, tablets, etc.)
 
 **Why Limited:**
 WiFi Access Points implement **client isolation** for security. Each client can only see:
@@ -349,7 +350,7 @@ WiFi Access Points implement **client isolation** for security. Each client can 
 2. Packets received FROM the AP
 3. Broadcast/multicast packets
 
-This prevents WiFi clients from sniffing each other's traffic.
+NetWatch does **not** send active ARP scans in this mode. It reads the OS’s existing ARP cache to list neighbors passively.
 
 **Network Diagram:**
 ```
@@ -617,12 +618,13 @@ if (status.warning) {
 
 ### Limitations by Mode
 
-| Limitation | WiFi Client | WiFi Hotspot | Ethernet | Mobile Hotspot |
-|------------|-------------|--------------|----------|----------------|
-| See other devices | ❌ | ✅ | ⚠️ | ❌ |
-| Full bandwidth visibility | ❌ | ✅ | ⚠️ | ❌ |
-| Monitor phone's traffic | ❌ | ✅ | N/A | ❌ |
-| Production ready | ✅ (self) | ✅ (all) | ⚠️ | ✅ (self) |
+| Limitation | WiFi Client | WiFi Hotspot | Ethernet | Port Mirror | Public Network |
+|------------|-------------|--------------|----------|-------------|----------------|
+| See other devices (passive) | ✅ ARP cache | ✅ | ✅ ARP scan | ✅ | ✅ ARP cache |
+| Active ARP scanning | ❌ | ✅ | ✅ | ✅ | ❌ |
+| Full bandwidth visibility | ❌ | ✅ | ⚠️ | ✅ | ❌ |
+| Monitor phone's traffic | ❌ | ✅ | N/A | ✅ | ❌ |
+| Production ready | ✅ (self) | ✅ (all) | ✅ | ✅ | ✅ (self) |
 
 ---
 

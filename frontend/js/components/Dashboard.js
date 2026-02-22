@@ -186,9 +186,12 @@ export default class Dashboard {
 
   /** Build device-card trend text based on mode + capabilities. */
   _getDeviceTrend() {
-    const ownTrafficModes = ['wifi_client', 'public_network'];
+    const ownTrafficModes = ['public_network'];
     if (ownTrafficModes.includes(this._currentMode)) {
       return 'own traffic only';
+    }
+    if (this._currentMode === 'wifi_client') {
+      return 'discovered on LAN';
     }
     return this._isArpCacheMode ? 'traffic-active only' : '';
   }

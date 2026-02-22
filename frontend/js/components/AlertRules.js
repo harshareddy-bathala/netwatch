@@ -80,13 +80,17 @@ export default class AlertRules {
     }));
 
     await this._loadRules();
+
+    // Ensure we start collapsed on first render (user can expand manually)
+    this._setExpanded(false);
   }
 
   /* ── Data ────────────────────────────────── */
 
   async _loadRules() {
     const res = await api.getAlertRules();
-    this._rules = res?.rules || [];
+    // Back-end returns {data: [...]}; accept older {rules: [...]} shape too
+    this._rules = res?.data || res?.rules || [];
     this._renderList();
   }
 
@@ -122,7 +126,11 @@ export default class AlertRules {
   /* ── Expand/Collapse ─────────────────────── */
 
   _toggleExpand() {
-    this._expanded = !this._expanded;
+    this._setExpanded(!this._expanded);
+  }
+
+  _setExpanded(expanded) {
+    this._expanded = !!expanded;
     const body = this._container.querySelector('#rules-body');
     if (body) body.style.display = this._expanded ? 'block' : 'none';
     const svg = this._container.querySelector('#rules-toggle svg');

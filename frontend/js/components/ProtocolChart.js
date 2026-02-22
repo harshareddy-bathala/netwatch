@@ -22,6 +22,7 @@ export default class ProtocolChart {
     this.chart = null;
     this._unsub = null;
     this._firstUpdate = true;
+    this._lastPercentages = [];
   }
 
   init() {
@@ -34,6 +35,8 @@ export default class ProtocolChart {
     const tooltipBg = cssVar('--chart-tooltip-bg', '#1a1a1a');
     const tooltipText = cssVar('--chart-tooltip-text', '#efefef');
     const tooltipBorder = cssVar('--chart-tooltip-border', '#3a3a3a');
+
+    const self = this;
 
     this.chart = new Chart(canvas.getContext('2d'), {
       type: 'doughnut',
@@ -82,10 +85,14 @@ export default class ProtocolChart {
             callbacks: {
               label(ctx) {
                 const label = ctx.label || '';
-                const value = ctx.parsed;
-                const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
-                const pct = total > 0 ? ((value / total) * 100).toFixed(1) : '0';
-                return ` ${label}: ${pct}%`;
+                const pct = (self._lastPercentages && self._lastPercentages[ctx.dataIndex] != null)
+                  ? self._lastPercentages[ctx.dataIndex]
+                  : (() => {
+                      const value = ctx.parsed;
+                      const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
+                      return total > 0 ? (value / total) * 100 : 0;
+                    })();
+                return ` ${label}: ${pct.toFixed(1)}%`;
               }
             }
           }
@@ -111,16 +118,28 @@ export default class ProtocolChart {
 
     if (!hasData) {
       // Clear stale data so the chart isn't stuck on the old interface
+      this._lastPercentages = [];
       this.chart.data.labels = [];
       this.chart.data.datasets[0].data = [];
       this.chart.update('none');
       return;
     }
 
-    // Use 'name' first (from dashboard endpoint), fallback to 'protocol' (from standalone endpoint)
-    this.chart.data.labels = protocols.map(p => p.name || p.protocol || 'Unknown');
-    // Prefer bytes for sizing, fallback to count or percentage
-    this.chart.data.datasets[0].data = protocols.map(p => p.bytes || p.total_bytes || p.count || p.packet_count || p.percentage || 0);
+    // Normalize data + percentages to avoid stuck-at-99% tooltips
+    const entries = protocols.map(p => ({
+      label: p.name || p.protocol || 'Unknown',
+      value: p.bytes || p.total_bytes || p.count || p.packet_count || 0,
+      pct: p.percentage,
+    }));
+    const total = entries.reduce((sum, e) => sum + (e.value || 0), 0);
+    this._lastPercentages = entries.map(e => {
+      if (e.pct != null && !isNaN(e.pct)) return Number(e.pct);
+      if (total > 0) return (e.value / total) * 100;
+      return 0;
+    });
+
+    this.chart.data.labels = entries.map(e => e.label);
+    this.chart.data.datasets[0].data = entries.map(e => e.value || 0);
 
     if (this._firstUpdate) {
       this._firstUpdate = false;

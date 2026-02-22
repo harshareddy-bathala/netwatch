@@ -60,14 +60,21 @@ export function splitBandwidthRate(bytesPerSecond) {
 
 export function formatTimestamp(ts) {
   if (!ts) return '--:--';
-  const d = new Date(ts);
+  // Normalise "YYYY-MM-DD HH:MM:SS" → ISO 8601 "YYYY-MM-DDTHH:MM:SS"
+  // so browsers that only accept the 'T' separator don't return NaN.
+  const d = new Date(typeof ts === 'string' ? ts.replace(' ', 'T') : ts);
   if (isNaN(d.getTime())) return '--:--';
+  // Show seconds for sub-minute data (e.g. 10s/30s buckets) so that chart
+  // x-axis labels are distinct within the same minute.
+  if (d.getSeconds() !== 0) {
+    return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  }
   return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
 export function formatRelativeTime(ts) {
   if (!ts) return 'unknown';
-  const seconds = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+  const seconds = Math.floor((Date.now() - new Date(typeof ts === 'string' ? ts.replace(' ', 'T') : ts).getTime()) / 1000);
   if (seconds < 0 || seconds < 60) return 'just now';
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;

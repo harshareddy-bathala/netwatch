@@ -301,15 +301,15 @@ NetWatch's monitoring capabilities depend on **how your laptop is connected** to
 
 **You Can See:**
 - ✅ Your laptop's own traffic only
-- ✅ Broadcast traffic
-- ❌ Other devices on the network
+- ✅ Devices on the network via passive ARP cache reads (no active probing)
+- ❌ Other devices' traffic (only your own packets are captured)
 
 **Dashboard Shows:** 
-> ⚠️ WiFi Client Mode: Monitoring limited to this device only.
+> ⚠️ WiFi Client Mode: Monitoring limited to this device’s traffic.
 
-**Why:** WiFi Access Points isolate clients from each other for security. This is normal WiFi behavior.
+**Why:** WiFi Access Points isolate clients from each other for security. NetWatch does **not** send active ARP scans in this mode—it only reads the OS’s existing ARP cache to list nearby devices without transmitting any probe packets.
 
-**To Monitor Other Devices:** Enable Mobile Hotspot on your laptop (see below).
+**To Monitor Other Devices’ Traffic:** Enable Mobile Hotspot on your laptop (see below).
 
 ---
 
@@ -373,7 +373,8 @@ A: They're on the same WiFi network but isolated by the Access Point. Enable lap
 
 ### Known Limitations
 
-- **WiFi Client Mode:** Only sees own device traffic (by design)
+- **WiFi Client Mode:** Only captures own device traffic; discovers neighbors via passive ARP cache only (no active scanning)
+- **Public Network Mode:** Own traffic only; passive ARP cache reads allowed but no active probing of any kind
 - **Encrypted Traffic:** Cannot decrypt HTTPS content (only metadata visible)
 - **Health Score:** Estimate based on heuristics, not absolute
 - **Anomaly Detection:** Needs ~24 hours of data for accuracy

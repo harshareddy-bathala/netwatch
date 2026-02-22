@@ -100,12 +100,19 @@ def get_bandwidth_history_dual(hours: int = 1, interval: str = "minute") -> List
             cursor = conn.cursor()
             since = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
 
-            # Sub-minute intervals: use epoch-based bucketing on raw data only
+            # Sub-minute intervals: use epoch-based bucketing on raw data only.
+            # Use julianday() instead of strftime('%s', ...) because %s is not
+            # supported on all SQLite builds (e.g. Windows).
+            # NOTE: timestamps are stored as LOCAL time (datetime.now()), so
+            # julianday() treats them as UTC internally.  We must NOT apply
+            # 'localtime' on output — that would double-count the timezone
+            # offset.  The round-trip through 'unixepoch' (without 'localtime')
+            # returns the original local-time string correctly.
             if interval in ("10s", "30s"):
                 bucket_secs = 10 if interval == "10s" else 30
                 bucket_expr = (
-                    f"datetime((CAST(strftime('%s', timestamp) AS INTEGER) / {bucket_secs}) "
-                    f"* {bucket_secs}, 'unixepoch', 'localtime')"
+                    f"datetime((CAST((julianday(timestamp) - 2440587.5) * 86400 AS INTEGER) / {bucket_secs}) "
+                    f"* {bucket_secs}, 'unixepoch')"
                 )
                 cursor.execute(f"""
                     SELECT

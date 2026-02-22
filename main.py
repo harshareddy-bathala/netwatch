@@ -22,6 +22,16 @@ import ctypes
 import os
 from datetime import datetime, timedelta
 
+# Hard guard: NetWatch is validated only on Python 3.11.x
+if sys.version_info[:2] != (3, 11):
+    _ver = sys.version.split()[0]
+    msg = (
+        f"Unsupported Python version {_ver}. NetWatch requires Python 3.11.x. "
+        "Please run with Python 3.11 to continue."
+    )
+    sys.stderr.write(msg + "\n")
+    sys.exit(1)
+
 # Add project root to path
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
@@ -841,25 +851,37 @@ def start_discovery_task():
                     _enqueue_resolution(ip, mac or None)
             conn.commit()
 
-    def _upsert_arp_cache_devices(devices, current_mode_name):
+    def _upsert_arp_cache_devices(devices, current_mode_name, set_active_mode=False):
         """Upsert ARP-cache-discovered devices with active_mode=NULL.
 
         These devices are visible on the Devices page (detected_mode is set)
         but do NOT count as "active" for the dashboard card because
         active_mode stays NULL — only traffic-producing devices get
         active_mode set via ``save_packet()``.
+
+        When *set_active_mode* is True (e.g. wifi_client mode ARP scans),
+        active_mode is set to *current_mode_name* so that discovered
+        devices appear in the dashboard device list immediately.
         """
         if not devices:
             return
 
         own_ip = None
+        own_subnet = None
         if _interface_manager:
             try:
                 cur_mode = _interface_manager.get_current_mode()
                 if cur_mode:
                     own_ip = cur_mode.interface.ip_address
+                    # Derive subnet prefix for filtering out cross-adapter devices
+                    if own_ip:
+                        parts = own_ip.split('.')
+                        if len(parts) == 4:
+                            own_subnet = f"{parts[0]}.{parts[1]}.{parts[2]}."
             except Exception:
                 pass
+
+        active_mode_val = current_mode_name if set_active_mode else None
 
         with get_connection() as conn:
             cursor = conn.cursor()
@@ -876,10 +898,16 @@ def start_discovery_task():
                 if ip and ip == own_ip:
                     continue
 
-                # INSERT with detected_mode set, active_mode=NULL.
+                # Skip devices outside the current subnet (prevents
+                # cross-adapter leakage, e.g. VirtualBox adapter IPs)
+                if own_subnet and ip and not ip.startswith(own_subnet):
+                    continue
+
+                # INSERT with detected_mode set, active_mode conditionally set.
                 # ON CONFLICT: only update fields that are still empty
-                # and refresh last_seen.  Never overwrite active_mode
-                # if it was already set by traffic capture.
+                # and refresh last_seen.  When set_active_mode is True,
+                # also update active_mode so newly discovered devices
+                # appear in dashboard queries.
                 cursor.execute("""
                     INSERT INTO devices
                         (mac_address, ip_address, ipv4_address,
@@ -887,7 +915,7 @@ def start_discovery_task():
                          first_seen, last_seen,
                          detected_mode, active_mode)
                     VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'),
-                            ?, NULL)
+                            ?, ?)
                     ON CONFLICT(mac_address) DO UPDATE SET
                         ip_address   = COALESCE(NULLIF(ip_address, ''), excluded.ip_address),
                         ipv4_address = COALESCE(NULLIF(ipv4_address, ''), excluded.ipv4_address),
@@ -900,8 +928,12 @@ def start_discovery_task():
                             THEN COALESCE(NULLIF(excluded.vendor, ''), vendor)
                             ELSE vendor END,
                         last_seen    = datetime('now'),
-                        detected_mode = COALESCE(detected_mode, excluded.detected_mode)
-                """, (mac, ip, ip, hostname, vendor, current_mode_name))
+                        detected_mode = COALESCE(detected_mode, excluded.detected_mode),
+                        active_mode  = CASE
+                            WHEN excluded.active_mode IS NOT NULL
+                            THEN COALESCE(active_mode, excluded.active_mode)
+                            ELSE active_mode END
+                """, (mac, ip, ip, hostname, vendor, current_mode_name, active_mode_val))
 
                 if ip:
                     _enqueue_resolution(ip, mac or None)
@@ -1054,10 +1086,22 @@ def start_discovery_task():
                                 shutdown_event.wait(10)
                                 continue
                             current_mode_name = mode.get_mode_name().value if mode else ""
+                            # wifi_client uses ARP scan for DISCOVERY (listing
+                            # devices on the LAN) but only captures own traffic.
+                            # _upsert_devices only UPDATEs existing rows, so we
+                            # must also call _upsert_arp_cache_devices to INSERT
+                            # new entries with active_mode set.
+                            is_discovery_only = (
+                                mode and mode.get_scope().name == "OWN_TRAFFIC_ONLY"
+                            )
 
                             # 1. ARP scan (primary — fast, L2)
                             devices = discovery.arp_scan(timeout=3)
                             _upsert_devices(devices, current_mode_name)
+                            if is_discovery_only and devices:
+                                _upsert_arp_cache_devices(
+                                    devices, current_mode_name, set_active_mode=True,
+                                )
 
                             # 2. ARP cache scan (supplement — catches devices
                             #    that don't respond to our ARP broadcast, e.g.
@@ -1065,6 +1109,11 @@ def start_discovery_task():
                             try:
                                 cache_devices = discovery.arp_cache_scan()
                                 _upsert_devices(cache_devices, current_mode_name)
+                                if is_discovery_only and cache_devices:
+                                    _upsert_arp_cache_devices(
+                                        cache_devices, current_mode_name,
+                                        set_active_mode=True,
+                                    )
                             except Exception:
                                 pass
 
@@ -1078,12 +1127,22 @@ def start_discovery_task():
                                         max_workers=20,
                                     )
                                     _upsert_devices(ping_devices, current_mode_name)
+                                    if is_discovery_only and ping_devices:
+                                        _upsert_arp_cache_devices(
+                                            ping_devices, current_mode_name,
+                                            set_active_mode=True,
+                                        )
                                     # Re-check ARP cache after pinging — new
                                     # entries may have been created by the OS
                                     if ping_devices:
                                         try:
                                             cache2 = discovery.arp_cache_scan()
                                             _upsert_devices(cache2, current_mode_name)
+                                            if is_discovery_only and cache2:
+                                                _upsert_arp_cache_devices(
+                                                    cache2, current_mode_name,
+                                                    set_active_mode=True,
+                                                )
                                         except Exception:
                                             pass
                                 except Exception as e:
@@ -1131,14 +1190,17 @@ def start_health_monitor(alert_engine: AlertEngine):
 # Thread watchdog — detects silently dead daemon threads
 # ---------------------------------------------------------------------------
 
-_WATCHED_THREAD_NAMES = [
-    "CaptureThread",
-    "AnomalyDetector",
-    "HealthMonitor",
-    "DiscoveryTask",
-    "CleanupTask",
-    "BackgroundResolver",
-]
+_WATCHED_THREAD_PATTERNS = {
+    # Capture engine threads (Scapy capture + processor)
+    "CaptureEngine": ("CaptureEngine-Capture", "CaptureEngine-Process"),
+    # Background hostname resolver + mDNS browser
+    "HostnameResolver": ("HostnameResolver-BG", "mDNS-Browse"),
+    # Periodic tasks
+    "DiscoveryTask": ("DiscoveryTask",),
+    "CleanupTask": ("CleanupTask",),
+    "AnomalyDetector": ("AnomalyDetector",),
+    "HealthMonitor": ("HealthMonitor",),
+}
 
 
 def _thread_watchdog():
@@ -1148,13 +1210,22 @@ def _thread_watchdog():
     warning so operators can detect silent crashes.
     """
     logger = _logger or logging.getLogger(__name__)
+    start = time.time()
     while not shutdown_event.is_set():
+        # Give threads a short grace period to start before warning
+        if time.time() - start < 30:
+            shutdown_event.wait(5)
+            continue
         alive_names = {t.name for t in threading.enumerate() if t.is_alive()}
-        for name in _WATCHED_THREAD_NAMES:
-            if name not in alive_names:
+        for label, patterns in _WATCHED_THREAD_PATTERNS.items():
+            present = any(
+                any(name.startswith(pat) for pat in patterns)
+                for name in alive_names
+            )
+            if not present:
                 logger.warning(
                     "Thread watchdog: '%s' is not alive — it may have crashed silently",
-                    name,
+                    label,
                 )
         shutdown_event.wait(30)
 

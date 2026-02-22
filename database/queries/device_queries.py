@@ -29,7 +29,8 @@ logger = logging.getLogger(__name__)
 # Cache for expensive device queries (5s TTL — slightly longer than the
 # dashboard's 3s TTL so that sub-queries are usually served from cache
 # when the dashboard rebuilds).
-_device_cache = TTLCache(ttl_seconds=5)
+# Device query cache — increase TTL to cut repeated expensive joins
+_device_cache = TTLCache(ttl_seconds=15)
 
 # ---------------------------------------------------------------------------
 # Subnet detection helpers
@@ -303,7 +304,7 @@ def deactivate_stale_devices(new_subnet_prefix: str) -> int:
     return scope_devices_to_mode(_current_mode_name or "unknown", new_subnet_prefix)
 
 
-_RESTRICTIVE_MODES = frozenset({"wifi_client", "public_network"})
+_RESTRICTIVE_MODES = frozenset({"public_network"})
 
 
 def scope_devices_to_mode(
@@ -320,12 +321,13 @@ def scope_devices_to_mode(
     appear in the dashboard.  Records are NOT deleted — switching
     back restores them as traffic resumes.
 
-    For **wifi_client** and **public_network** modes only our own device
-    (identified by *our_mac*) and optionally the gateway (*gateway_mac*)
-    are tagged active.  All other devices are cleared.
+    For **public_network** mode only our own device (identified by
+    *our_mac*) and optionally the gateway (*gateway_mac*) are tagged
+    active.  All other devices are cleared.
 
-    For **hotspot**, **ethernet**, **port_mirror**: tag all subnet devices
-    (original behaviour).
+    For **wifi_client**, **hotspot**, **ethernet**, **port_mirror**: tag
+    all subnet devices so ARP-discovered and traffic-producing devices
+    both appear in the dashboard.
 
     Args:
         new_mode_name:      e.g. ``'wifi_client'``, ``'hotspot'``.

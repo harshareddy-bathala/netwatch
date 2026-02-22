@@ -180,10 +180,13 @@ class App {
               ? data.bandwidth_live.history
               : null;
 
+            // Helper: parse timestamp string reliably (space → T for ISO 8601)
+            const toMs = (ts) => new Date(typeof ts === 'string' ? ts.replace(' ', 'T') : ts).getTime();
+
             if (dbHistory && liveHistory) {
               // Merge: DB points + live tail (numeric timestamp comparison)
-              const lastDbTime = new Date(dbHistory[dbHistory.length - 1].timestamp).getTime();
-              const newLive = liveHistory.filter(p => new Date(p.timestamp).getTime() > lastDbTime);
+              const lastDbTime = toMs(dbHistory[dbHistory.length - 1].timestamp);
+              const newLive = liveHistory.filter(p => toMs(p.timestamp) > lastDbTime);
 
               // Clean concatenation — the rounded cutoff on the server ensures
               // DB and live data meet without a gap, so no synthetic bridge needed.
@@ -249,14 +252,18 @@ class App {
         if (dashboard.mode)      store.setState('mode', dashboard.mode);
         if (dashboard.health)    store.setState('health', dashboard.health);
         if (dashboard.alert_stats) store.setState('alertStats', dashboard.alert_stats);
-        if (dashboard.bandwidth) store.setState('bandwidth', dashboard.bandwidth);
+        // Only set bandwidth from REST when SSE is NOT the live source —
+        // otherwise the unfiltered REST data and the merged SSE data keep
+        // overwriting each other, causing the chart to jump back and forth.
+        if (dashboard.bandwidth && !this._sseHealthy) store.setState('bandwidth', dashboard.bandwidth);
       } else {
         // Fallback: individual parallel requests
         await this._individualFetch();
       }
 
       // Fetch bandwidth separately only when dashboard didn't include it
-      if (!dashboard || dashboard.error || !dashboard.bandwidth) {
+      // and SSE is not managing bandwidth in real time.
+      if (!this._sseHealthy && (!dashboard || dashboard.error || !dashboard.bandwidth)) {
         const bwInterval = this._hours >= 24 ? 'hour' : this._hours <= 1 ? '10s' : 'minute';
         const bw = await api.getBandwidthDual(this._hours, bwInterval);
         if (bw && !bw.error && (bw.data || bw.history)) store.setState('bandwidth', bw);
@@ -292,7 +299,7 @@ class App {
       ]);
 
     if (stats.status === 'fulfilled' && !stats.value?.error)      store.setState('stats', stats.value);
-    if (bandwidth.status === 'fulfilled' && !bandwidth.value?.error)   store.setState('bandwidth', bandwidth.value);
+    if (!this._sseHealthy && bandwidth.status === 'fulfilled' && !bandwidth.value?.error)   store.setState('bandwidth', bandwidth.value);
     if (devices.status === 'fulfilled' && !devices.value?.error)     store.setState('devices', devices.value);
     if (alerts.status === 'fulfilled' && !alerts.value?.error)      store.setState('alerts', alerts.value);
     if (protocols.status === 'fulfilled' && !protocols.value?.error)   store.setState('protocols', protocols.value);

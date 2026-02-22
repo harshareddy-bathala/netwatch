@@ -111,14 +111,16 @@ Enabled automatically in production:
 | Setting | Default |
 |---------|---------|
 | Requests/minute/IP | 100 |
+| Requests/hour/IP | 2 000 |
 | Localhost bypass | Yes |
 | Window type | Sliding window (in-memory) |
 
 Response headers:
-- `X-RateLimit-Limit` — max requests per window
-- `X-RateLimit-Remaining` — requests left
+- `X-RateLimit-Limit` — max requests per minute
+- `X-RateLimit-Remaining` — requests left in current minute window
+- `X-RateLimit-Limit-Hour` — max requests per hour
 
-Exceeding the limit returns `429 Too Many Requests` with a `retry_after` hint.
+Exceeding either limit returns `429 Too Many Requests` with a `retry_after` hint.
 
 ---
 

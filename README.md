@@ -2,7 +2,7 @@
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-469-green.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-590-green.svg)](#testing)
 
 ## What's New in v3.0.0
 
@@ -189,7 +189,7 @@ netWatch/
 │   ├── index.html             # Single page app
 │   ├── css/                   # Modular CSS
 │   └── js/                    # Components & utils
-├── tests/                     # 469 pytest tests
+├── tests/                     # 590 pytest tests
 │   ├── test_mode_detection.py
 │   ├── test_packet_capture.py
 │   ├── test_database.py
@@ -210,14 +210,14 @@ netWatch/
 
 NetWatch auto-detects your connection and optimizes capture:
 
-| Mode | Trigger | Visibility | Promiscuous | ARP Scan |
-|------|---------|------------|-------------|----------|
-| **Hotspot** | Mobile hotspot / ICS active | All connected client devices | ON | Yes |
-| **Wi-Fi Client** | Connected to WiFi or phone hotspot | Own traffic only (OS filters other stations) | OFF | No |
-| **Ethernet** | Wired NIC with default gateway | Local subnet traffic via ARP discovery | ON | Yes |
-| **Port Mirror** | SPAN port detected (>50% foreign MACs in captured traffic) | Full network segment — all devices and all traffic | ON | Yes |
-| **Public Network** | Campus/hotel WiFi (fallback when no other mode matches) | Own traffic only; conservative mode with no scanning | OFF | No |
-| **Disconnected** | No active network interface or no IP address | Capture paused; dashboard remains accessible | — | No |
+| Mode | Trigger | Visibility | Promiscuous | ARP Scan | ARP Cache |
+|------|---------|------------|-------------|----------|-----------|
+| **Hotspot** | Mobile hotspot / ICS active | All connected client devices | ON | Yes | Yes |
+| **Wi-Fi Client** | Connected to WiFi or phone hotspot | Own traffic only (OS filters other stations) | OFF | No | Yes |
+| **Ethernet** | Wired NIC with default gateway | Local subnet traffic via ARP discovery | ON | Yes | Yes |
+| **Port Mirror** | SPAN port detected (>50% foreign MACs in captured traffic) | Full network segment — all devices and all traffic | ON | Yes | Yes |
+| **Public Network** | Campus/hotel WiFi (fallback when no other mode matches) | Own traffic only; passive ARP cache only, no active probing | OFF | No | Yes |
+| **Disconnected** | No active network interface or no IP address | Capture paused; dashboard remains accessible | — | No | No |
 
 **Supported connection types:**
 - WiFi client (connecting to any WiFi/hotspot)
@@ -283,6 +283,18 @@ See [Production Deployment Guide](docs/PRODUCTION_DEPLOYMENT.md) for details.
 | Frontend | Vanilla JS SPA, CSS custom properties, SSE real-time push |
 | Data | pandas, numpy |
 | System | psutil (monitoring), Npcap (Windows capture driver) |
+
+## Meet the Team
+
+| Name | Role | GitHub |
+|------|------|--------|
+| **Harsha** | Project Lead · DevOps · ML · Integration & Testing | [@harsha](https://github.com/harsha) |
+| **Likitha** | Frontend Development | [@likitha](https://github.com/likitha) |
+| **Chinmay** | Backend Development | [@chinmay](https://github.com/chinmay) |
+| **Manoj** | Packet Capture Engine | [@manoj](https://github.com/manoj) |
+| **Deepika** | Database & Documentation | [@deepika](https://github.com/deepika) |
+
+---
 
 ## License
 

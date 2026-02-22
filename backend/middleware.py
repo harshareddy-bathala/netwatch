@@ -47,6 +47,7 @@ from config import (
     AUTH_EXEMPT_PREFIXES,
     ENABLE_RATE_LIMITING,
     RATE_LIMIT_REQUESTS_PER_MINUTE,
+    RATE_LIMIT_REQUESTS_PER_HOUR,
     RATE_LIMIT_BYPASS_LOCALHOST,
 )
 
@@ -60,42 +61,64 @@ class RateLimiter:
     """
     Sliding-window in-memory rate limiter keyed by client IP.
 
-    Not persistent across restarts — intentional for a single-process tool.
-    Cleans up stale entries automatically every 60 s.
+    Supports a primary window (e.g., per-minute) and optional secondary
+    window (e.g., per-hour) without changing the public API. Cleans up
+    stale entries automatically every 60 s.
     """
 
-    def __init__(self, max_requests: int = 100, window_seconds: int = 60):
+    def __init__(
+        self,
+        max_requests: int = 100,
+        window_seconds: int = 60,
+        *,
+        secondary_max_requests: int | None = None,
+        secondary_window_seconds: int | None = None,
+    ):
         self.max_requests = max_requests
         self.window = window_seconds
+        self.secondary_max = secondary_max_requests
+        self.secondary_window = secondary_window_seconds
         self._hits: dict[str, list[float]] = defaultdict(list)
         self._lock = threading.Lock()
         self._last_cleanup = time.time()
 
+    def _trim(self, timestamps: list[float], cutoff: float) -> list[float]:
+        return [t for t in timestamps if t > cutoff]
+
     def is_allowed(self, key: str) -> bool:
-        """Return *True* if the request is within the rate limit."""
+        """Return *True* if the request is within the configured limits."""
         now = time.time()
-        cutoff = now - self.window
+        cutoff_primary = now - self.window
+        cutoff_secondary = now - self.secondary_window if self.secondary_window else None
 
         with self._lock:
             # Periodic cleanup of stale keys (every 60 s)
             if now - self._last_cleanup > 60:
-                stale_keys = [k for k, v in self._hits.items() if not v or v[-1] < cutoff]
+                stale_keys = [k for k, v in self._hits.items() if not v or v[-1] < cutoff_primary]
                 for k in stale_keys:
                     del self._hits[k]
                 self._last_cleanup = now
 
-            # Trim old timestamps
-            timestamps = self._hits[key]
-            self._hits[key] = [t for t in timestamps if t > cutoff]
+            timestamps = self._trim(self._hits[key], cutoff_primary)
 
-            if len(self._hits[key]) >= self.max_requests:
+            # Primary window check
+            if len(timestamps) >= self.max_requests:
+                self._hits[key] = timestamps
                 return False
 
-            self._hits[key].append(now)
+            # Secondary window check (optional)
+            if self.secondary_max and self.secondary_window:
+                ts_secondary = self._trim(timestamps, cutoff_secondary)
+                if len(ts_secondary) >= self.secondary_max:
+                    self._hits[key] = timestamps
+                    return False
+
+            timestamps.append(now)
+            self._hits[key] = timestamps
             return True
 
     def remaining(self, key: str) -> int:
-        """How many requests remain for *key* in the current window."""
+        """How many requests remain for *key* in the primary window."""
         now = time.time()
         cutoff = now - self.window
         with self._lock:
@@ -107,6 +130,8 @@ class RateLimiter:
 _limiter = RateLimiter(
     max_requests=RATE_LIMIT_REQUESTS_PER_MINUTE,
     window_seconds=60,
+    secondary_max_requests=RATE_LIMIT_REQUESTS_PER_HOUR,
+    secondary_window_seconds=3600,
 )
 
 
@@ -223,6 +248,8 @@ def register_middleware(app: Flask) -> None:
             client_ip = request.remote_addr or '127.0.0.1'
             response.headers['X-RateLimit-Limit'] = str(RATE_LIMIT_REQUESTS_PER_MINUTE)
             response.headers['X-RateLimit-Remaining'] = str(_limiter.remaining(client_ip))
+            if RATE_LIMIT_REQUESTS_PER_HOUR:
+                response.headers['X-RateLimit-Limit-Hour'] = str(RATE_LIMIT_REQUESTS_PER_HOUR)
         return response
 
     # -----------------------------------------------------------------

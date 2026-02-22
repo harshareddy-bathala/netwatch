@@ -8,8 +8,9 @@ determine the network type, or when the user explicitly enables safe mode.
 Key behaviour:
     - Promiscuous mode: OFF
     - Scope: OWN_TRAFFIC_ONLY
-    - BPF filter: ``host <our_ip>``
+    - BPF filter: ``ether host <our_mac>``
     - ARP scan: NEVER (would probe other people's devices)
+    - ARP cache scan: DISABLED (no device discovery at all)
     - Passive discovery: OFF
     - safe_for_public: True
 
@@ -17,13 +18,15 @@ Key behaviour:
 
 PublicNetworkMode.  It assumes the worst case (coffee-shop WiFi, hotel
 network, airport lounge) and adopts the most restrictive posture:
-    • No promiscuous mode
-    • No ARP scanning
-    • No passive discovery of neighbours
-    • BPF filter limited to our own IP only
+    - No promiscuous mode
+    - No ARP scanning
+    - No ARP cache scanning
+    - No passive discovery of neighbours
+    - BPF filter limited to our own MAC only
+    - Dashboard shows only our own device
 
-This guarantees we never accidentally eavesdrop on or probe a network that
-isn't ours.
+This guarantees we never accidentally eavesdrop on, probe, or even
+enumerate devices on a network that isn't ours.
 """
 
 import logging
@@ -96,8 +99,9 @@ class PublicNetworkMode(BaseMode):
             safe_for_public=True,
             description=(
                 "Public / safe mode — own traffic only, no active scanning, "
-                "no promiscuous mode. ARP cache discovery enabled for "
-                "passive neighbour visibility."
+                "no promiscuous mode, no device discovery. Passive ARP cache "
+                "reads are allowed; no packets are transmitted. "
+                "Designed for untrusted networks (coffee shops, airports)."
             ),
         )
 

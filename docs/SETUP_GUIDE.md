@@ -347,41 +347,34 @@ NetWatch's monitoring capabilities depend on **how your laptop is connected** to
 
 ---
 
-#### Scenario 2: WiFi Client Mode (Connected TO WiFi) - ENHANCED
+#### Scenario 2: WiFi Client Mode (Connected TO WiFi)
 
 **Setup:** Laptop connected as a client to WiFi network (home/office WiFi)
 
 **What NetWatch Can Monitor:**
 - ✅ Your laptop's own traffic (full visibility)
-- ✅ Broadcast traffic on the WiFi network
-- ✅ **NEW:** ALL devices on network via ARP scanning
+- ✅ Nearby devices via passive ARP cache reads (no packets sent)
 - ⚠️ Traffic capture limited to your device's packets
 
-**Enhanced Capabilities (v2.0):**
-- ✅ **ARP Scanning:** Discovers all devices on the local network
-- ✅ **Ping Sweep:** Finds devices that block ARP
-- ✅ **mDNS Discovery:** Finds smart devices and Apple devices
-- ✅ **Passive Analysis:** Extracts device info from traffic
-- ✅ **Promiscuous Mode:** Captures more traffic when available
+**Capabilities:**
+- ✅ **Passive ARP Cache:** Lists devices already known to the OS
+- ❌ **Active ARP Scan:** Disabled — no probe packets are sent
+- ❌ **Promiscuous Mode:** Disabled — AP isolation makes it useless
+- ✅ **BPF Filter:** `ether host <MAC>` captures IPv4 + IPv6
 
 **Note on Traffic Visibility:**
-- WiFi AP isolation is a security feature that limits traffic capture
-- However, **device discovery** works regardless of this limitation
-- You'll see all devices, but detailed traffic only for your device's connections
+- WiFi AP isolation limits captured traffic to your own host
+- Device list is populated from the OS ARP cache (passive, zero network impact)
+- For active device discovery, use Hotspot or Ethernet mode
 
 **Example:** If you connect to WiFi and use the network:
-- ✅ NetWatch discovers all 15 devices on network via ARP scan
+- ✅ NetWatch reads your ARP cache and lists known neighbors
 - ✅ NetWatch captures your laptop's traffic in detail
 - ⚠️ Other devices' traffic not captured (WiFi security feature)
 
-**Best For:** Network discovery, personal bandwidth monitoring
+**Best For:** Personal bandwidth monitoring, lightweight device awareness
 
-**Production Ready:** ✅ YES (Full device discovery + own traffic monitoring)
-
-**API Endpoints:**
-- `GET /api/discovery/devices` - List all discovered devices
-- `POST /api/discovery/scan` - Trigger immediate ARP scan
-- `GET /api/discovery/capabilities` - Check available features
+**Production Ready:** ✅ YES (own traffic + passive device list)
 
 ---
 
