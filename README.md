@@ -288,11 +288,11 @@ See [Production Deployment Guide](docs/PRODUCTION_DEPLOYMENT.md) for details.
 
 | Name | Role | GitHub |
 |------|------|--------|
-| **Harsha** | Project Lead · DevOps · ML · Integration & Testing | [@harsha](https://github.com/harsha) |
-| **Likitha** | Frontend Development | [@likitha](https://github.com/likitha) |
-| **Chinmay** | Backend Development | [@chinmay](https://github.com/chinmay) |
-| **Manoj** | Packet Capture Engine | [@manoj](https://github.com/manoj) |
-| **Deepika** | Database & Documentation | [@deepika](https://github.com/deepika) |
+| **Harsha** | Project Lead · DevOps · ML · Integration & Testing | [@harsha](https://github.com/harshareddy-bathala) |
+| **Likitha** | Frontend Development | [@likitha](https://github.com/likithajagan) |
+| **Chinmay** | Backend Development | [@chinmay](https://github.com/chinmayichinnu56) |
+| **Manoj** | Packet Capture Engine | [@manoj](https://github.com/manojpnaik2006-p) |
+| **Deepika** | Database & Documentation | [@deepika](https://github.com/deepikakudum) |
 
 ---
 
