@@ -61,13 +61,27 @@ def cached_response(cache_key: str, ttl: int = CACHE_TTL):
                 with _response_cache_lock:
                     if hasattr(result, 'get_json'):
                         if len(_response_cache) >= CACHE_MAX_SIZE:
-                            oldest_key = min(_response_cache, key=lambda k: _response_cache[k][1])
-                            del _response_cache[oldest_key]
+                            # Evict expired entries first before falling back to LRU
+                            expired = [k for k, (_, ts) in _response_cache.items()
+                                       if now - ts >= ttl]
+                            for k in expired:
+                                del _response_cache[k]
+                            # If still at capacity, evict oldest
+                            if len(_response_cache) >= CACHE_MAX_SIZE:
+                                oldest_key = min(_response_cache,
+                                                 key=lambda k: _response_cache[k][1])
+                                del _response_cache[oldest_key]
                         _response_cache[cache_key] = (result.get_json(), now)
                     elif isinstance(result, tuple):
                         if len(_response_cache) >= CACHE_MAX_SIZE:
-                            oldest_key = min(_response_cache, key=lambda k: _response_cache[k][1])
-                            del _response_cache[oldest_key]
+                            expired = [k for k, (_, ts) in _response_cache.items()
+                                       if now - ts >= ttl]
+                            for k in expired:
+                                del _response_cache[k]
+                            if len(_response_cache) >= CACHE_MAX_SIZE:
+                                oldest_key = min(_response_cache,
+                                                 key=lambda k: _response_cache[k][1])
+                                del _response_cache[oldest_key]
                         _response_cache[cache_key] = (result[0].get_json(), now)
             except Exception:
                 pass

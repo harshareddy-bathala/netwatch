@@ -69,6 +69,9 @@ class ConnectionPool:
         self._all_connections: list[sqlite3.Connection] = []
         self._lock = threading.Lock()
         self._closed = False
+        self._borrow_count = 0
+        self._wait_count = 0
+        self._replace_count = 0
 
         # Pre-fill the pool
         for _ in range(pool_size):
@@ -119,7 +122,8 @@ class ConnectionPool:
                 conn.commit()
 
         The connection is **returned to the pool** in the finally block –
-        it is NOT closed.
+        it is NOT closed. Validates the connection with ``SELECT 1`` on
+        borrow and replaces stale connections transparently.
         """
         if self._closed:
             raise RuntimeError("Connection pool is shut down")
@@ -127,6 +131,20 @@ class ConnectionPool:
         conn: Optional[sqlite3.Connection] = None
         try:
             conn = self._pool.get(timeout=DATABASE_TIMEOUT)
+            self._borrow_count += 1
+
+            # Validate connection — replace if stale
+            try:
+                conn.execute("SELECT 1")
+            except (sqlite3.Error, sqlite3.ProgrammingError):
+                logger.debug("Replacing stale connection from pool")
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = self._create_connection()
+                self._replace_count += 1
+
             yield conn
         except queue.Empty:
             active = self.pool_size - self._pool.qsize()
@@ -179,6 +197,21 @@ class ConnectionPool:
                 pass
         self._all_connections.clear()
         logger.info("Connection pool shut down")
+
+    def pool_stats(self) -> dict:
+        """Return pool utilization statistics.
+
+        Exposed via ``/api/system/health`` for monitoring.
+        """
+        available = self._pool.qsize()
+        return {
+            "total": self.pool_size,
+            "available": available,
+            "in_use": self.pool_size - available,
+            "borrow_count": self._borrow_count,
+            "wait_count": self._wait_count,
+            "replace_count": self._replace_count,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -259,3 +292,16 @@ def wal_checkpoint(mode: str = "PASSIVE") -> bool:
     except Exception as e:
         logger.debug("WAL checkpoint (%s) failed: %s", mode, e)
         return False
+
+
+def pool_stats() -> dict:
+    """Return pool utilization stats from the global pool.
+
+    Returns empty dict if pool is not initialized.
+    """
+    if _pool is not None:
+        return _pool.pool_stats()
+    return {
+        "total": 0, "available": 0, "in_use": 0,
+        "borrow_count": 0, "wait_count": 0, "replace_count": 0,
+    }

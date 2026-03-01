@@ -11,7 +11,9 @@ This guide provides step-by-step instructions for setting up NetWatch on Windows
 5. [Virtual Environment Setup](#virtual-environment-setup)
 6. [Database Initialization](#database-initialization)
 7. [Running NetWatch](#running-netwatch)
-8. [Troubleshooting](#troubleshooting)
+8. [Command-Line Options](#command-line-options)
+9. [Environment Variables](#environment-variables)
+10. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -21,7 +23,7 @@ Before installing NetWatch, ensure you have:
 
 | Requirement | Minimum Version | Check Command |
 |-------------|-----------------|---------------|
-| Python | **3.11** (required) | `python --version` |
+| Python | **3.11+** (required) | `python --version` |
 | pip | 21.0+ | `pip --version` |
 | Git | 2.0+ | `git --version` |
 | Admin Rights | Required | For packet capture |
@@ -32,9 +34,9 @@ Before installing NetWatch, ensure you have:
 
 ## Windows Setup
 
-### Step 1: Install Python 3.11
+### Step 1: Install Python 3.11+
 
-1. Download Python 3.11 from [python.org](https://www.python.org/downloads/release/python-3110/)
+1. Download Python 3.11 or later from [python.org](https://www.python.org/downloads/)
 2. Run the installer
 3. **IMPORTANT:** Check "Add Python to PATH"
 4. Click "Install Now"
@@ -42,7 +44,7 @@ Before installing NetWatch, ensure you have:
 Verify installation:
 ```powershell
 python --version
-# Should show: Python 3.11.x
+# Should show: Python 3.11.x or later
 # If you have multiple versions:
 py -3.11 --version
 ```
@@ -67,9 +69,9 @@ cd netwatch
 ### Step 4: Create Virtual Environment
 
 ```powershell
-# Use Python 3.11 specifically
+# Use Python 3.11+ specifically
 py -3.11 -m venv venv       # If multiple Python versions installed
-python -m venv venv          # If 'python' already points to 3.11
+python -m venv venv          # If 'python' already points to 3.11+
 venv\Scripts\activate
 ```
 
@@ -116,7 +118,7 @@ python main.py
 ### Step 2: Install Python
 
 ```bash
-brew install python@3.11
+brew install python@3.11   # or python@3.12, python@3.13, etc.
 ```
 
 Verify installation:
@@ -165,11 +167,12 @@ sudo python main.py
 
 ### Ubuntu/Debian
 
-#### Step 1: Update System and Install Python 3.11
+#### Step 1: Update System and Install Python 3.11+
 
 ```bash
 sudo apt update
 sudo apt install python3.11 python3.11-venv python3-pip git
+# Or use python3.12 / python3.13 if available on your distribution
 ```
 
 #### Step 2: Install libpcap (Required for Scapy)
@@ -241,11 +244,11 @@ Follow Steps 3-7 from Ubuntu section above.
 
 ### Creating the Environment
 
-> **Important:** Always use Python 3.11 when creating the virtual environment.
+> **Important:** Always use Python 3.11 or later when creating the virtual environment.
 
 ```bash
 # Create (use the appropriate command for your setup)
-python -m venv venv              # If 'python' is 3.11
+python -m venv venv              # If 'python' is 3.11+
 py -3.11 -m venv venv           # Windows with multiple Python versions
 python3.11 -m venv venv         # Linux / macOS with multiple versions
 
@@ -260,7 +263,7 @@ source venv/bin/activate
 
 # Verify correct Python version
 python --version
-# Should show: Python 3.11.x
+# Should show: Python 3.11.x or later
 
 # Deactivate (when done)
 deactivate
@@ -288,10 +291,10 @@ This creates `netwatch.db` with all required tables.
 
 ### Resetting the Database
 
-To start fresh (deletes all data):
+To start fresh (deletes all data, clears model artifacts, and flushes caches):
 
 ```bash
-python database/init_db.py --reset
+python main.py --reset-db
 ```
 
 ---
@@ -318,6 +321,97 @@ http://localhost:5000
 ### Stopping the Application
 
 Press `Ctrl+C` in the terminal.
+
+---
+
+## Command-Line Options
+
+All flags are passed to `main.py`. Flags are optional; defaults are loaded from `config.py` and its environment variable overrides.
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--reset-db` | flag | off | Reset the database on startup (clears all stored data, removes model artifacts, flushes query caches) |
+| `--port PORT` | int | 5000 | Web server port (overrides `FLASK_PORT` env var and config default) |
+| `--host HOST` | string | 127.0.0.1 | Web server bind address (overrides `FLASK_HOST` env var and config default) |
+| `--no-capture` | flag | off | Start in dashboard-only mode without packet capture (no admin privileges required for the web server itself) |
+| `--log-level LEVEL` | choice | INFO | Override log level. Accepted values: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `--log-file PATH` | string | None | Write logs to the specified file path (in addition to console output; uses rotating file handler) |
+
+### Examples
+
+```bash
+# Start with default settings
+python main.py
+
+# Reset database and start fresh
+python main.py --reset-db
+
+# Run on a custom host and port
+python main.py --host 0.0.0.0 --port 8080
+
+# Dashboard-only mode (no packet capture)
+python main.py --no-capture
+
+# Verbose logging to a file
+python main.py --log-level DEBUG --log-file /var/log/netwatch.log
+
+# Combine multiple flags
+python main.py --reset-db --port 9000 --log-level WARNING
+```
+
+---
+
+## Environment Variables
+
+NetWatch reads configuration from environment variables. You can also place them in a `.env` file in the project root; values there will not override variables already set in the real environment.
+
+### Application Environment
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NETWATCH_ENV` | `development` | Application environment. Accepted values: `development`, `production`, `testing`. Controls debug mode, rate limiting, log paths, and database location. |
+
+### Web Server
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLASK_HOST` | `127.0.0.1` | Bind address for the web server. Set to `0.0.0.0` to listen on all interfaces. |
+| `FLASK_PORT` | `5000` | Port for the web server. |
+
+### Security
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SECRET_KEY` | dev-only fallback | Secret key for session management and CSRF protection. **Required** when `NETWATCH_ENV=production` (the application will refuse to start without it). |
+| `NETWATCH_API_KEY` | (empty) | API key for authenticating requests to `/api/*` routes. When set in production, clients must pass this key in the `X-API-Key` header. |
+| `NETWATCH_AUTH_ENABLED` | `false` (dev) / `true` (prod) | Explicitly enable or disable API key authentication. Accepts `1`, `true`, or `yes`. In production mode, authentication is enabled by default. |
+
+### Database
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DB_CONNECTION_POOL_SIZE` | `15` | Number of SQLite connections kept in the connection pool. Increase if you see "pool exhausted" warnings under heavy concurrent load. |
+| `DB_BUSY_TIMEOUT` | `10000` | Milliseconds to wait for the SQLite write-lock before raising "database is locked". Increase for high-write scenarios such as port-mirror capture. |
+
+### Storage Limits
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MAX_DATABASE_SIZE_GB` | `20` | Maximum database file size (in GB) before emergency cleanup triggers. |
+| `EMERGENCY_RETENTION_HOURS` | `6` | When emergency cleanup runs, retain only this many hours of data. |
+
+### Server-Sent Events (SSE)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SSE_MAX_CONNECTIONS` | `10` | Maximum number of simultaneous SSE connections. Prevents resource exhaustion from too many open dashboard tabs. |
+
+### Logging and CORS
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LOG_LEVEL` | `INFO` | Application log level. Accepted values: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
+| `CORS_ORIGINS` | localhost on port 5000 | Comma-separated list of allowed CORS origins (e.g., `http://localhost:3000,https://monitor.example.com`). |
 
 ---
 
@@ -492,7 +586,7 @@ python -c "from packet_capture.monitor import get_interface_detector; d=get_inte
 
 **Modes:**
 - `ETHERNET` - Wired connection
-- `WIFI_CLIENT` - Connected to WiFi (limited monitoring)
+- `PUBLIC_NETWORK` - Connected to WiFi (own traffic only)
 - `WIFI_HOTSPOT` - Laptop is Access Point (full monitoring)
 - `VIRTUAL` - VPN/Docker/VM interface
 - `LOOPBACK` - Local only (127.0.0.1)
@@ -622,7 +716,8 @@ Scenario B (Solution - Laptop as Hotspot):
 
 **Solution:**
 1. Find and stop the other application, OR
-2. Change `FLASK_PORT` in `config.py`
+2. Use a different port: `python main.py --port 8080`, OR
+3. Change `FLASK_PORT` in `config.py` or set the `FLASK_PORT` environment variable
 
 ---
 

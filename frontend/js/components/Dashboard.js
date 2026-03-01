@@ -49,11 +49,14 @@ export default class Dashboard {
         <div class="dashboard-grid__charts">
           <div class="chart-card">
             <div class="chart-card__header">
-              <span class="chart-card__title">Bandwidth History</span>
-              <div class="chart-card__actions">
-                <button class="time-btn active" data-hours="1">1H</button>
-                <button class="time-btn" data-hours="6">6H</button>
-                <button class="time-btn" data-hours="24">24H</button>
+              <div class="chart-card__title-group">
+                <span class="chart-card__title">Bandwidth History</span>
+                <span class="speed-badge" id="bw-live-speed"></span>
+              </div>
+              <div class="time-range-toggle">
+                <button class="time-range-toggle__btn active" data-hours="1">1H</button>
+                <button class="time-range-toggle__btn" data-hours="6">6H</button>
+                <button class="time-range-toggle__btn" data-hours="24">24H</button>
               </div>
             </div>
             <div class="chart-card__canvas-wrap">
@@ -61,12 +64,14 @@ export default class Dashboard {
             </div>
           </div>
 
-          <div class="chart-card">
+          <div class="chart-card chart-card--protocol">
             <div class="chart-card__header">
               <span class="chart-card__title">Protocols</span>
             </div>
-            <div class="chart-card__canvas-wrap">
-              <canvas id="protocol-canvas"></canvas>
+            <div class="chart-card__protocol-body">
+              <div class="chart-card__canvas-wrap chart-card__canvas-wrap--doughnut">
+                <canvas id="protocol-canvas"></canvas>
+              </div>
             </div>
           </div>
         </div>
@@ -75,7 +80,7 @@ export default class Dashboard {
           <div class="top-devices" id="top-devices-widget">
             <div class="top-devices__title">Top Devices</div>
             <div id="top-devices-list" class="empty-state">
-              <span class="empty-state__text">Loading…</span>
+              <span class="empty-state__text">Loading\u2026</span>
             </div>
           </div>
         </div>
@@ -111,10 +116,10 @@ export default class Dashboard {
       if (currentDevices) this._onDevices(currentDevices);
     });
 
-    // Time range buttons
-    this.container.querySelectorAll('.time-btn').forEach(btn => {
+    // Time range pill toggle
+    this.container.querySelectorAll('.time-range-toggle__btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        this.container.querySelectorAll('.time-btn').forEach(b => b.classList.remove('active'));
+        this.container.querySelectorAll('.time-range-toggle__btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         // Dispatch event for app to re-fetch with new range
         window.dispatchEvent(new CustomEvent('netwatch:timerange', { detail: { hours: parseInt(btn.dataset.hours) } }));
@@ -189,9 +194,6 @@ export default class Dashboard {
     const ownTrafficModes = ['public_network'];
     if (ownTrafficModes.includes(this._currentMode)) {
       return 'own traffic only';
-    }
-    if (this._currentMode === 'wifi_client') {
-      return 'discovered on LAN';
     }
     return this._isArpCacheMode ? 'traffic-active only' : '';
   }

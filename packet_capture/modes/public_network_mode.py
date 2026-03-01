@@ -71,6 +71,8 @@ class PublicNetworkMode(BaseMode):
         mac = self._interface.mac_address
         ip = self._interface.ip_address
         if mac:
+            # BPF expects colon-separated lowercase MAC
+            mac = mac.lower().replace("-", ":")
             return f"ether host {mac}"
         if ip:
             return f"host {ip} or ip6"
@@ -94,14 +96,14 @@ class PublicNetworkMode(BaseMode):
             should_use_promiscuous=False,
             scope=NetworkScope.OWN_TRAFFIC_ONLY,
             can_arp_scan=False,
-            can_arp_cache_scan=True,
+            can_arp_cache_scan=False,
             can_do_passive_discovery=False,
             safe_for_public=True,
             description=(
                 "Public / safe mode — own traffic only, no active scanning, "
-                "no promiscuous mode, no device discovery. Passive ARP cache "
-                "reads are allowed; no packets are transmitted. "
-                "Designed for untrusted networks (coffee shops, airports)."
+                "no promiscuous mode, no device discovery. No ARP cache or "
+                "network probing is performed. "
+                "Designed for untrusted networks (coffee shops, airports, campus WiFi)."
             ),
         )
 

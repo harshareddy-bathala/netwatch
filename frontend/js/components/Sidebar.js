@@ -7,7 +7,6 @@ import store from '../store.js';
 
 const MODE_SVG = {
   hotspot:        '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 01-9 9"/></svg>',
-  wifi_client:    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0114.08 0"/><path d="M1.42 9a16 16 0 0121.16 0"/><path d="M8.53 16.11a6 6 0 016.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>',
   ethernet:       '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2M15 20v2M2 15h2M20 15h2M9 2v2M9 20v2M2 9h2M20 9h2"/></svg>',
   port_mirror:    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>',
   public_network: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>',
@@ -15,12 +14,11 @@ const MODE_SVG = {
 };
 
 const MODE_CONFIG = {
-  hotspot:        { label: 'Hotspot Mode',    hint: 'Device discovery: ON' },
-  wifi_client:    { label: 'Wi-Fi Client',    hint: 'Monitoring own traffic only' },
-  ethernet:       { label: 'Ethernet',        hint: 'LAN monitoring: ON' },
-  port_mirror:    { label: 'Port Mirror',     hint: 'Full traffic visibility' },
-  public_network: { label: 'Public Network',  hint: 'Safe mode — own traffic only' },
-  none:           { label: 'Disconnected',    hint: 'No network connection' },
+  hotspot:        { label: 'Hotspot Mode',    hint: 'Device discovery ON — sees connected clients' },
+  ethernet:       { label: 'Ethernet',        hint: 'LAN monitoring ON — discovers local devices' },
+  port_mirror:    { label: 'Port Mirror',     hint: 'Full traffic visibility — promiscuous capture' },
+  public_network: { label: 'Public Network',  hint: 'Safe mode — own traffic only, no scanning' },
+  none:           { label: 'Disconnected',    hint: 'No network connection detected' },
 };
 
 export default class Sidebar {
@@ -74,9 +72,13 @@ export default class Sidebar {
           <button class="btn-refresh" id="btn-sidebar-refresh" title="Refresh">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
           </button>
+          <button class="btn-mode-info" id="btn-mode-info" title="Connection details" style="display:none;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+          </button>
         </div>
         <div class="mode-info">
           <div class="mode-hint" id="mode-hint"></div>
+          <div class="mode-detail-popup" id="mode-detail-popup" style="display:none;"></div>
           <div class="mode-transition" id="mode-transition">Switching mode…</div>
         </div>
       </div>
@@ -106,6 +108,21 @@ export default class Sidebar {
       // Dispatch custom event for app to handle
       window.dispatchEvent(new CustomEvent('netwatch:refresh'));
       setTimeout(() => svg.classList.remove('spinning'), 800);
+    });
+
+    // Info button — toggle connection details popup
+    this.el.querySelector('#btn-mode-info')?.addEventListener('click', () => {
+      const popup = this.el.querySelector('#mode-detail-popup');
+      if (popup) popup.style.display = popup.style.display === 'none' ? '' : 'none';
+    });
+
+    // Close popup when clicking outside
+    document.addEventListener('click', (e) => {
+      const popup = this.el.querySelector('#mode-detail-popup');
+      const btn = this.el.querySelector('#btn-mode-info');
+      if (popup && popup.style.display !== 'none' && !popup.contains(e.target) && !btn?.contains(e.target)) {
+        popup.style.display = 'none';
+      }
     });
 
     // Subscribe to mode changes
@@ -148,6 +165,23 @@ export default class Sidebar {
       hintEl.textContent = cfg.hint || '';
     }
 
+    // Show/hide info button and build popup content
+    const infoBtn = this.el.querySelector('#btn-mode-info');
+    const popup = this.el.querySelector('#mode-detail-popup');
+    if (infoBtn && popup) {
+      const iface = data.interface || {};
+      const hasInfo = !!(iface.ip || iface.ssid || iface.gateway);
+      infoBtn.style.display = hasInfo ? '' : 'none';
+
+      // Build compact detail lines
+      const lines = [];
+      if (iface.ssid) lines.push(`<b>Network:</b> ${this._esc(iface.ssid)}`);
+      if (iface.ip) lines.push(`<b>IP:</b> ${this._esc(iface.ip)}`);
+      if (iface.gateway) lines.push(`<b>Gateway:</b> ${this._esc(iface.gateway)}`);
+      if (iface.name) lines.push(`<b>Interface:</b> ${this._esc(iface.name)}`);
+      popup.innerHTML = lines.join('<br>');
+    }
+
     // Phase 5: hide transition indicator once new mode data arrives
     const transEl = this.el.querySelector('#mode-transition');
     if (transEl) {
@@ -159,6 +193,13 @@ export default class Sidebar {
     if (infoEl) {
       infoEl.style.display = (cfg.hint) ? '' : 'none';
     }
+  }
+
+  /** Minimal HTML escape */
+  _esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
   }
 
   _updateAlertBadge(data) {

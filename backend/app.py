@@ -91,7 +91,9 @@ def create_app(config_override: dict = None) -> Flask:
     @app.route('/')
     def serve_index():
         """Serve the SPA entry point."""
-        return send_from_directory(app.static_folder, 'index.html')
+        resp = send_from_directory(app.static_folder, 'index.html')
+        resp.headers['Cache-Control'] = 'no-cache, must-revalidate'
+        return resp
     
     @app.route('/<path:filename>')
     def serve_static(filename):
@@ -100,7 +102,12 @@ def create_app(config_override: dict = None) -> Flask:
         import os as _os
         full_path = _os.path.join(app.static_folder, filename)
         if _os.path.isfile(full_path):
-            return send_from_directory(app.static_folder, filename)
+            resp = send_from_directory(app.static_folder, filename)
+            # Prevent aggressive browser caching of JS/CSS so code changes
+            # are picked up without manual hard-refresh (Ctrl+F5).
+            if filename.endswith(('.js', '.css')):
+                resp.headers['Cache-Control'] = 'no-cache, must-revalidate'
+            return resp
         # Otherwise it's a client-side SPA route — serve index.html
         return send_from_directory(app.static_folder, 'index.html')
     

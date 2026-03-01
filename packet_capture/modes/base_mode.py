@@ -3,8 +3,8 @@ base_mode.py - Abstract Base Class for Network Monitoring Modes
 ================================================================
 
 Defines the core abstractions that all network monitoring modes must implement.
-Each mode represents a distinct network configuration (hotspot, WiFi client,
-ethernet, public network, port mirror) and specifies how packet capture should
+Each mode represents a distinct network configuration (hotspot, ethernet,
+public network, port mirror) and specifies how packet capture should
 behave in that context.
 
 Key abstractions:
@@ -33,7 +33,7 @@ class NetworkScope(Enum):
     """
     Defines the scope of traffic visible to a monitoring mode.
 
-    OWN_TRAFFIC_ONLY  – Only packets to/from this machine (WiFi client, public).
+    OWN_TRAFFIC_ONLY  – Only packets to/from this machine (public network).
     CONNECTED_CLIENTS – Traffic of devices connected to our hotspot.
     LOCAL_NETWORK     – Visible traffic on the local LAN segment (ethernet).
     ALL_TRAFFIC       – Everything on the wire (port-mirror / SPAN).
@@ -47,7 +47,6 @@ class NetworkScope(Enum):
 class ModeName(Enum):
     """Canonical names for each monitoring mode."""
     HOTSPOT = "hotspot"
-    WIFI_CLIENT = "wifi_client"
     ETHERNET = "ethernet"
     PUBLIC_NETWORK = "public_network"
     PORT_MIRROR = "port_mirror"
@@ -168,7 +167,7 @@ class BaseMode(ABC):
 
     Usage example::
 
-        mode = WiFiClientMode(interface_info)
+        mode = PublicNetworkMode(interface_info)
         print(mode.get_bpf_filter())        # "host 192.168.1.42"
         print(mode.should_use_promiscuous()) # False
         print(mode.get_scope())              # NetworkScope.OWN_TRAFFIC_ONLY

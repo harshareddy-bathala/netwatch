@@ -161,6 +161,95 @@ def get_production_metrics():
         return jsonify({'error': 'Metrics module not available', 'code': 'UNAVAILABLE'}), 503
 
 
+@system_bp.route('/api/system/metrics', methods=['GET'])
+@handle_errors
+def get_system_metrics():
+    """Aggregated system metrics from all subsystems.
+
+    Returns packet capture stats, database metrics, connection pool
+    utilization, memory/device counts, current mode info, and thread
+    health — all in a single response for monitoring dashboards.
+    """
+    from flask import current_app
+
+    metrics: dict = {"timestamp": datetime.now().isoformat()}
+
+    # -- Packet capture --------------------------------------------------
+    engine = get_engine()
+    if engine and engine.is_running:
+        try:
+            metrics["capture"] = engine.get_stats()
+        except Exception:
+            metrics["capture"] = {"running": True}
+    else:
+        metrics["capture"] = {"running": False}
+
+    # -- Database --------------------------------------------------------
+    try:
+        from database.queries.maintenance import (
+            get_database_size_mb,
+            get_table_row_counts,
+            get_wal_size_mb,
+        )
+        metrics["database"] = {
+            "size_mb": round(get_database_size_mb(), 1),
+            "wal_size_mb": round(get_wal_size_mb(), 1),
+            "row_counts": get_table_row_counts(),
+        }
+    except Exception:
+        metrics["database"] = {}
+
+    # -- Connection pool -------------------------------------------------
+    try:
+        from database.connection import pool_stats
+        metrics["pool"] = pool_stats()
+    except Exception:
+        metrics["pool"] = {}
+
+    # -- Memory & device tracking ----------------------------------------
+    try:
+        from utils.realtime_state import dashboard_state
+        from utils.health_monitor import get_memory_usage
+        metrics["memory"] = get_memory_usage()
+        metrics["device_count_in_memory"] = dashboard_state.device_count
+    except Exception:
+        metrics["memory"] = {}
+        metrics["device_count_in_memory"] = 0
+
+    # -- Current mode ----------------------------------------------------
+    iface_mgr = get_iface_manager()
+    if iface_mgr:
+        try:
+            current_mode = iface_mgr.get_current_mode()
+            metrics["mode"] = {
+                "name": current_mode.get_mode_name().value if current_mode else "unknown",
+                "interface": current_mode.interface.name if current_mode else "",
+            }
+        except Exception:
+            metrics["mode"] = {"name": "unknown"}
+    else:
+        metrics["mode"] = {"name": "unknown"}
+
+    # -- Threads ---------------------------------------------------------
+    try:
+        from utils.health_monitor import get_thread_count, get_thread_names
+        metrics["threads"] = {
+            "count": get_thread_count(),
+            "names": get_thread_names(),
+        }
+    except Exception:
+        metrics["threads"] = {}
+
+    # -- Request-level metrics -------------------------------------------
+    try:
+        from utils.metrics import metrics_collector
+        metrics["requests"] = metrics_collector.get_metrics()
+    except ImportError:
+        metrics["requests"] = {}
+
+    return jsonify({"data": metrics})
+
+
 @system_bp.route('/api/status', methods=['GET'])
 @handle_errors
 def get_production_status():

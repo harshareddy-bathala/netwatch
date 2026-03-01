@@ -16,10 +16,10 @@ from utils.query_cache import time_query, TTLCache
 
 logger = logging.getLogger(__name__)
 
-# Cache for frequently-polled queries (5s TTL — slightly longer than SSE
-# push interval so that bandwidth_history_dual is usually served from cache
-# when dashboard and SSE both request it within the same cycle).
-_traffic_cache = TTLCache(ttl_seconds=5)
+# Cache for frequently-polled queries (10s TTL — bandwidth history changes
+# slowly relative to the dashboard and caching avoids repeated expensive
+# GROUP BY scans on traffic_summary).
+_traffic_cache = TTLCache(ttl_seconds=10)
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +128,11 @@ def get_bandwidth_history_dual(hours: int = 1, interval: str = "minute") -> List
                 """, (since,))
                 secs = bucket_secs
             else:
-                # Minute / hour / day: use strftime + UNION with rollup
+                # Minute / hour / day: use strftime on traffic_summary only.
+                # traffic_summary retains 24h of raw data, which covers the
+                # typical 1H/6H/24H dashboard views.  For longer ranges the
+                # data simply thins out naturally.  Removing the UNION with
+                # traffic_rollup avoids double-counting and cuts query time.
                 if interval == "hour":
                     fmt, secs = "%Y-%m-%d %H:00:00", 3600
                 elif interval == "day":
@@ -138,23 +142,16 @@ def get_bandwidth_history_dual(hours: int = 1, interval: str = "minute") -> List
 
                 cursor.execute(f"""
                     SELECT
-                        strftime('{fmt}', COALESCE(timestamp, hour_bucket)) AS time_bucket,
+                        strftime('{fmt}', timestamp) AS time_bucket,
                         SUM(bytes_transferred) AS total_bytes,
-                        SUM(packet_count) AS packet_count,
+                        COUNT(*) AS packet_count,
                         SUM(CASE WHEN direction = 'download' THEN bytes_transferred ELSE 0 END) AS bytes_download,
                         SUM(CASE WHEN direction = 'upload'   THEN bytes_transferred ELSE 0 END) AS bytes_upload
-                    FROM (
-                        SELECT timestamp, bytes_transferred, direction, 1 as packet_count, NULL as hour_bucket
-                        FROM traffic_summary
-                        WHERE timestamp >= ?
-                        UNION ALL
-                        SELECT NULL as timestamp, total_bytes as bytes_transferred, direction, packet_count, hour_bucket
-                        FROM traffic_rollup
-                        WHERE hour_bucket >= ?
-                    )
+                    FROM traffic_summary
+                    WHERE timestamp >= ?
                     GROUP BY time_bucket
                     ORDER BY time_bucket ASC
-                """, (since, since))
+                """, (since,))
 
             mbps_mult = 8 / secs / 1_000_000 if secs else 0
             results = []
@@ -347,15 +344,22 @@ def get_top_talkers(limit: int = 10, hours: int = 1) -> List[dict]:
 # Raw traffic
 # ---------------------------------------------------------------------------
 
-def get_traffic_summary(hours: int = 1, limit: int = 1000) -> List[dict]:
+def get_traffic_summary(hours: int = 1, limit: int = 1000, device_ip: str = None) -> List[dict]:
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
             since = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
-            cursor.execute("""
-                SELECT * FROM traffic_summary WHERE timestamp >= ?
-                ORDER BY timestamp DESC LIMIT ?
-            """, (since, limit))
+            if device_ip:
+                cursor.execute("""
+                    SELECT * FROM traffic_summary
+                    WHERE timestamp >= ? AND (source_ip = ? OR dest_ip = ?)
+                    ORDER BY timestamp DESC LIMIT ?
+                """, (since, device_ip, device_ip, limit))
+            else:
+                cursor.execute("""
+                    SELECT * FROM traffic_summary WHERE timestamp >= ?
+                    ORDER BY timestamp DESC LIMIT ?
+                """, (since, limit))
             return [dict_from_row(row) for row in cursor.fetchall()]
     except sqlite3.Error as e:
         logger.error("get_traffic_summary error: %s", e)

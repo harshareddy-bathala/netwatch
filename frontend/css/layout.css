@@ -180,11 +180,6 @@ body {
   min-width: 0;
 }
 
-.mode-badge[data-mode="wifi_client"] {
-  background: rgba(59, 130, 246, 0.1);
-  color: var(--color-info);
-}
-
 .mode-badge[data-mode="ethernet"] {
   background: rgba(16, 185, 129, 0.1);
   color: var(--color-success);

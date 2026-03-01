@@ -70,28 +70,27 @@ class HotspotMode(BaseMode):
 
     def get_bpf_filter(self) -> str:
         """
-        BPF filter that restricts capture to the hotspot subnet + IPv6.
+        BPF filter for hotspot mode — capture ALL IP traffic on this adapter.
 
-        **Why this filter?**
-        When hosting a hotspot the OS creates a virtual adapter on a dedicated
-        subnet (e.g. 192.168.137.0/24 on Windows ICS). We only want packets
-        that belong to that subnet — this prevents accidentally capturing
-        traffic from the upstream (Internet-facing) interface.
+        The hotspot creates a **dedicated** virtual adapter (e.g.
+        ``Local Area Connection* 10`` on Windows ICS, ``bridge100`` on macOS).
+        All traffic on this adapter belongs to the hotspot — there is no risk
+        of capturing unrelated traffic from other networks.
 
-        ``or ip6`` is appended so that IPv6 traffic from connected clients
-        is also measured.  Without it, clients streaming over IPv6 will
-        show near-zero bandwidth.
+        Using a broad ``ip or ip6`` filter instead of ``net <subnet>`` ensures
+        we capture:
+
+        * **DHCP DISCOVER/REQUEST** (0.0.0.0 → 255.255.255.255) — essential
+          for passive hostname learning via DHCP Option 12.
+        * **All forwarded traffic** regardless of NAT stage — on some Windows
+          versions the ``net <subnet>`` filter can miss packets that haven't
+          been fully translated yet.
+        * **IPv6 traffic** from connected clients (streaming, etc.).
+
+        Subnet-based direction detection and device filtering are handled
+        independently by ``PacketProcessor`` using ``get_valid_ip_range()``.
         """
-        subnet = self.get_valid_ip_range()
-        if subnet:
-            return f"(net {subnet}) or ip6"
-        # Fallback: capture traffic involving our hotspot IP (IPv4 + IPv6)
-        mac = self._interface.mac_address
-        if mac:
-            return f"ether host {mac}"
-        if self._interface.ip_address:
-            return f"host {self._interface.ip_address} or ip6"
-        return ""
+        return "ip or ip6"
 
     def get_valid_ip_range(self) -> Optional[str]:
         return self._hotspot_subnet
@@ -283,6 +282,9 @@ class HotspotMode(BaseMode):
         """
         Parse the system ARP table and return entries whose IP falls
         within the hotspot subnet.
+
+        Filters out the host's own IP (the hotspot gateway address) so
+        this machine never appears as a "connected client".
         """
         clients: List[Dict[str, str]] = []
         subnet = self.get_valid_ip_range()
@@ -294,6 +296,19 @@ class HotspotMode(BaseMode):
             network = ipaddress.IPv4Network(subnet, strict=False)
         except ValueError:
             return clients
+
+        # Collect all local IPs to exclude (our own hotspot IP + other adapters)
+        own_ips: set = set()
+        if self._interface.ip_address:
+            own_ips.add(self._interface.ip_address)
+        try:
+            import psutil
+            for _name, addrs in psutil.net_if_addrs().items():
+                for addr in addrs:
+                    if addr.family.name == 'AF_INET' and addr.address not in ('0.0.0.0', '127.0.0.1'):
+                        own_ips.add(addr.address)
+        except (ImportError, Exception):
+            pass
 
         if IS_WINDOWS:
             out = run_command(["arp", "-a"])
@@ -316,6 +331,9 @@ class HotspotMode(BaseMode):
                 ip_addr = ip_match.group(1)
                 try:
                     if ipaddress.IPv4Address(ip_addr) in network:
+                        # Skip our own IP — the hotspot host is not a client
+                        if ip_addr in own_ips:
+                            continue
                         mac = mac_match.group(1).lower().replace("-", ":")
                         clients.append({
                             "mac": mac,

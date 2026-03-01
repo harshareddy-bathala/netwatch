@@ -26,10 +26,9 @@ from packet_capture.modes.base_mode import (
     ModeName,
     NetworkScope,
 )
-from packet_capture.modes.wifi_client_mode import WiFiClientMode
+from packet_capture.modes.public_network_mode import PublicNetworkMode
 from packet_capture.modes.hotspot_mode import HotspotMode
 from packet_capture.modes.ethernet_mode import EthernetMode
-from packet_capture.modes.public_network_mode import PublicNetworkMode
 from packet_capture.modes.port_mirror_mode import PortMirrorMode
 from packet_capture.packet_processor import PacketProcessor
 from packet_capture.strategies.ethernet_strategy import EthernetCaptureStrategy
@@ -74,11 +73,11 @@ def _make_mock_mode(name_str, ip="192.168.1.100", iface="eth0"):
 
 
 # ===================================================================
-# 1. WiFi Client Mode Verification
+# 1. Public Network WiFi Mode Verification
 # ===================================================================
 
-class TestWiFiClientVerification:
-    """Phase D item 1: WiFi client captures both directions via ether host."""
+class TestPublicNetworkWiFiVerification:
+    """Phase D item 1: Public network WiFi captures both directions via ether host."""
 
     def test_bpf_uses_ether_host_mac(self):
         """BPF filter must be 'ether host <mac>' to capture both IPv4+IPv6."""
@@ -86,7 +85,7 @@ class TestWiFiClientVerification:
             name="wlan0", ip="10.0.0.5", mac="aa:bb:cc:dd:ee:ff",
             ssid="CoffeeShop", itype="wifi",
         )
-        mode = WiFiClientMode(info)
+        mode = PublicNetworkMode(info)
         bpf = mode.get_bpf_filter()
         assert "ether host" in bpf
         assert "aa:bb:cc:dd:ee:ff" in bpf.lower()
@@ -94,7 +93,7 @@ class TestWiFiClientVerification:
     def test_direction_upload_from_self(self):
         """Packets FROM our IP → upload."""
         info = _make_interface(ip="192.168.1.50", mac="AA:BB:CC:44:55:66", itype="wifi")
-        mode = WiFiClientMode(info)
+        mode = PublicNetworkMode(info)
         proc = PacketProcessor(mode)
         d = proc._determine_direction("192.168.1.50", "8.8.8.8")
         assert d == "upload"
@@ -102,7 +101,7 @@ class TestWiFiClientVerification:
     def test_direction_download_to_self(self):
         """Packets TO our IP → download."""
         info = _make_interface(ip="192.168.1.50", mac="AA:BB:CC:44:55:66", itype="wifi")
-        mode = WiFiClientMode(info)
+        mode = PublicNetworkMode(info)
         proc = PacketProcessor(mode)
         d = proc._determine_direction("8.8.8.8", "192.168.1.50")
         assert d == "download"
@@ -110,7 +109,7 @@ class TestWiFiClientVerification:
     def test_mac_fallback_for_ipv6(self):
         """IPv6 packets fallback to MAC-based direction detection."""
         info = _make_interface(ip="192.168.1.50", mac="AA:BB:CC:44:55:66", itype="wifi")
-        mode = WiFiClientMode(info)
+        mode = PublicNetworkMode(info)
         proc = PacketProcessor(mode)
         # IPv6 src not matching our IPv4 → IP-based returns 'other'
         # But MAC-based fallback should resolve it
@@ -122,17 +121,17 @@ class TestWiFiClientVerification:
 
     def test_no_promiscuous(self):
         info = _make_interface(itype="wifi")
-        mode = WiFiClientMode(info)
+        mode = PublicNetworkMode(info)
         assert mode.should_use_promiscuous() is False
 
-    def test_arp_cache_scan_allowed(self):
+    def test_no_arp_cache_scan(self):
         info = _make_interface(itype="wifi")
-        mode = WiFiClientMode(info)
-        assert mode.capabilities.can_arp_cache_scan is True
+        mode = PublicNetworkMode(info)
+        assert mode.capabilities.can_arp_cache_scan is False
 
     def test_no_active_arp_scan(self):
         info = _make_interface(itype="wifi")
-        mode = WiFiClientMode(info)
+        mode = PublicNetworkMode(info)
         assert mode.capabilities.can_arp_scan is False
 
 
@@ -190,11 +189,11 @@ class TestHotspotVerification:
         assert d == "download"
 
     def test_hotspot_bpf_contains_subnet(self):
-        """BPF should reference the hotspot subnet for capturing."""
+        """BPF should capture all IP traffic on the dedicated hotspot adapter."""
         info = _make_interface(ip="192.168.49.1", mask="255.255.255.0")
         mode = HotspotMode(info)
         bpf = mode.get_bpf_filter()
-        assert "192.168.49.0/24" in bpf or "net" in bpf
+        assert "ip" in bpf.lower()
 
     def test_hotspot_arp_scan_allowed(self):
         info = _make_interface(ip="192.168.137.1", mask="255.255.255.0")
@@ -360,11 +359,11 @@ class TestPublicNetworkVerification:
         mode = PublicNetworkMode(info)
         assert mode.capabilities.can_do_passive_discovery is False
 
-    def test_arp_cache_allowed(self):
-        """ARP cache (passive, no packets sent) IS allowed."""
+    def test_no_arp_cache_scan_public(self):
+        """ARP cache scan is NOT allowed on public networks."""
         info = _make_interface()
         mode = PublicNetworkMode(info)
-        assert mode.capabilities.can_arp_cache_scan is True
+        assert mode.capabilities.can_arp_cache_scan is False
 
     def test_safe_for_public(self):
         info = _make_interface()
@@ -381,20 +380,22 @@ class TestModeSwitchStress:
 
     def test_rapid_mode_switch_no_thread_leak(self):
         """Toggle modes 5 times rapidly — thread count must not grow."""
-        import main
+        from orchestration import state as _state
+        from orchestration import mode_handler as _mh
+        from orchestration.mode_handler import on_mode_change
 
         initial_threads = threading.active_count()
 
         for i in range(5):
             old_mode = _make_mock_mode("ethernet", ip=f"192.168.1.{i + 1}")
-            new_mode = _make_mock_mode("wifi_client", ip=f"192.168.1.{i + 50}")
+            new_mode = _make_mock_mode("public_network", ip=f"192.168.1.{i + 50}")
 
-            with patch.object(main, '_capture_engine', MagicMock(is_running=True)), \
-                 patch.object(main, '_create_capture_engine', return_value=MagicMock()), \
-                 patch.object(main, '_expose_engine_to_routes'), \
-                 patch('main.time'), \
+            with patch.object(_state, 'capture_engine', MagicMock(is_running=True)), \
+                 patch.object(_mh, '_create_capture_engine', return_value=MagicMock()), \
+                 patch.object(_mh, 'expose_engine_to_routes'), \
+                 patch('orchestration.mode_handler.time'), \
                  patch.dict('sys.modules', {'psutil': MagicMock()}):
-                main._on_mode_change(old_mode, new_mode)
+                on_mode_change(old_mode, new_mode)
 
         # Allow daemon threads to clean up
         time.sleep(0.2)
@@ -406,7 +407,9 @@ class TestModeSwitchStress:
 
     def test_disconnect_graceful_state(self):
         """Disconnected mode stops engine, sends SSE event."""
-        import main
+        from orchestration import state as _state
+        from orchestration import mode_handler as _mh
+        from orchestration.mode_handler import on_mode_change
 
         old_mode = _make_mock_mode("ethernet", ip="192.168.1.100")
         disc_mode = _make_mock_mode("disconnected", ip="0.0.0.0")
@@ -416,10 +419,10 @@ class TestModeSwitchStress:
 
         engine = MagicMock(is_running=True)
 
-        with patch.object(main, '_capture_engine', engine), \
-             patch.object(main, '_expose_engine_to_routes'), \
-             patch.object(main, '_send_mode_changed_sse') as mock_sse:
-            main._on_mode_change(old_mode, disc_mode)
+        with patch.object(_state, 'capture_engine', engine), \
+             patch.object(_mh, 'expose_engine_to_routes'), \
+             patch.object(_mh, '_send_mode_changed_sse') as mock_sse:
+            on_mode_change(old_mode, disc_mode)
             engine.stop.assert_called_once()
             mock_sse.assert_called_once()
             # Check it was called with disconnected=True
@@ -429,14 +432,16 @@ class TestModeSwitchStress:
 
     def test_same_mode_skips_restart(self):
         """Same mode + same interface → no restart."""
-        import main
+        from orchestration import state as _state
+        from orchestration import mode_handler as _mh
+        from orchestration.mode_handler import on_mode_change
 
         mode = _make_mock_mode("ethernet", ip="192.168.1.100")
 
-        with patch.object(main, '_capture_engine', MagicMock()), \
-             patch.object(main, '_create_capture_engine') as mock_create, \
-             patch.object(main, '_expose_engine_to_routes'):
-            main._on_mode_change(mode, mode)
+        with patch.object(_state, 'capture_engine', MagicMock()), \
+             patch.object(_mh, '_create_capture_engine') as mock_create, \
+             patch.object(_mh, 'expose_engine_to_routes'):
+            on_mode_change(mode, mode)
             mock_create.assert_not_called()
 
 
@@ -449,42 +454,43 @@ class TestCachedDiscoveryRace:
 
     def test_shutdown_uses_local_copy(self):
         """shutdown() takes a local copy while holding the lock."""
-        import main
+        from orchestration import state as _state
+        from orchestration.shutdown import shutdown as _shutdown
 
         mock_disc = MagicMock()
 
         # Reset shutdown state
-        main._shutting_down = False
+        _state.shutting_down = False
 
-        with patch.object(main, '_capture_engine', None), \
-             patch.object(main, '_interface_manager', None), \
-             patch.object(main, '_detector', None), \
-             patch.object(main, '_health_monitor', None), \
-             patch.object(main, '_logger', MagicMock()), \
-             patch('main._close_resolver'), \
-             patch('main.shutdown_pool'):
-            main._cached_discovery = mock_disc
-            main.shutdown()
+        with patch.object(_state, 'capture_engine', None), \
+             patch.object(_state, 'interface_manager', None), \
+             patch.object(_state, 'detector', None), \
+             patch.object(_state, 'health_monitor', None), \
+             patch.object(_state, 'logger', MagicMock()), \
+             patch('packet_capture.hostname_resolver.close_resolver'), \
+             patch('database.connection.shutdown_pool'):
+            _state.cached_discovery = mock_disc
+            _shutdown()
             mock_disc.stop_continuous_discovery.assert_called_once()
-            assert main._cached_discovery is None
+            assert _state.cached_discovery is None
 
         # Reset for other tests
-        main._shutting_down = False
+        _state.shutting_down = False
 
     def test_concurrent_access_is_safe(self):
-        """Multiple threads accessing _cached_discovery don't cause AttributeError."""
-        import main
+        """Multiple threads accessing cached_discovery don't cause AttributeError."""
+        from orchestration import state as _state
 
         mock_disc = MagicMock()
-        main._cached_discovery = mock_disc
+        _state.cached_discovery = mock_disc
 
         errors = []
 
         def _reader():
             for _ in range(100):
                 try:
-                    with main._cached_discovery_lock:
-                        disc = main._cached_discovery
+                    with _state.cached_discovery_lock:
+                        disc = _state.cached_discovery
                     if disc is not None:
                         disc.arp_scan(timeout=1)
                 except AttributeError as e:
@@ -492,8 +498,8 @@ class TestCachedDiscoveryRace:
 
         def _writer():
             for _ in range(100):
-                with main._cached_discovery_lock:
-                    main._cached_discovery = MagicMock()
+                with _state.cached_discovery_lock:
+                    _state.cached_discovery = MagicMock()
 
         threads = [
             threading.Thread(target=_reader),
@@ -507,7 +513,7 @@ class TestCachedDiscoveryRace:
         assert len(errors) == 0, f"Race condition errors: {errors}"
 
         # Cleanup
-        main._cached_discovery = None
+        _state.cached_discovery = None
 
 
 # ===================================================================
@@ -519,47 +525,49 @@ class TestShutdownWatchdog:
 
     def test_shutdown_has_watchdog_thread(self):
         """shutdown() launches a ShutdownWatchdog daemon thread."""
-        import main
+        from orchestration import state as _state
+        from orchestration.shutdown import shutdown as _shutdown
 
-        main._shutting_down = False
+        _state.shutting_down = False
         threads_before = [t.name for t in threading.enumerate()]
 
-        with patch.object(main, '_capture_engine', None), \
-             patch.object(main, '_interface_manager', None), \
-             patch.object(main, '_detector', None), \
-             patch.object(main, '_health_monitor', None), \
-             patch.object(main, '_logger', MagicMock()), \
-             patch('main._close_resolver'), \
-             patch('main.shutdown_pool'):
-            main._cached_discovery = None
-            main.shutdown()
+        with patch.object(_state, 'capture_engine', None), \
+             patch.object(_state, 'interface_manager', None), \
+             patch.object(_state, 'detector', None), \
+             patch.object(_state, 'health_monitor', None), \
+             patch.object(_state, 'logger', MagicMock()), \
+             patch('packet_capture.hostname_resolver.close_resolver'), \
+             patch('database.connection.shutdown_pool'):
+            _state.cached_discovery = None
+            _shutdown()
 
         # Watchdog thread should have been started (may have already exited
         # since shutdown completes fast, but we verify the code path)
         # Reset state
-        main._shutting_down = False
+        _state.shutting_down = False
 
     def test_shutdown_completes_fast(self):
         """Normal shutdown should complete well under 10s."""
-        import main
+        from orchestration import state as _state
+        from orchestration.shutdown import shutdown as _shutdown
 
-        main._shutting_down = False
+        _state.shutting_down = False
         start = time.monotonic()
 
-        with patch.object(main, '_capture_engine', None), \
-             patch.object(main, '_interface_manager', None), \
-             patch.object(main, '_detector', None), \
-             patch.object(main, '_health_monitor', None), \
-             patch.object(main, '_logger', MagicMock()), \
-             patch('main._close_resolver'), \
-             patch('main.shutdown_pool'):
-            main._cached_discovery = None
-            main.shutdown()
+        with patch.object(_state, 'capture_engine', None), \
+             patch.object(_state, 'interface_manager', None), \
+             patch.object(_state, 'detector', None), \
+             patch.object(_state, 'health_monitor', None), \
+             patch.object(_state, 'logger', MagicMock()), \
+             patch('packet_capture.hostname_resolver.close_resolver'), \
+             patch('database.connection.shutdown_pool'):
+            _state.cached_discovery = None
+            _shutdown()
 
         elapsed = time.monotonic() - start
-        assert elapsed < 5.0, f"Shutdown took {elapsed:.1f}s — too slow"
+        assert elapsed < 5.0, f"Shutdown took {elapsed:.1f}s -- too slow"
 
-        main._shutting_down = False
+        _state.shutting_down = False
 
 
 # ===================================================================
@@ -582,30 +590,29 @@ class TestDoubleShutdownGuard:
 
     def test_shutdown_is_idempotent(self):
         """Calling shutdown() twice does not raise or run teardown twice."""
-        import main
+        from orchestration import state as _state
+        from orchestration.shutdown import shutdown as _shutdown
 
-        main._shutting_down = False
+        _state.shutting_down = False
         call_count = 0
-
-        original_pool = main.shutdown_pool
 
         def counting_pool():
             nonlocal call_count
             call_count += 1
 
-        with patch.object(main, '_capture_engine', None), \
-             patch.object(main, '_interface_manager', None), \
-             patch.object(main, '_detector', None), \
-             patch.object(main, '_health_monitor', None), \
-             patch.object(main, '_logger', MagicMock()), \
-             patch('main._close_resolver'), \
-             patch('main.shutdown_pool', counting_pool):
-            main._cached_discovery = None
-            main.shutdown()
-            main.shutdown()  # second call should be a no-op
+        with patch.object(_state, 'capture_engine', None), \
+             patch.object(_state, 'interface_manager', None), \
+             patch.object(_state, 'detector', None), \
+             patch.object(_state, 'health_monitor', None), \
+             patch.object(_state, 'logger', MagicMock()), \
+             patch('packet_capture.hostname_resolver.close_resolver'), \
+             patch('database.connection.shutdown_pool', counting_pool):
+            _state.cached_discovery = None
+            _shutdown()
+            _shutdown()  # second call should be a no-op
 
         assert call_count == 1, f"shutdown_pool called {call_count} times"
-        main._shutting_down = False
+        _state.shutting_down = False
 
     def test_atexit_registered(self):
         """atexit.register(shutdown) is present in main module."""
@@ -627,7 +634,7 @@ class TestDirectionConsistency:
     """Verify direction detection is consistent across all modes."""
 
     @pytest.mark.parametrize("mode_cls,scope", [
-        (WiFiClientMode, NetworkScope.OWN_TRAFFIC_ONLY),
+        (PublicNetworkMode, NetworkScope.OWN_TRAFFIC_ONLY),
         (PublicNetworkMode, NetworkScope.OWN_TRAFFIC_ONLY),
         (EthernetMode, NetworkScope.LOCAL_NETWORK),
     ])
@@ -694,7 +701,7 @@ class TestModeCompleteness:
     """Every mode must have all required attributes and methods."""
 
     @pytest.mark.parametrize("mode_cls,iface_kwargs", [
-        (WiFiClientMode, {"ip": "192.168.1.50", "mac": "aa:bb:cc:dd:ee:ff", "itype": "wifi"}),
+        (PublicNetworkMode, {"ip": "192.168.1.50", "mac": "aa:bb:cc:dd:ee:ff", "itype": "wifi"}),
         (PublicNetworkMode, {"ip": "10.0.0.5", "mac": "aa:bb:cc:dd:ee:ff"}),
         (EthernetMode, {"ip": "192.168.1.100", "mac": "aa:bb:cc:dd:ee:ff"}),
         (PortMirrorMode, {"ip": "192.168.1.100", "mac": "aa:bb:cc:dd:ee:ff"}),

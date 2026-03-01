@@ -1,31 +1,18 @@
 """
-bandwidth_calculator.py - Real-Time Bandwidth Tracking (Phase 3)
-===================================================================
+bandwidth_calculator.py - Real-Time Bandwidth Tracking
+=======================================================
 
-Tracks bytes transferred in a **sliding window** (default 10 seconds) and
+Tracks bytes transferred in a **sliding window** (default 30 seconds) and
 calculates current upload / download rates with thread-safe access.
 
-Phase 3 improvements — smooth decay instead of cliff-drops:
-
-* Records are kept in a deque as before, but the **effective byte count**
-  of each record is weighted by an exponential decay factor based on its
-  age within the window.  A record that is 0 seconds old has weight 1.0;
-  a record at the window edge has weight ``EMA_FLOOR`` (default 0.1).
-  This means bytes "fade out" gradually rather than vanishing all at once.
-
-* The hard-cutoff prune is retained (records older than
-  ``window * EMA_EXTENDED_FACTOR`` are removed) but the cutoff is extended
-  to 1.5× the window so the tail end of the decay curve is represented.
-
-* ``get_current_bps()`` etc. now return the **decay-weighted** byte sum
-  divided by the window, producing smooth curves that match intuition.
+All public rate methods use **raw byte sums** — every byte within the window
+counts equally, matching the chart bucket values exactly.
 
 Thread safety:
     All public methods acquire ``_lock`` before touching the internal deque.
 """
 
 import logging
-import math
 import threading
 import time
 from collections import deque
@@ -42,11 +29,13 @@ try:
         sys.path.insert(0, _PROJECT_ROOT)
     from config import BANDWIDTH_WINDOW_SECONDS
 except ImportError:
-    BANDWIDTH_WINDOW_SECONDS = 10
+    BANDWIDTH_WINDOW_SECONDS = 30
 
-# EMA tuning constants
-_EMA_FLOOR = 0.1          # weight of a record at exactly the window boundary
-_EMA_EXTENDED_FACTOR = 1.5  # prune records older than window * this factor
+# Prune extension factor — records older than window * this factor are removed.
+# Set to 1.0 so that running sums only include data within the exact window.
+# Previously 1.5, which overcounted bandwidth by ~33% (15s of data / 10s window)
+# and caused phantom usage when clients were idle.
+_EXTENDED_FACTOR = 1.0
 
 
 @dataclass(frozen=True)
@@ -64,7 +53,7 @@ class BandwidthCalculator:
 
     Usage::
 
-        bw = BandwidthCalculator(window_seconds=10)
+        bw = BandwidthCalculator(window_seconds=30)
 
         # Called from the packet-processing thread:
         bw.add_bytes(1500, 'download')
@@ -80,23 +69,22 @@ class BandwidthCalculator:
         self._window = window_seconds if window_seconds is not None else BANDWIDTH_WINDOW_SECONDS
         self._records: Deque[ByteRecord] = deque()
         self._lock = threading.Lock()
+        # Running sums — O(1) queries instead of iterating entire deque
+        self._running_total: int = 0
+        self._running_upload: int = 0
+        self._running_download: int = 0
 
-        # Decay constant: -ln(EMA_FLOOR) / window  so that at age == window
-        # the weight equals EMA_FLOOR.
-        self._decay_k = -math.log(_EMA_FLOOR) / self._window if self._window else 0.0
+    def _count_in_window(self, now: float) -> int:
+        """Count records within the actual window (not the extended prune window).
 
-        # Running totals (raw, un-weighted — used only for packet_count)
-        self._packet_count = 0
-
-    # ------------------------------------------------------------------ #
-    #  Decay helper
-    # ------------------------------------------------------------------ #
-
-    def _weight(self, age: float) -> float:
-        """Return the exponential decay weight for a record of the given age."""
-        if age <= 0:
-            return 1.0
-        return math.exp(-self._decay_k * age)
+        Must be called while ``_lock`` is held.
+        """
+        cutoff = now - self._window
+        count = 0
+        for rec in self._records:
+            if rec.timestamp >= cutoff:
+                count += 1
+        return count
 
     # ------------------------------------------------------------------ #
     #  Public API — recording
@@ -114,35 +102,33 @@ class BandwidthCalculator:
 
         with self._lock:
             self._records.append(record)
-            self._packet_count += 1
+            # Update running sums
+            self._running_total += byte_count
+            if direction == "upload":
+                self._running_upload += byte_count
+            elif direction == "download":
+                self._running_download += byte_count
             self._prune(now)
 
     # ------------------------------------------------------------------ #
     #  Public API — querying
     # ------------------------------------------------------------------ #
 
-    def _weighted_sums(self, now: float):
-        """Return (total, upload, download) decay-weighted byte sums."""
-        total = 0.0
-        upload = 0.0
-        download = 0.0
-        for rec in self._records:
-            age = now - rec.timestamp
-            w = self._weight(age)
-            weighted = rec.byte_count * w
-            total += weighted
-            if rec.direction == "upload":
-                upload += weighted
-            elif rec.direction == "download":
-                download += weighted
-        return total, upload, download
+    def _raw_sums(self, now: float):
+        """Return (total, upload, download) raw byte sums from running counters.
+
+        O(1) operation using pre-maintained running sums instead of
+        iterating the entire deque.  Sums match the exact window because
+        prune uses a 1.0x factor (no extended window).
+        """
+        return self._running_total, self._running_upload, self._running_download
 
     def get_current_bps(self) -> float:
         """Return total bytes per second over the sliding window."""
         with self._lock:
             now = time.monotonic()
             self._prune(now)
-            total, _, _ = self._weighted_sums(now)
+            total, _, _ = self._raw_sums(now)
             return total / self._window if self._window else 0.0
 
     def get_current_mbps(self) -> float:
@@ -154,7 +140,7 @@ class BandwidthCalculator:
         with self._lock:
             now = time.monotonic()
             self._prune(now)
-            _, upload, _ = self._weighted_sums(now)
+            _, upload, _ = self._raw_sums(now)
             return upload / self._window if self._window else 0.0
 
     def get_download_bps(self) -> float:
@@ -162,7 +148,7 @@ class BandwidthCalculator:
         with self._lock:
             now = time.monotonic()
             self._prune(now)
-            _, _, download = self._weighted_sums(now)
+            _, _, download = self._raw_sums(now)
             return download / self._window if self._window else 0.0
 
     def get_upload_mbps(self) -> float:
@@ -174,11 +160,52 @@ class BandwidthCalculator:
         return (self.get_download_bps() * 8) / 1_000_000
 
     def get_packet_rate(self) -> float:
-        """Return packets per second over the sliding window."""
+        """Return packets per second over the sliding window.
+
+        Counts records within the actual window (not the extended prune
+        window) so that PPS matches the user-visible time range.
+        """
         with self._lock:
             now = time.monotonic()
             self._prune(now)
-            return self._packet_count / self._window if self._window else 0.0
+            return self._count_in_window(now) / self._window if self._window else 0.0
+
+    def get_recent_rate(self, seconds: int = 5) -> dict:
+        """Return upload/download/total rates for only the last *seconds*.
+
+        Unlike ``get_stats()`` which averages over the full 30 s window,
+        this method only considers bytes in the most recent *seconds* and
+        divides by that interval.  This produces a rate that matches the
+        latest chart bucket — eliminating the card-vs-chart mismatch
+        where the card showed 2 Mbps while the chart peak showed 6 Mbps.
+
+        Thread-safe: acquires ``_lock``.
+        """
+        with self._lock:
+            now = time.monotonic()
+            self._prune(now)
+            cutoff = now - seconds
+            total = upload = download = 0
+            for rec in reversed(self._records):
+                if rec.timestamp < cutoff:
+                    break
+                total += rec.byte_count
+                if rec.direction == "upload":
+                    upload += rec.byte_count
+                elif rec.direction == "download":
+                    download += rec.byte_count
+            divisor = seconds if seconds else 1
+            total_bps = total / divisor
+            upload_bps = upload / divisor
+            download_bps = download / divisor
+        return {
+            "total_bps": round(total_bps, 2),
+            "total_mbps": round((total_bps * 8) / 1_000_000, 4),
+            "upload_bps": round(upload_bps, 2),
+            "upload_mbps": round((upload_bps * 8) / 1_000_000, 4),
+            "download_bps": round(download_bps, 2),
+            "download_mbps": round((download_bps * 8) / 1_000_000, 4),
+        }
 
     def get_stats(self) -> dict:
         """
@@ -189,11 +216,11 @@ class BandwidthCalculator:
         with self._lock:
             now = time.monotonic()
             self._prune(now)
-            total, upload, download = self._weighted_sums(now)
+            total, upload, download = self._raw_sums(now)
             total_bps = total / self._window if self._window else 0.0
             upload_bps = upload / self._window if self._window else 0.0
             download_bps = download / self._window if self._window else 0.0
-            pps = self._packet_count / self._window if self._window else 0.0
+            pps = self._count_in_window(now) / self._window if self._window else 0.0
 
         return {
             "total_bps": round(total_bps, 2),
@@ -211,7 +238,9 @@ class BandwidthCalculator:
         """Clear all recorded data."""
         with self._lock:
             self._records.clear()
-            self._packet_count = 0
+            self._running_total = 0
+            self._running_upload = 0
+            self._running_download = 0
 
     def get_recent_history(self, bucket_seconds: int = 2, max_points: int = 30) -> list:
         """
@@ -231,7 +260,7 @@ class BandwidthCalculator:
             ``upload_mbps``, ``total_mbps`` fields — same shape as
             ``get_bandwidth_history_dual()`` output.
         """
-        from datetime import datetime as _dt
+        from datetime import datetime as _dt, timedelta
 
         now = time.monotonic()
         wall_now = _dt.now()
@@ -241,21 +270,27 @@ class BandwidthCalculator:
             if not self._records:
                 return []
 
-            # Build buckets from the sliding window records
+            # Build buckets from the sliding window records.
+            # Use RAW byte counts (no decay weighting) so that each
+            # bucket accurately represents the bytes transferred in its
+            # fixed time interval.  Decay is appropriate for the
+            # instantaneous-rate API (get_current_bps) but causes
+            # "wave" artefacts in the chart when the same bucket shrinks
+            # on subsequent SSE pushes as records age.
             buckets: dict = {}
+            window_limit = self._window  # Only include records within the actual window
             for rec in self._records:
-                # How many seconds ago was this record?
                 age = now - rec.timestamp
-                w = self._weight(age)
+                if age > window_limit:
+                    continue  # Skip records outside the measurement window
                 bucket_idx = int(age / bucket_seconds)
                 if bucket_idx not in buckets:
                     buckets[bucket_idx] = {"dl": 0.0, "ul": 0.0, "total": 0.0}
-                weighted = rec.byte_count * w
-                buckets[bucket_idx]["total"] += weighted
+                buckets[bucket_idx]["total"] += rec.byte_count
                 if rec.direction == "download":
-                    buckets[bucket_idx]["dl"] += weighted
+                    buckets[bucket_idx]["dl"] += rec.byte_count
                 elif rec.direction == "upload":
-                    buckets[bucket_idx]["ul"] += weighted
+                    buckets[bucket_idx]["ul"] += rec.byte_count
 
         if not buckets:
             return []
@@ -269,7 +304,7 @@ class BandwidthCalculator:
             b = buckets[idx]
             # Wall-clock time for this bucket
             secs_ago = idx * bucket_seconds
-            ts = wall_now - __import__("datetime").timedelta(seconds=secs_ago)
+            ts = wall_now - timedelta(seconds=secs_ago)
             result.append({
                 "timestamp": ts.strftime("%Y-%m-%d %H:%M:%S"),
                 "download_mbps": round(b["dl"] * mbps_mult, 3),
@@ -290,20 +325,16 @@ class BandwidthCalculator:
     # ------------------------------------------------------------------ #
 
     def _prune(self, now: float) -> None:
-        """
-        Remove records older than the extended window.
-
-        Phase 3: the cutoff is window * EMA_EXTENDED_FACTOR (1.5×) so that
-        records in the tail of the decay curve are still represented.
-        Records beyond this extended cutoff have negligible weight and
-        are safely discarded.
+        """Remove records older than the window and update running sums.
 
         Must be called while ``_lock`` is held.
         """
-        cutoff = now - self._window * _EMA_EXTENDED_FACTOR
+        cutoff = now - self._window * _EXTENDED_FACTOR
         while self._records and self._records[0].timestamp < cutoff:
-            self._records.popleft()
-            self._packet_count -= 1
-
-        # Guard against negative drift from floating-point rounding
-        self._packet_count = max(0, self._packet_count)
+            old = self._records.popleft()
+            # Decrement running sums
+            self._running_total -= old.byte_count
+            if old.direction == "upload":
+                self._running_upload -= old.byte_count
+            elif old.direction == "download":
+                self._running_download -= old.byte_count

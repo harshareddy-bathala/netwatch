@@ -136,7 +136,8 @@ class TestPassiveLearning:
         resolver = HostnameResolver()
         resolver.learn_hostname("192.168.1.20", "LongLived")
         with resolver._lock:
-            _, expiry = resolver._passive_hostnames["192.168.1.20"]
+            entry = resolver._passive_hostnames["192.168.1.20"]
+            expiry = entry[1]
             expected_min = time.monotonic() + _PASSIVE_CACHE_TTL_SECONDS - 5
             assert expiry >= expected_min
 

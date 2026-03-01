@@ -24,7 +24,41 @@ logger = logging.getLogger(__name__)
 alerts_bp = Blueprint('alerts', __name__)
 
 
+def _refresh_inmemory_alert_state():
+    """Refresh the in-memory dashboard alert cache after acknowledge/resolve.
+
+    Without this, the SSE push loop sends stale alert data from
+    ``dashboard_state._recent_alerts`` which overwrites the frontend's
+    fresh fetch — making it appear that acknowledge/resolve had no effect.
+    """
+    try:
+        from utils.realtime_state import dashboard_state
+        summary = get_alert_summary()
+        recent = get_alerts(limit=5, severity=None, acknowledged=False)
+        dashboard_state.set_alerts(summary, recent)
+        # Refresh health score immediately — health depends on unresolved
+        # alert counts which just changed.  Without this the dashboard card
+        # only updates on the next HealthMonitor cycle (up to 60 s later).
+        try:
+            from database.queries.stats_queries import get_health_score
+            health = get_health_score()
+            dashboard_state.set_health_score(health)
+        except Exception:
+            pass
+    except Exception as e:
+        logger.debug("Failed to refresh in-memory alert state: %s", e)
+    # Also expire the SSE payload cache so the next push uses fresh data.
+    # Use expire (not invalidate) — alert state was already updated above,
+    # we only need the cached SSE payload to rebuild.
+    try:
+        from backend.blueprints.bandwidth_bp import expire_sse_cache
+        expire_sse_cache()
+    except Exception:
+        pass
+
+
 @alerts_bp.route('/api/alerts')
+@cached_response('alerts')
 @handle_errors
 def get_alerts_endpoint():
     """Get alerts list."""
@@ -57,6 +91,7 @@ def acknowledge_alert_endpoint(alert_id):
     success = acknowledge_alert(alert_id)
     clear_response_cache()
     if success:
+        _refresh_inmemory_alert_state()
         return jsonify({'data': {'success': True, 'message': f'Alert {alert_id} acknowledged'}})
     return jsonify({'error': 'Failed to acknowledge alert', 'code': 'FAILED'}), 400
 
@@ -68,6 +103,7 @@ def resolve_alert_endpoint(alert_id):
     success = resolve_alert(alert_id)
     clear_response_cache()
     if success:
+        _refresh_inmemory_alert_state()
         return jsonify({'data': {'success': True, 'message': f'Alert {alert_id} resolved'}})
     return jsonify({'error': 'Failed to resolve alert', 'code': 'FAILED'}), 400
 

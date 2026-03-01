@@ -2,7 +2,7 @@
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-590-green.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-641-green.svg)](#testing)
 
 ## What's New in v3.0.0
 
@@ -19,7 +19,7 @@ NetWatch is a production-ready, real-time network traffic monitoring and analysi
 
 ### Key Features
 
-- **Auto Mode Detection** — Hotspot, Wi-Fi Client, Ethernet, Public Network, Port Mirror
+- **Auto Mode Detection** — Hotspot, Ethernet, Public Network, Port Mirror
 - **Real-time Dashboard** — Bandwidth charts (SSE push @ 3s), device list, protocol distribution, alert feed
 - **New Device Alerts** — MAC-based detection of unknown devices connecting to your hotspot
 - **Anomaly Detection** — Isolation Forest ML algorithm flags unusual traffic patterns
@@ -33,13 +33,13 @@ NetWatch is a production-ready, real-time network traffic monitoring and analysi
 
 ## Prerequisites
 
-> **Python 3.11 is required.** NetWatch has been tested and validated exclusively with Python 3.11. Other versions are not supported.
+> **Python 3.11 or later is required.** NetWatch has been tested and validated with Python 3.11+. Earlier versions are not supported.
 
 ### Required Software
 
 | Software | Platform | Purpose | Download |
 |----------|----------|---------|----------|
-| **Python 3.11** | All | Runtime | [python.org](https://www.python.org/downloads/release/python-3110/) |
+| **Python 3.11+** | All | Runtime | [python.org](https://www.python.org/downloads/) |
 | **Npcap** | Windows | Packet capture driver | [npcap.com](https://npcap.com/) |
 | **pip** | All | Package manager | Bundled with Python 3.11 |
 
@@ -153,11 +153,18 @@ present or NetWatch will not be able to capture packets.
 
 ```
 netWatch/
-├── main.py                    # Entry point (CLI, logging, shutdown)
-├── config.py                  # Central configuration
+├── main.py                    # Entry point (CLI, logging, server start)
+├── config.py                  # Central configuration (all settings)
 ├── requirements.txt           # Dependencies
+├── orchestration/             # Application lifecycle management
+│   ├── state.py               # Shared singletons & sync primitives
+│   ├── shutdown.py            # Graceful shutdown with watchdog
+│   ├── mode_handler.py        # Mode change callbacks, capture lifecycle
+│   ├── discovery_manager.py   # Device discovery loop, ARP/ping scanning
+│   └── background_tasks.py    # Cleanup, anomaly detector, watchdog
 ├── packet_capture/            # Capture engine & mode detection
 │   ├── capture_engine.py      # Scapy-based packet sniffing
+│   ├── database_writer.py     # Async DB writer thread
 │   ├── packet_processor.py    # Batch processing & queue
 │   ├── bandwidth_calculator.py# Sliding-window bandwidth
 │   ├── parser.py              # Protocol identification
@@ -168,16 +175,22 @@ netWatch/
 │   └── modes/                 # Mode implementations
 │       ├── base_mode.py       #   Abstract base
 │       ├── hotspot_mode.py    #   Mobile hotspot
-│       ├── wifi_client_mode.py#   Wi-Fi client
 │       ├── ethernet_mode.py   #   Wired connection
-│       ├── public_network_mode.py # Campus/public Wi-Fi
+│       ├── public_network_mode.py # WiFi client / public Wi-Fi
 │       └── port_mirror_mode.py#   SPAN port
 ├── database/                  # Data layer
 │   ├── connection.py          # SQLite connection pool (WAL)
 │   ├── models.py              # Data models
 │   ├── schema.sql             # Table definitions
 │   ├── init_db.py             # DB initialization
+│   ├── rollup.py              # Traffic data rollup
 │   └── queries/               # Separated query modules
+│       ├── device_queries.py  #   Device CRUD & counting
+│       ├── network_filters.py #   Subnet/IP/MAC validation
+│       ├── packet_store.py    #   Packet batch writes
+│       ├── stats_queries.py   #   Statistics queries
+│       ├── traffic_queries.py #   Traffic data queries
+│       └── maintenance.py     #   Cleanup & retention
 ├── alerts/                    # Alert system
 │   ├── alert_engine.py        # Threshold engine
 │   ├── deduplication.py       # Cooldown-based throttle
@@ -189,14 +202,11 @@ netWatch/
 │   ├── index.html             # Single page app
 │   ├── css/                   # Modular CSS
 │   └── js/                    # Components & utils
-├── tests/                     # 590 pytest tests
-│   ├── test_mode_detection.py
-│   ├── test_packet_capture.py
-│   ├── test_database.py
-│   ├── test_alerts.py
-│   ├── test_api_endpoints.py
-│   ├── test_integration.py
-│   └── test_performance.py
+├── utils/                     # Shared utilities
+│   ├── health_monitor.py      # System health metrics
+│   ├── realtime_state.py      # In-memory dashboard state
+│   └── query_cache.py         # TTL cache for queries
+├── tests/                     # 624 pytest tests
 ├── deploy/                    # Deployment scripts
 │   ├── create_windows_installer.py
 │   ├── create_deb_package.sh

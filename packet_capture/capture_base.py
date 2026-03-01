@@ -195,10 +195,22 @@ class CaptureProcessorMixin:
                         dropped = self._packets_dropped
                     elapsed = now - (self._start_time or now)
                     pps = cap / elapsed if elapsed > 0 else 0
+                    # Include live bandwidth for hotspot debugging
+                    bw_info = ""
+                    try:
+                        bw = self.bandwidth.get_stats()
+                        bw_info = (
+                            f", bw={bw.get('total_mbps', 0):.3f} Mbps "
+                            f"(↓{bw.get('download_mbps', 0):.3f} "
+                            f"↑{bw.get('upload_mbps', 0):.3f})"
+                        )
+                    except Exception:
+                        pass
                     logger.info(
                         "Capture stats: %d captured, %d processed, "
-                        "%d dropped, %.1f pps, %d batches",
+                        "%d dropped, %.1f pps, %d batches%s",
                         cap, proc, dropped, pps, _batches_since_log,
+                        bw_info,
                     )
                     _last_stats_log = now
                     _batches_since_log = 0
@@ -229,6 +241,15 @@ class CaptureProcessorMixin:
         # Feed BandwidthCalculator
         for pd in processed:
             self.bandwidth.add_bytes(pd.bytes, pd.direction)
+
+        # Record source MACs for port-mirror detection heuristic
+        if hasattr(self, '_recent_src_macs_lock'):
+            macs = [pd.source_mac for pd in processed if pd.source_mac]
+            if macs:
+                with self._recent_src_macs_lock:
+                    self._recent_src_macs.extend(macs)
+                    if len(self._recent_src_macs) > self._MAX_RECENT_MACS:
+                        self._recent_src_macs = self._recent_src_macs[-self._MAX_RECENT_MACS:]
 
         # Fire registered callbacks
         for pd in processed:

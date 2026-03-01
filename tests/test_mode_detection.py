@@ -3,7 +3,7 @@ test_mode_detection.py - Phase 1: Network Mode Detection Tests
 ================================================================
 
 Tests for mode detection across Windows, Linux, and macOS.
-Verifies hotspot, WiFi client, ethernet, and public network detection.
+Verifies hotspot, ethernet, and public network detection.
 """
 
 import sys
@@ -17,7 +17,6 @@ from packet_capture.modes.base_mode import (
     BaseMode, InterfaceInfo, ModeCapabilities, NetworkScope, ModeName,
 )
 from packet_capture.modes.hotspot_mode import HotspotMode
-from packet_capture.modes.wifi_client_mode import WiFiClientMode
 from packet_capture.modes.ethernet_mode import EthernetMode
 from packet_capture.modes.public_network_mode import PublicNetworkMode
 from packet_capture.modes.port_mirror_mode import PortMirrorMode
@@ -51,8 +50,9 @@ class TestHotspotMode:
 
     def test_hotspot_bpf_contains_subnet(self, hotspot_mode):
         bpf = hotspot_mode.get_bpf_filter()
-        # Should filter to hotspot subnet
-        assert "192.168.137" in bpf or "net" in bpf.lower()
+        # Hotspot uses broad filter to capture all IP traffic on the
+        # dedicated virtual adapter (no subnet restriction needed).
+        assert "ip" in bpf.lower()
 
     def test_hotspot_valid_ip_range(self, hotspot_mode):
         ip_range = hotspot_mode.get_valid_ip_range()
@@ -64,14 +64,14 @@ class TestHotspotMode:
 
 
 # ===================================================================
-# WiFi Client Mode Tests
+# Public Network WiFi Mode Tests (uses PublicNetworkMode)
 # ===================================================================
 
-class TestWiFiClientMode:
-    """Tests for WiFi client (station) mode."""
+class TestPublicNetworkWiFiMode:
+    """Tests for WiFi connections — always uses PublicNetworkMode."""
 
     def test_wifi_mode_name(self, wifi_mode):
-        assert wifi_mode.get_mode_name() == ModeName.WIFI_CLIENT
+        assert wifi_mode.get_mode_name() == ModeName.PUBLIC_NETWORK
 
     def test_wifi_scope_own_traffic(self, wifi_mode):
         caps = wifi_mode.capabilities
@@ -79,7 +79,7 @@ class TestWiFiClientMode:
 
     def test_wifi_not_detected_as_hotspot(self, mock_wifi_info):
         """Critical: WiFi client must NOT be confused with hotspot."""
-        mode = WiFiClientMode(mock_wifi_info)
+        mode = PublicNetworkMode(mock_wifi_info)
         assert mode.get_mode_name() != ModeName.HOTSPOT
 
     def test_wifi_bpf_filter_restricts_to_self(self, wifi_mode):
@@ -188,6 +188,226 @@ class TestFilterManager:
 
 
 # ===================================================================
+# Hotspot Adapter Active-Service Verification Tests
+# ===================================================================
+
+class TestHotspotAdapterActiveCheck:
+    """Tests for _is_hotspot_adapter_active() and its integration into Strategy 1."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_caches(self):
+        """Clear class-level caches between tests."""
+        ModeDetector._adapter_status_cache = {}
+        ModeDetector._adapter_status_cache_time = 0
+        ModeDetector._hostednet_cache = None
+        ModeDetector._hostednet_cache_time = 0
+        yield
+        ModeDetector._adapter_status_cache = {}
+        ModeDetector._adapter_status_cache_time = 0
+        ModeDetector._hostednet_cache = None
+        ModeDetector._hostednet_cache_time = 0
+
+    def _make_hotspot_iface(self, name="Local Area Connection* 10",
+                            ip="192.168.137.1"):
+        return InterfaceInfo(
+            name=name, friendly_name=name,
+            ip_address=ip, mac_address="AA:BB:CC:DD:EE:01",
+            netmask="255.255.255.0", gateway=None,
+            ssid=None, interface_type="hotspot_virtual", is_active=True,
+        )
+
+    def _make_wifi_iface(self, ip="192.168.44.100"):
+        return InterfaceInfo(
+            name="Wi-Fi", friendly_name="Wi-Fi",
+            ip_address=ip, mac_address="AA:BB:CC:DD:EE:02",
+            netmask="255.255.255.0", gateway="192.168.44.1",
+            ssid="HomeNetwork", interface_type="wifi", is_active=True,
+        )
+
+    # ── _is_hotspot_adapter_active() unit tests ──
+
+    @patch("packet_capture.platform_helpers.run_command", return_value="Up|1\n")
+    def test_adapter_active_when_status_up(self, mock_cmd):
+        detector = ModeDetector()
+        assert detector._is_hotspot_adapter_active("Local Area Connection* 10") is True
+
+    @patch("packet_capture.platform_helpers.run_command", return_value="Disconnected|0\n")
+    def test_adapter_inactive_when_disconnected(self, mock_cmd):
+        detector = ModeDetector()
+        assert detector._is_hotspot_adapter_active("Local Area Connection* 10") is False
+
+    @patch("packet_capture.platform_helpers.run_command", return_value=None)
+    def test_adapter_failclosed_on_command_failure(self, mock_cmd):
+        """When PowerShell fails, assume adapter is inactive (fail-closed)."""
+        detector = ModeDetector()
+        assert detector._is_hotspot_adapter_active("Local Area Connection* 10") is False
+
+    @patch("packet_capture.platform_helpers.run_command", return_value="Not Present|0\n")
+    def test_adapter_inactive_for_unexpected_status(self, mock_cmd):
+        detector = ModeDetector()
+        assert detector._is_hotspot_adapter_active("Local Area Connection* 10") is False
+
+    @patch("packet_capture.platform_helpers.run_command", return_value="Up|1\n")
+    def test_adapter_status_cached(self, mock_cmd):
+        detector = ModeDetector()
+        # First call populates cache
+        assert detector._is_hotspot_adapter_active("Local Area Connection* 10") is True
+        # Second call should use cache (run_command called only once)
+        assert detector._is_hotspot_adapter_active("Local Area Connection* 10") is True
+        mock_cmd.assert_called_once()
+
+    # ── Strategy 1 integration tests ──
+
+    @patch("packet_capture.mode_detector.IS_WINDOWS", True)
+    @patch("packet_capture.mode_detector.run_command", return_value=None)
+    def test_strategy1_skips_disconnected_adapter(self, mock_cmd):
+        """Strategy 1 should skip a hotspot_virtual adapter that isn't Up."""
+        detector = ModeDetector()
+        detector._all_interfaces = [
+            self._make_hotspot_iface(),
+            self._make_wifi_iface(),
+        ]
+        # Make _is_hotspot_adapter_active return False
+        with patch.object(detector, '_is_hotspot_adapter_active', return_value=False):
+            result = detector._check_hotspot_windows()
+        assert result is None
+
+    @patch("packet_capture.mode_detector.IS_WINDOWS", True)
+    @patch("packet_capture.mode_detector.run_command", return_value=None)
+    def test_strategy1_detects_active_adapter(self, mock_cmd):
+        """Strategy 1 should detect a hotspot_virtual adapter that is Up."""
+        detector = ModeDetector()
+        detector._all_interfaces = [
+            self._make_hotspot_iface(),
+            self._make_wifi_iface(),
+        ]
+        with patch.object(detector, '_is_hotspot_adapter_active', return_value=True):
+            with patch("packet_capture.platform_helpers.get_hotspot_ssid", return_value="TestHotspot"):
+                result = detector._check_hotspot_windows()
+        assert result is not None
+        assert isinstance(result, HotspotMode)
+
+
+# ===================================================================
+# Campus WiFi / Public Network Classification Tests
+# ===================================================================
+
+class TestWiFiPublicClassification:
+    """Tests for _check_public_network_wifi() — all WiFi connections now return
+    PublicNetworkMode regardless of network category or subnet size."""
+
+    def _make_wifi_iface(self, ip="192.168.44.100", netmask="255.255.255.0",
+                         ssid="HomeNetwork"):
+        return InterfaceInfo(
+            name="Wi-Fi", friendly_name="Wi-Fi",
+            ip_address=ip, mac_address="AA:BB:CC:DD:EE:02",
+            netmask=netmask, gateway="192.168.44.1",
+            ssid=ssid, interface_type="wifi", is_active=True,
+        )
+
+    # ── Windows NLM-based classification ──
+
+    @patch("packet_capture.mode_detector.IS_WINDOWS", True)
+    def test_public_wifi_returns_public_mode(self):
+        """WiFi on a Windows 'public' network → PublicNetworkMode."""
+        detector = ModeDetector()
+        detector._all_interfaces = [self._make_wifi_iface(ssid="CampusWiFi")]
+        with patch("packet_capture.platform_helpers.detect_network_category", return_value="public"):
+            result = detector._check_public_network_wifi()
+        assert isinstance(result, PublicNetworkMode)
+
+    @patch("packet_capture.mode_detector.IS_WINDOWS", True)
+    def test_domain_wifi_returns_public_mode(self):
+        """WiFi on a Windows 'domain_authenticated' network → PublicNetworkMode."""
+        detector = ModeDetector()
+        detector._all_interfaces = [self._make_wifi_iface(ssid="CorpNet")]
+        with patch("packet_capture.platform_helpers.detect_network_category", return_value="domain_authenticated"):
+            result = detector._check_public_network_wifi()
+        assert isinstance(result, PublicNetworkMode)
+
+    @patch("packet_capture.mode_detector.IS_WINDOWS", True)
+    def test_private_wifi_returns_public_mode(self):
+        """WiFi on a Windows 'private' network → PublicNetworkMode (merged)."""
+        detector = ModeDetector()
+        detector._all_interfaces = [self._make_wifi_iface(ssid="HomeNetwork")]
+        with patch("packet_capture.platform_helpers.detect_network_category", return_value="private"):
+            result = detector._check_public_network_wifi()
+        assert isinstance(result, PublicNetworkMode)
+
+    @patch("packet_capture.mode_detector.IS_WINDOWS", True)
+    def test_category_none_falls_through_to_public(self):
+        """When NLM returns None, still returns PublicNetworkMode."""
+        detector = ModeDetector()
+        # /16 subnet = 65 534 hosts
+        detector._all_interfaces = [
+            self._make_wifi_iface(ssid="BigNet", netmask="255.255.0.0")
+        ]
+        with patch("packet_capture.platform_helpers.detect_network_category", return_value=None):
+            result = detector._check_public_network_wifi()
+        assert isinstance(result, PublicNetworkMode)
+
+    # ── Cross-platform — all WiFi returns PublicNetworkMode ──
+
+    @patch("packet_capture.mode_detector.IS_WINDOWS", False)
+    def test_large_subnet_returns_public_mode(self):
+        """Subnet > /22 (campus-scale) → PublicNetworkMode."""
+        detector = ModeDetector()
+        # /20 = 4094 hosts
+        detector._all_interfaces = [
+            self._make_wifi_iface(ssid="UniWiFi", netmask="255.255.240.0")
+        ]
+        result = detector._check_public_network_wifi()
+        assert isinstance(result, PublicNetworkMode)
+
+    @patch("packet_capture.mode_detector.IS_WINDOWS", False)
+    def test_small_subnet_returns_public_mode(self):
+        """Subnet <= /22 (home-scale) → PublicNetworkMode (merged)."""
+        detector = ModeDetector()
+        # /24 = 254 hosts
+        detector._all_interfaces = [
+            self._make_wifi_iface(ssid="HomeNetwork", netmask="255.255.255.0")
+        ]
+        result = detector._check_public_network_wifi()
+        assert isinstance(result, PublicNetworkMode)
+
+    @patch("packet_capture.mode_detector.IS_WINDOWS", False)
+    def test_boundary_slash22_returns_public_mode(self):
+        """Exactly /22 (1022 hosts) → PublicNetworkMode (merged)."""
+        detector = ModeDetector()
+        detector._all_interfaces = [
+            self._make_wifi_iface(ssid="SmallCampus", netmask="255.255.252.0")
+        ]
+        result = detector._check_public_network_wifi()
+        assert isinstance(result, PublicNetworkMode)
+
+    @patch("packet_capture.mode_detector.IS_WINDOWS", False)
+    def test_slash21_returns_public_mode(self):
+        """/21 (2046 hosts) → PublicNetworkMode."""
+        detector = ModeDetector()
+        detector._all_interfaces = [
+            self._make_wifi_iface(ssid="BigCampus", netmask="255.255.248.0")
+        ]
+        result = detector._check_public_network_wifi()
+        assert isinstance(result, PublicNetworkMode)
+
+    # ── detect() Step 4 log correctness ──
+
+    @patch("packet_capture.mode_detector.IS_WINDOWS", False)
+    def test_detect_logs_public_for_campus_wifi(self):
+        """detect() should log PUBLIC_NETWORK for campus WiFi."""
+        detector = ModeDetector()
+        # Large subnet, non-Windows
+        wifi = self._make_wifi_iface(ssid="CampusNet", netmask="255.255.0.0")
+        detector._all_interfaces = [wifi]
+        with patch.object(detector, '_enumerate_interfaces', return_value=[wifi]):
+            with patch.object(detector, '_check_port_mirror', return_value=None):
+                with patch.object(detector, '_check_hotspot', return_value=None):
+                    with patch.object(detector, '_check_ethernet', return_value=None):
+                        mode = detector.detect()
+        assert isinstance(mode, PublicNetworkMode)
+
+
+# ===================================================================
 # Mode Detector Tests
 # ===================================================================
 
@@ -220,7 +440,7 @@ class TestModeDetector:
             detector = ModeDetector()
             mode = detector.detect()
             assert mode.get_mode_name() in [
-                ModeName.HOTSPOT, ModeName.WIFI_CLIENT, ModeName.ETHERNET,
+                ModeName.HOTSPOT, ModeName.ETHERNET,
                 ModeName.PUBLIC_NETWORK, ModeName.PORT_MIRROR, ModeName.UNKNOWN,
             ]
 

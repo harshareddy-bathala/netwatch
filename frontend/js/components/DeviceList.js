@@ -24,6 +24,7 @@ export default class DeviceList {
     this._editingIp = null;    // IP of device currently being edited
     this._openModal = null;    // track currently open DeviceDetail modal (#48)
     this._modeData = null;     // current mode capabilities from store
+    this._pendingRenames = new Map(); // ip → newName; preserved across store updates until server confirms
   }
 
   render() {
@@ -41,8 +42,10 @@ export default class DeviceList {
       </div>
 
       <div id="device-discovery-banner" class="discovery-banner" style="display:none">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-        <span id="device-discovery-banner-text">Device discovery is not available in this mode. Only your own traffic is monitored.</span>
+        <span class="discovery-banner__inline">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:6px;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <span id="device-discovery-banner-text">Device discovery is not available in this mode. Only your own traffic is monitored.</span>
+        </span>
       </div>
 
       <div class="chart-card">
@@ -62,7 +65,25 @@ export default class DeviceList {
     this._bindRowActions();
 
     this._unsubs.push(store.subscribe('devices', data => {
-      this._devices = data?.devices || data || [];
+      const rawDevices = data?.devices || data || [];
+      // Preserve any pending renames so SSE updates don't revert the UI
+      // while waiting for the server to reflect the change.
+      if (this._pendingRenames.size > 0) {
+        this._devices = rawDevices.map(d => {
+          const override = this._pendingRenames.get(d.ip_address);
+          if (override !== undefined) {
+            // Server has caught up — drop the override
+            if (d.hostname === override) {
+              this._pendingRenames.delete(d.ip_address);
+              return d;
+            }
+            return { ...d, hostname: override };
+          }
+          return d;
+        });
+      } else {
+        this._devices = rawDevices;
+      }
       // Don't re-render rows while user is editing a hostname
       if (!this._isEditing) {
         this._renderRows();
@@ -227,13 +248,14 @@ export default class DeviceList {
 
     for (const d of filtered) {
       const ip = d.ip_address;
+      const ipDisplay = ip || '—';
       seen.add(ip);
 
       let row = existingByIp.get(ip);
       if (row) {
         // Patch changed cells in-place
         const ipCell = row.querySelector('.device-row__ip');
-        if (ipCell && ipCell.textContent !== ip) ipCell.textContent = ip;
+        if (ipCell && ipCell.textContent !== ipDisplay) ipCell.textContent = ipDisplay;
 
         const macCell = row.querySelector('.device-row__mac');
         const macText = d.mac_address || '—';
@@ -241,7 +263,7 @@ export default class DeviceList {
         if (row.dataset.mac !== (d.mac_address || '')) row.dataset.mac = d.mac_address || '';
 
         const hostnameSpan = row.querySelector('.hostname-text');
-        const hnText = d.hostname || d.ip_address;
+        const hnText = d.hostname || d.device_name || d.ip_address || '—';
         if (hostnameSpan && hostnameSpan.textContent !== hnText) hostnameSpan.textContent = hnText;
 
         const bwCell = row.querySelector('.device-row__bandwidth');
@@ -260,10 +282,10 @@ export default class DeviceList {
         div.dataset.ip = ip;
         div.dataset.mac = d.mac_address || '';
         div.innerHTML = `
-          <div class="device-row__ip">${this._statusDot(d)}${escapeHtml(ip)}</div>
+          <div class="device-row__ip">${this._statusDot(d)}${escapeHtml(ipDisplay)}</div>
           <div class="device-row__mac">${escapeHtml(d.mac_address || '—')}</div>
           <div class="device-row__hostname">
-            <span class="hostname-text">${escapeHtml(d.hostname || d.ip_address)}</span>
+            <span class="hostname-text">${escapeHtml(d.hostname || d.device_name || d.ip_address || '—')}</span>
             <span class="device-row__hostname-edit" title="Edit hostname">✎</span>
           </div>
           <div class="device-row__bandwidth">${formatBytes(d.total_bytes || 0)}</div>
@@ -295,7 +317,7 @@ export default class DeviceList {
   /**
    * Returns true when a device was discovered via ARP cache only
    * (no traffic recorded).  We check: total_bytes === 0 and the mode
-   * is wifi_client or public_network (i.e. can_arp_scan is false).
+   * is public_network (i.e. can_arp_scan is false).
    */
   _isArpOnlyDevice(d) {
     const hasTraffic = (d.total_bytes || 0) > 0
@@ -364,9 +386,14 @@ export default class DeviceList {
         if (device) {
           device.hostname = newName;
         }
+        // Register as pending so store subscription won't revert it
+        this._pendingRenames.set(ip, newName);
 
         try {
-          await api.updateDeviceName(ip, newName, mac);
+          const result = await api.updateDeviceName(ip, newName, mac);
+          if (result && result.error) {
+            throw new Error(result.message || 'Update failed');
+          }
           showToast('Device renamed', 'success');
         } catch (err) {
           console.error('Failed to update hostname:', err);
@@ -374,6 +401,7 @@ export default class DeviceList {
           newSpan.textContent = current;
           // Revert local change
           if (device) device.hostname = current;
+          this._pendingRenames.delete(ip);
         }
       }
 

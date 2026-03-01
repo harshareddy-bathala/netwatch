@@ -73,8 +73,10 @@ elif IS_PRODUCTION:
 else:
     DATABASE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "netwatch.db")
 
-# Database connection timeout in seconds
-DATABASE_TIMEOUT = 30
+# Database connection timeout in seconds.
+# SQLite allows only one writer at a time; this is how long a thread
+# waits for the write-lock before raising "database is locked".
+DATABASE_TIMEOUT = 60
 
 # =============================================================================
 # NETWORK INTERFACE CONFIGURATION
@@ -106,7 +108,10 @@ ENABLE_AUTO_MODE_DETECTION = True
 # Useful when you want to guarantee no scanning / promiscuous behaviour
 FORCE_SAFE_MODE = False
 
-# Fraction of foreign source MACs (0.0–1.0) that indicates a port-mirror/SPAN port
+# Fraction of foreign source MACs (0.0-1.0) that indicates a port-mirror/SPAN port.
+# NOTE: Port mirror is ONLY detected on Ethernet interfaces.  Wi-Fi cannot carry
+# mirrored traffic (shared wireless medium causes false positives).  A physical
+# Ethernet cable to a managed switch's SPAN/mirror port is required.
 PORT_MIRROR_FOREIGN_MAC_THRESHOLD = 0.50
 
 # =============================================================================
@@ -149,8 +154,9 @@ ALERT_COOLDOWN_SECONDS = 300    # 5 minutes between duplicate alerts
 ISOLATION_FOREST_CONTAMINATION = 0.01
 
 # Minimum number of samples before running anomaly detection
-# 60 samples (~15 min at 15s intervals) — enough baseline to learn normal patterns
-MIN_SAMPLES_FOR_ANOMALY_DETECTION = 60
+# 30 samples (~7.5 min at 15s intervals) — enough baseline to learn normal
+# patterns while reducing the warmup window where detection is inactive.
+MIN_SAMPLES_FOR_ANOMALY_DETECTION = 30
 
 # How often (seconds) to collect a bandwidth sample for anomaly training
 STATS_COLLECTION_INTERVAL = 15
@@ -418,8 +424,8 @@ CACHE_DEFAULT_TIMEOUT = 300
 CACHE_KEY_PREFIX = "netwatch_"
 
 # Redis configuration (if CACHE_TYPE is 'redis')
-# NOT IMPLEMENTED: Redis caching is not wired up. NetWatch uses in-memory
-# caching only. This setting is reserved for a future Redis integration.
+# Reserved for a future Redis integration. NetWatch currently uses
+# in-memory TTLCache only.
 
 # Cache TTL for different data types
 CACHE_TTL_DEVICE_LIST = 60  # 1 minute
@@ -580,10 +586,13 @@ DB_BUSY_TIMEOUT = 5000  # Wait 5 seconds on locked database
 # capture-engine batch writes + anomaly detector + health monitor all
 # run concurrently.  Nested get_connection() calls can deadlock if the
 # pool is too small.
-DB_CONNECTION_POOL_SIZE = int(os.getenv('DB_CONNECTION_POOL_SIZE', '15' if IS_PRODUCTION else '5'))
+DB_CONNECTION_POOL_SIZE = int(os.getenv('DB_CONNECTION_POOL_SIZE', '15'))
 
 # Query optimization
 DB_QUERY_TIMEOUT = 30  # Maximum query execution time in seconds
+
+# Busy handler timeout — increase for port mirror high-write scenarios
+DB_BUSY_TIMEOUT = int(os.getenv('DB_BUSY_TIMEOUT', '10000'))
 
 # =============================================================================
 # DASHBOARD CONFIGURATION (reserved — frontend uses DASHBOARD_UPDATE_INTERVAL)
@@ -592,8 +601,6 @@ DB_QUERY_TIMEOUT = 30  # Maximum query execution time in seconds
 # =============================================================================
 # NOTIFICATION CONFIGURATION (reserved for future email/SMS integration)
 # =============================================================================
-# When implemented, set SMTP_SERVER, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD,
-# SMTP_USE_TLS, EMAIL_FROM_ADDRESS via environment variables.
 
 # =============================================================================
 # PACKET CAPTURE ENGINE SETTINGS (Phase 2)
@@ -603,15 +610,18 @@ DB_QUERY_TIMEOUT = 30  # Maximum query execution time in seconds
 PACKET_QUEUE_SIZE = 100000
 
 # Number of packets to accumulate before a single batch DB write
-BATCH_SIZE = 1000
+BATCH_SIZE = 500
 
 # Maximum seconds to wait before flushing a partial batch to DB
-BATCH_TIMEOUT = 0.5
+BATCH_TIMEOUT = 1.0
 
-# Sliding window (seconds) for real-time bandwidth calculation
-# 10s window retains peaks while smoothing jitter, and responds
-# within 10 s when traffic stops (fixes the "bandwidth doesn't drop" bug).
-BANDWIDTH_WINDOW_SECONDS = 10
+# Sliding window (seconds) for real-time bandwidth calculation.
+# 30s smooths bursty protocols like YouTube (which downloads in 3-5s
+# bursts separated by 10-15s pauses while the player drains its buffer).
+# A 10s window drops to zero between bursts; 30s keeps at least one
+# burst in the window for a stable, realistic rate display.
+# Still drops to 0 within 30s when traffic truly stops.
+BANDWIDTH_WINDOW_SECONDS = 30
 
 # =============================================================================
 # PERFORMANCE TUNING — Prevents NetWatch from degrading network performance
@@ -637,14 +647,12 @@ DASHBOARD_UPDATE_INTERVAL = 10
 # SSE (Server-Sent Events) push interval in seconds
 SSE_PUSH_INTERVAL = 3
 
+# Maximum simultaneous SSE connections (prevents resource exhaustion)
+SSE_MAX_CONNECTIONS = int(os.getenv('SSE_MAX_CONNECTIONS', '10'))
+
 # =============================================================================
 # PACKET CAPTURE ADVANCED SETTINGS
 # =============================================================================
-
-# Enable promiscuous mode (capture all packets on network)
-# NOTE: Phase 2 CaptureEngine uses mode.should_use_promiscuous() instead.
-# This flag is retained only for legacy/manual override.
-ENABLE_PROMISCUOUS_MODE = True
 
 # Packet snaplen (packet size to capture in bytes)
 PACKET_SNAPLEN = 65535  # Capture full packet
@@ -677,6 +685,45 @@ DB_MAINTENANCE_INTERVAL = 86400  # 24 hours
 
 # Empty trash/temp files older than (in days)
 TRASH_CLEANUP_DAYS = 7
+
+# =============================================================================
+# 24/7 PRODUCTION HARDENING (Phase 3)
+# =============================================================================
+
+# Maximum database size before emergency cleanup triggers (GB)
+MAX_DATABASE_SIZE_GB = float(os.getenv('MAX_DATABASE_SIZE_GB', '20'))
+
+# Emergency retention when disk is low (hours)
+EMERGENCY_RETENTION_HOURS = int(os.getenv('EMERGENCY_RETENTION_HOURS', '6'))
+
+# Batch size for hourly mini-cleanup (rows per DELETE)
+HOURLY_CLEANUP_BATCH_SIZE = int(os.getenv('HOURLY_CLEANUP_BATCH_SIZE', '10000'))
+
+# WAL checkpoint interval in minutes (0 = disabled)
+WAL_CHECKPOINT_INTERVAL_MINUTES = int(os.getenv('WAL_CHECKPOINT_INTERVAL_MINUTES', '30'))
+
+# Disk space warning/critical thresholds (percentage free)
+DISK_SPACE_WARNING_PERCENT = int(os.getenv('DISK_SPACE_WARNING_PERCENT', '10'))
+DISK_SPACE_CRITICAL_PERCENT = int(os.getenv('DISK_SPACE_CRITICAL_PERCENT', '5'))
+
+# Port mirror specific settings
+PORT_MIRROR_MAX_PPS = int(os.getenv('PORT_MIRROR_MAX_PPS', '5000'))
+PORT_MIRROR_MAX_UNIQUE_MACS_PER_MINUTE = int(os.getenv('PORT_MIRROR_MAX_UNIQUE_MACS', '500'))
+PORT_MIRROR_CONNECTION_TIMEOUT = int(os.getenv('PORT_MIRROR_CONNECTION_TIMEOUT', '300'))
+
+# Memory management: stale device pruning interval (seconds)
+STALE_DEVICE_PRUNE_INTERVAL = int(os.getenv('STALE_DEVICE_PRUNE_INTERVAL', '300'))
+STALE_DEVICE_TIMEOUT_HOURS = int(os.getenv('STALE_DEVICE_TIMEOUT_HOURS', '2'))
+MAX_IN_MEMORY_DEVICES = int(os.getenv('MAX_IN_MEMORY_DEVICES', '10000'))
+
+# Write queue overflow thresholds (percentage of BATCH_SIZE * max_queue_batches)
+WRITE_QUEUE_WARNING_PERCENT = 80
+WRITE_QUEUE_CRITICAL_PERCENT = 95
+
+# DatabaseWriter queue size (number of batch slots).
+# Higher values provide more buffer for high-traffic modes (port_mirror).
+# Default 500 = 500 batches * BATCH_SIZE packets of headroom.
+DB_WRITER_QUEUE_SIZE = int(os.getenv('DB_WRITER_QUEUE_SIZE', '500'))
 
 # =============================================================================
 # TESTING CONFIGURATION

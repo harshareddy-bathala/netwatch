@@ -172,6 +172,10 @@ CREATE INDEX IF NOT EXISTS idx_devices_ip ON devices(ip_address);
 CREATE INDEX IF NOT EXISTS idx_devices_ipv4 ON devices(ipv4_address);
 CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen);
 CREATE INDEX IF NOT EXISTS idx_devices_active_mode ON devices(active_mode);
+-- Covering index for get_active_device_count(): scans last_seen range,
+-- filters by active_mode/mac_address, and projects ip_address/ipv4_address
+-- without touching the main table.
+CREATE INDEX IF NOT EXISTS idx_devices_count_cover ON devices(last_seen, active_mode, mac_address, ip_address, ipv4_address);
 
 -- Alert indexes
 CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp);

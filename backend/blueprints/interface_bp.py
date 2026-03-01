@@ -7,7 +7,7 @@ import logging
 
 from flask import Blueprint, jsonify, request
 
-from backend.helpers import handle_errors, cached_response, get_iface_manager
+from backend.helpers import handle_errors, cached_response, get_iface_manager, clear_response_cache
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,13 @@ def refresh_interface():
         mgr = get_iface_manager()
         if mgr:
             mgr.refresh_now()
+            # Invalidate all response caches so next fetch gets fresh data
+            clear_response_cache()
+            try:
+                from backend.blueprints.bandwidth_bp import invalidate_sse_cache
+                invalidate_sse_cache()
+            except ImportError:
+                pass
             return jsonify({'data': {'success': True, 'message': 'Interface detection refreshed', 'status': mgr.get_status()}})
         return jsonify({'error': 'Interface manager not running', 'code': 'UNAVAILABLE'}), 503
     except Exception as e:

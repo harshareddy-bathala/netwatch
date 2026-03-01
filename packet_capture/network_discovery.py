@@ -67,7 +67,12 @@ class NetworkDiscovery:
         self.discovery_lock = threading.Lock()
         self.running = False
         self.discovery_thread = None
-        
+
+        # Self-exclusion sets — IPs and MACs belonging to this host.
+        # Populated by the caller (e.g. main.py) via set_exclusions().
+        self.exclude_ips: Set[str] = set()
+        self.exclude_macs: Set[str] = set()  # upper-case MACs
+
         # Discovery settings
         self.arp_timeout = 2  # seconds
         self.ping_timeout = 1  # seconds
@@ -78,7 +83,35 @@ class NetworkDiscovery:
             self.subnet = self._detect_subnet()
         
         logger.info("NetworkDiscovery initialized (interface: %s, subnet: %s)", interface, self.subnet)
-    
+
+    # Compiled once — matches exactly 6 groups of 2 hex digits separated
+    # by ':' or '-'.  Used to reject malformed MACs like ':::'.
+    _MAC_RE = re.compile(
+        r'^[0-9A-Fa-f]{2}(?:[:\-][0-9A-Fa-f]{2}){5}$'
+    )
+
+    @classmethod
+    def is_valid_mac(cls, mac: str) -> bool:
+        """Return *True* if *mac* looks like a well-formed Ethernet address."""
+        return bool(cls._MAC_RE.match(mac))
+
+    def set_exclusions(
+        self,
+        ips: Optional[Set[str]] = None,
+        macs: Optional[Set[str]] = None,
+    ) -> None:
+        """Set (or clear) the host's own IPs / MACs so scans can skip them."""
+        self.exclude_ips = ips or set()
+        self.exclude_macs = {m.upper() for m in (macs or set())}
+
+    def _is_self(self, ip: Optional[str], mac: Optional[str]) -> bool:
+        """Return *True* if the IP or MAC belongs to this host."""
+        if ip and ip in self.exclude_ips:
+            return True
+        if mac and mac.upper() in self.exclude_macs:
+            return True
+        return False
+
     def _detect_subnet(self) -> Optional[str]:
         """Detect the local subnet using the real interface netmask (not /24 assumption)."""
         try:
@@ -202,10 +235,17 @@ class NetworkDiscovery:
             )
             
             for sent, received in answered:
+                dev_ip = received.psrc
+                dev_mac = received.hwsrc.upper()
+
+                # Skip our own host's IPs and MACs
+                if self._is_self(dev_ip, dev_mac):
+                    continue
+
                 device = {
-                    'ip': received.psrc,
-                    'mac': received.hwsrc.upper(),
-                    'hostname': self._resolve_hostname(received.psrc),
+                    'ip': dev_ip,
+                    'mac': dev_mac,
+                    'hostname': self._resolve_hostname(dev_ip),
                     'discovery_method': 'arp',
                     'first_seen': datetime.now(),
                     'last_seen': datetime.now(),
@@ -276,6 +316,12 @@ class NetworkDiscovery:
                         # Skip broadcast / incomplete entries
                         if mac in ('FF:FF:FF:FF:FF:FF', '00:00:00:00:00:00'):
                             continue
+                        # Reject malformed MACs (e.g. ':::')
+                        if not self.is_valid_mac(mac):
+                            continue
+                        # Skip our own host's IPs and MACs
+                        if self._is_self(ip, mac):
+                            continue
                         device = {
                             'ip': ip,
                             'mac': mac,
@@ -306,6 +352,12 @@ class NetworkDiscovery:
                             except (ValueError, TypeError):
                                 continue
                         if mac in ('FF:FF:FF:FF:FF:FF', '00:00:00:00:00:00'):
+                            continue
+                        # Reject malformed MACs (e.g. ':::')
+                        if not self.is_valid_mac(mac):
+                            continue
+                        # Skip our own host's IPs and MACs
+                        if self._is_self(ip, mac):
                             continue
                         device = {
                             'ip': ip,
@@ -577,9 +629,19 @@ class NetworkDiscovery:
     
     def _add_device(self, device: Dict):
         """Add or update a device in the discovered devices list."""
+        mac = device.get('mac', device.get('ip', 'unknown'))
+        ip = device.get('ip')
+
+        # Reject malformed MACs (e.g. ':::') before touching the dict
+        if mac and mac != 'unknown' and not self.is_valid_mac(mac):
+            logger.debug("Rejecting device with invalid MAC: %s", mac)
+            return
+
+        # Skip our own host's IPs and MACs
+        if self._is_self(ip, mac):
+            return
+
         with self.discovery_lock:
-            mac = device.get('mac', device.get('ip', 'unknown'))
-            
             if mac in self.discovered_devices:
                 # Update existing device
                 existing = self.discovered_devices[mac]
@@ -622,19 +684,22 @@ class NetworkDiscovery:
     # =========================================================================
     
     def _resolve_hostname(self, ip: str) -> Optional[str]:
-        """Attempt to resolve hostname from IP using the enhanced resolver."""
+        """Return a passively-learned hostname for *ip*, or ``None``.
+
+        Only checks the passive hostname cache (DHCP Option 12, mDNS,
+        NetBIOS-NS, SSDP).  Does **not** trigger active resolution
+        (rDNS, NetBIOS query) because those are unreliable during
+        discovery scans — especially on Windows hotspot where the ICS
+        DNS server returns wrong/host-leaked names for client IPs.
+
+        Active resolution is handled asynchronously by the background
+        hostname resolver after the device is enqueued via
+        ``enqueue_for_resolution()``.
+        """
         try:
-            from packet_capture.hostname_resolver import resolve_hostname
-            result = resolve_hostname(ip)
-            # resolve_hostname returns the IP itself on failure — treat that as None
-            return result if result != ip else None
+            from packet_capture.hostname_resolver import get_passive_hostname
+            return get_passive_hostname(ip)
         except ImportError:
-            pass
-        # Fallback to basic DNS if hostname_resolver not available
-        try:
-            hostname, _, _ = socket.gethostbyaddr(ip)
-            return hostname
-        except (socket.herror, socket.gaierror, socket.timeout):
             return None
     
     def _get_mac_vendor(self, mac: str) -> Optional[str]:

@@ -69,19 +69,34 @@ class Store {
     this._notify(key, value);
   }
 
-  /** Subscribe to changes on a key. Returns unsubscribe function. */
-  subscribe(key, callback) {
+  /** Subscribe to changes on a key. Returns unsubscribe function.
+   *  Options:
+   *    skipInitial: true  — don't fire the callback with the current value
+   */
+  subscribe(key, callback, opts = {}) {
     if (!this._listeners[key]) this._listeners[key] = [];
     this._listeners[key].push(callback);
 
-    // Immediately fire with current value if it exists
-    if (this.state[key] !== null && this.state[key] !== undefined) {
+    // Immediately fire with current value unless caller opts out
+    if (!opts.skipInitial &&
+        this.state[key] !== null && this.state[key] !== undefined) {
       try { callback(this.state[key]); } catch (e) { console.error('[Store]', e); }
     }
 
     return () => {
       this._listeners[key] = this._listeners[key].filter(cb => cb !== callback);
     };
+  }
+
+  /** Null out view-specific keys without notifying subscribers.
+   *  Called before mounting a new view so components never see
+   *  stale data from the previous route.
+   */
+  clearViewData() {
+    const keys = ['stats', 'bandwidth', 'devices', 'protocols', 'alerts', 'alertStats'];
+    for (const k of keys) {
+      this.state[k] = null;
+    }
   }
 
   _notify(key, value) {

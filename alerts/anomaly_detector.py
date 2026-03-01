@@ -262,7 +262,8 @@ class AnomalyDetector:
     def _enrich_with_features(self, history: list) -> list:
         """
         Enrich bandwidth history entries with all 8 ML features
-        computed from the database via a single batched SQL query per entry.
+        computed from a single batched SQL query covering the full
+        time range, instead of one query per entry.
         """
         if not history:
             return history
@@ -270,23 +271,28 @@ class AnomalyDetector:
         try:
             from database.connection import get_connection
 
+            # Determine the overall time range from history entries
+            timestamps = []
+            for entry in history:
+                ts = entry.get("timestamp", "")
+                if ts:
+                    timestamps.append(ts)
+
+            if not timestamps:
+                return history
+
+            min_ts = min(timestamps)
+            max_ts = max(timestamps)
+
             with get_connection() as conn:
                 cursor = conn.cursor()
 
+                # Single query: compute features across the entire range
+                feats = self._query_traffic_features(cursor, since_ts=min_ts)
+
                 enriched = []
                 for entry in history:
-                    ts = entry.get("timestamp", "")
                     total_bw = entry.get("bytes_per_second", 0) or entry.get("total_bytes", 0)
-
-                    # Compute upper bound in Python (SQLite datetime() doesn't work as param)
-                    try:
-                        from datetime import datetime as _dt, timedelta as _td
-                        dt_obj = _dt.strptime(ts, "%Y-%m-%d %H:%M:%S")
-                        until = (dt_obj + _td(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
-                        feats = self._query_traffic_features(cursor, since_ts=ts, until_ts=until)
-                    except (ValueError, TypeError):
-                        feats = self._query_traffic_features(cursor, since_ts=ts)
-
                     enriched.append({
                         **entry,
                         "total_bandwidth": total_bw,
@@ -343,7 +349,7 @@ class AnomalyDetector:
             return False
 
         if len(data) < MIN_SAMPLES_FOR_ANOMALY_DETECTION:
-            logger.info(
+            logger.debug(
                 "Insufficient samples: %d < %d",
                 len(data), MIN_SAMPLES_FOR_ANOMALY_DETECTION,
             )
@@ -476,6 +482,13 @@ class AnomalyDetector:
         )
         retraining_interval = timedelta(minutes=30)
         _last_sample_log = 0  # track last logged sample count to reduce noise
+        _start_time = time.time()
+        # Warmup period: skip threshold alerts (device count, bandwidth, health)
+        # for the first 120 seconds.  During warmup the system is initializing
+        # interfaces, populating the traffic DB, and stabilizing mode context.
+        # Running threshold checks too early produces false-positive alerts
+        # (e.g. inflated device counts before mode-aware filtering kicks in).
+        _WARMUP_SECONDS = 120
 
         while self.running and not self._shutdown_event.is_set():
             try:
@@ -513,10 +526,10 @@ class AnomalyDetector:
                         if trained:
                             _last_sample_log = n_samples
                             logger.info(
-                                "✅ Model trained on %d samples at %s",
+                                "Model trained on %d samples at %s",
                                 n_samples, self.last_training_time.strftime('%Y-%m-%d %H:%M:%S'),
                             )
-                            logger.info("✅ ML model trained successfully")
+                            logger.info("ML model trained successfully")
                 except Exception as exc:
                     logger.error("History/training error: %s", exc)
 
@@ -524,8 +537,14 @@ class AnomalyDetector:
                 try:
                     current_stats = get_realtime_stats()
                     if current_stats:
-                        # Threshold-based alerts
-                        self.check_thresholds(current_stats)
+                        # Threshold-based alerts — skip during warmup
+                        if time.time() - _start_time >= _WARMUP_SECONDS:
+                            self.check_thresholds(current_stats)
+                        elif self.check_count <= 3:
+                            logger.info(
+                                "Warmup: skipping threshold checks (%ds remaining)",
+                                int(_WARMUP_SECONDS - (time.time() - _start_time)),
+                            )
 
                         # Enrich current stats with ML features for detection
                         enriched_stats = self._enrich_current_stats(current_stats)
@@ -541,7 +560,7 @@ class AnomalyDetector:
                                 SEVERITY_CRITICAL if score > 0.7 else SEVERITY_WARNING
                             )
                             logger.warning(
-                                "⚠️  ANOMALY DETECTED: Unusual pattern - %.1f Mbps "
+                                "ANOMALY DETECTED: Unusual pattern - %.1f Mbps "
                                 "(score: %.2f, severity: %s)",
                                 bw_mbps, score, severity,
                             )

@@ -2,7 +2,7 @@
 test_mode_switch_integration.py - Mode Switch Integration Tests (Phase E)
 ===========================================================================
 
-Verifies that switching capture modes (ethernet → wifi → hotspot)
+Verifies that switching capture modes (ethernet → public_network → hotspot)
 updates the mode indicator, resets the capture engine, and correctly
 relays the mode-changed SSE event.
 """
@@ -33,10 +33,10 @@ class TestModeTransition:
         assert mode.should_use_promiscuous() is True
 
     def test_wifi_mode_detection(self, mock_wifi_info):
-        """WiFi client interface should be detected as wifi mode."""
-        from packet_capture.modes.wifi_client_mode import WiFiClientMode
-        mode = WiFiClientMode(mock_wifi_info)
-        assert mode.get_mode_name().value == 'wifi_client'
+        """WiFi client interface should be detected as public_network mode."""
+        from packet_capture.modes.public_network_mode import PublicNetworkMode
+        mode = PublicNetworkMode(mock_wifi_info)
+        assert mode.get_mode_name().value == 'public_network'
 
     def test_hotspot_mode_detection(self, mock_hotspot_info):
         """Hotspot interface should be detected as hotspot mode."""
@@ -79,7 +79,7 @@ class TestModeSwitch:
         # Push a synthetic mode_changed event
         with mod._sse_pending_lock:
             mod._sse_pending_events.append(
-                json.dumps({'mode': 'wifi_client', 'reason': 'test'})
+                json.dumps({'mode': 'public_network', 'reason': 'test'})
             )
 
         # Verify the event was queued (don't consume the infinite SSE stream)
@@ -87,7 +87,7 @@ class TestModeSwitch:
             assert len(mod._sse_pending_events) >= 1
             last_event = mod._sse_pending_events[-1]
             parsed = json.loads(last_event)
-            assert parsed['mode'] == 'wifi_client'
+            assert parsed['mode'] == 'public_network'
             assert parsed['reason'] == 'test'
 
 

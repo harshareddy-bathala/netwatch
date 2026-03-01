@@ -103,9 +103,9 @@ class CaptureEngine(CaptureProcessorMixin):
 
     Usage::
 
-        from packet_capture.modes import WiFiClientMode, InterfaceInfo
+        from packet_capture.modes import PublicNetworkMode, InterfaceInfo
 
-        mode = WiFiClientMode(InterfaceInfo(name="Wi-Fi", ip_address="192.168.1.42", ...))
+        mode = PublicNetworkMode(InterfaceInfo(name="Wi-Fi", ip_address="192.168.1.42", ...))
         engine = CaptureEngine(mode, interface="Wi-Fi")
         engine.start()
 
@@ -168,16 +168,25 @@ class CaptureEngine(CaptureProcessorMixin):
         self._sample_counter = 0       # running counter for sampling
 
         # Phase 3: DatabaseWriter — async DB writes so processor never blocks
-        # Phase 5: pass mode_transition_lock from main so writer can skip
-        # writes during mode transitions
+        # Phase 5: pass mode_transition_lock so writer can skip writes during
+        # mode transitions.  Import from orchestration.state (clean, non-circular).
         _mtl = None
         try:
-            from main import _mode_transition_lock
-            _mtl = _mode_transition_lock
+            from orchestration.state import mode_transition_lock
+            _mtl = mode_transition_lock
         except (ImportError, AttributeError):
             pass
+
+        # DB writer queue size — configurable for high-traffic modes (port_mirror)
+        _db_queue_size = 200
+        try:
+            from config import DB_WRITER_QUEUE_SIZE
+            _db_queue_size = DB_WRITER_QUEUE_SIZE
+        except (ImportError, AttributeError):
+            pass
+
         self._db_writer = DatabaseWriter(
-            max_queue_size=200,
+            max_queue_size=_db_queue_size,
             stats_lock=self._stats_lock,
             mode_transition_lock=_mtl,
         )
@@ -187,6 +196,12 @@ class CaptureEngine(CaptureProcessorMixin):
         self._MAX_CONSECUTIVE_OS_ERRORS = 5
         self._interface_lost = False
         self._interface_lost_callbacks: List[Callable] = []
+
+        # Source MAC sampling — used by InterfaceManager to feed the mode
+        # detector for port-mirror heuristic (avoids expensive Scapy probe).
+        self._recent_src_macs: list = []
+        self._recent_src_macs_lock = threading.Lock()
+        self._MAX_RECENT_MACS = 100
 
     # ================================================================== #
     #  PUBLIC API
@@ -294,6 +309,15 @@ class CaptureEngine(CaptureProcessorMixin):
     def get_filter_summary(self) -> dict:
         """Delegate to FilterManager for filter diagnostics."""
         return self._filter_mgr.get_filter_summary()
+
+    def get_recent_source_macs(self) -> list:
+        """Return recently seen source MAC addresses for mode detection.
+
+        Used by InterfaceManager to feed the port-mirror detection
+        heuristic without requiring an expensive Scapy probe.
+        """
+        with self._recent_src_macs_lock:
+            return list(self._recent_src_macs)
 
     # ================================================================== #
     #  CAPTURE THREAD

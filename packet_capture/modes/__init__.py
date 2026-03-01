@@ -3,7 +3,7 @@ NetWatch Network Monitoring Modes Package
 ==========================================
 
 Provides the mode detection framework: an abstract ``BaseMode`` class and
-five concrete implementations representing distinct network topologies.
+four concrete implementations representing distinct network topologies.
 
 Quick reference
 ---------------
@@ -11,7 +11,6 @@ Quick reference
 Mode               Promiscuous   BPF filter     ARP scan      Scope
 =================  ============  =============  ============  =========
 HotspotMode        ON            net <subnet>   Yes           CONNECTED_CLIENTS
-WiFiClientMode     OFF           host <ip>      No            OWN_TRAFFIC_ONLY
 EthernetMode       ON            net <subnet>   Yes           LOCAL_NETWORK
 PublicNetworkMode  OFF           host <ip>      No            OWN_TRAFFIC_ONLY
 PortMirrorMode     ON            (none)         Yes           ALL_TRAFFIC
@@ -21,7 +20,7 @@ Usage::
 
     from packet_capture.modes import (
         BaseMode, ModeName, NetworkScope, InterfaceInfo,
-        HotspotMode, WiFiClientMode, EthernetMode,
+        HotspotMode, EthernetMode,
         PublicNetworkMode, PortMirrorMode,
     )
 """
@@ -37,7 +36,6 @@ from .ethernet_mode import EthernetMode
 from .hotspot_mode import HotspotMode
 from .port_mirror_mode import PortMirrorMode
 from .public_network_mode import PublicNetworkMode
-from .wifi_client_mode import WiFiClientMode
 
 __all__ = [
     # Base
@@ -48,7 +46,6 @@ __all__ = [
     "NetworkScope",
     # Concrete modes
     "HotspotMode",
-    "WiFiClientMode",
     "EthernetMode",
     "PublicNetworkMode",
     "PortMirrorMode",

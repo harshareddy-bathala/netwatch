@@ -97,8 +97,11 @@ const api = {
   refreshInterface:   () => request('/interface/refresh', { method: 'POST' }),
 
   // Data export
-  getExportUrl: (fmt='csv', type='devices', hours=24) =>
-    `${BASE}/export/${fmt}?type=${type}&hours=${hours}`,
+  getExportUrl: (fmt='csv', type='devices', hours=24, deviceIp=null) => {
+    let url = `${BASE}/export/${fmt}?type=${type}&hours=${hours}`;
+    if (deviceIp) url += `&device_ip=${encodeURIComponent(deviceIp)}`;
+    return url;
+  },
 
   // Custom alert rules
   getAlertRules:    ()            => request('/alert-rules'),

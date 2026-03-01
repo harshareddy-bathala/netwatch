@@ -132,6 +132,14 @@ def _make_mock_engine():
         'download_mbps': 6.0,
         'packets_per_second': 850,
     }
+    engine.bandwidth.get_recent_rate.return_value = {
+        'total_bps': 1_250_000,
+        'total_mbps': 10.0,
+        'upload_bps': 500_000,
+        'upload_mbps': 4.0,
+        'download_bps': 750_000,
+        'download_mbps': 6.0,
+    }
     engine.bandwidth.get_recent_history.return_value = [
         {'timestamp': '2026-01-01T00:00:00', 'download_mbps': 5.0, 'upload_mbps': 3.0}
     ]
@@ -157,14 +165,16 @@ class TestSSELivePath:
         stats = payload.get('stats', {})
         assert 'download_mbps' in stats or 'download_bps' in stats
 
-    def test_live_bandwidth_live_key(self, app, client):
-        """Payload has bandwidth_live with nested stats and history."""
+    def test_live_bandwidth_fields(self, app, client):
+        """Payload has top-level stats with bandwidth fields and bandwidth_history."""
         _reset_sse_cache()
         app.config['CAPTURE_ENGINE'] = _make_mock_engine()
         payload = _first_sse_event(client)
-        bw_live = payload.get('bandwidth_live', {})
-        assert 'stats' in bw_live
-        assert 'history' in bw_live
+        # Phase 4: bandwidth data is at top-level stats + bandwidth_history
+        stats = payload.get('stats', {})
+        assert 'upload_mbps' in stats or 'upload_bps' in stats
+        assert 'download_mbps' in stats or 'download_bps' in stats
+        assert 'bandwidth_history' in payload
 
     def test_live_bandwidth_values_positive(self, app, client):
         """Upload/download values should be > 0 when engine reports traffic."""

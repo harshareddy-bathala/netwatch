@@ -23,9 +23,10 @@ export default class DeviceDetail {
   }
 
   async open() {
-    // Fetch device data
-    const device = await api.getDeviceDetails(this._ip);
-    if (!device) {
+    // Fetch device data — backend wraps in { data: device }
+    const response = await api.getDeviceDetails(this._ip);
+    const device = response?.data || response;
+    if (!device || device.error) {
       this._showToast('Device not found');
       return;
     }
@@ -36,7 +37,7 @@ export default class DeviceDetail {
     this._overlay.innerHTML = `
       <div class="device-detail-modal">
         <header class="device-detail__header">
-          <h2>${escapeHtml(device.hostname || device.ip_address)}</h2>
+          <h2>${escapeHtml(device.hostname || device.device_name || device.ip_address)}</h2>
           <button class="device-detail__close" title="Close">&times;</button>
         </header>
 
@@ -81,9 +82,9 @@ export default class DeviceDetail {
 
           <!-- Export link -->
           <section class="device-detail__section device-detail__actions">
-            <a href="${api.getExportUrl('csv', 'traffic', 24)}" download
+            <a href="${api.getExportUrl('csv', 'traffic', 24, this._ip)}" download
                class="btn btn--sm">Export Traffic CSV</a>
-            <a href="${api.getExportUrl('json', 'traffic', 24)}" download
+            <a href="${api.getExportUrl('json', 'traffic', 24, this._ip)}" download
                class="btn btn--sm btn--outline">Export JSON</a>
           </section>
         </div>

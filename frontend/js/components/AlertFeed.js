@@ -46,11 +46,23 @@ export default class AlertFeed {
     this._bindActions();
 
     this._unsubs.push(store.subscribe('alerts', data => {
-      this._alerts = data?.alerts || data || [];
+      this._alerts = Array.isArray(data) ? data
+        : (data?.data || data?.alerts || []);
       this._renderList();
     }));
 
-    // Fetch fresh alerts on every navigation to this page (don't rely on cached state)
+    // If the full alerts list isn't cached yet, show SSE's recent alerts
+    // as an instant preview so the user sees content immediately instead
+    // of a blank "Loading..." state for 4-5 seconds.
+    if (this._alerts.length === 0) {
+      const recent = store.get('recentAlerts');
+      if (recent && Array.isArray(recent) && recent.length > 0) {
+        this._alerts = recent;
+        this._renderList();
+      }
+    }
+
+    // Fetch fresh alerts on every navigation to this page.
     this._fetchFreshAlerts();
   }
 
@@ -58,7 +70,8 @@ export default class AlertFeed {
     try {
       const data = await api.getAlerts(50);
       if (data && !data.error) {
-        const alerts = data.alerts || data || [];
+        const alerts = Array.isArray(data) ? data
+          : (data.data || data.alerts || []);
         store.setState('alerts', alerts);
       }
     } catch (_) { /* best-effort */ }
@@ -85,7 +98,9 @@ export default class AlertFeed {
       try {
         await api.acknowledgeAlert(parseInt(btn.dataset.id));
         showToast('Alert acknowledged', 'success');
-        window.dispatchEvent(new CustomEvent('netwatch:refresh'));
+        await this._fetchFreshAlerts();
+        // No netwatch:refresh — the backend already refreshes in-memory
+        // state + health; SSE pushes the update within 1-3 seconds.
       } catch (e) {
         console.error(e);
         showToast('Failed to acknowledge alert', 'error');
@@ -98,7 +113,7 @@ export default class AlertFeed {
       try {
         await api.resolveAlert(parseInt(btn.dataset.id));
         showToast('Alert resolved', 'success');
-        window.dispatchEvent(new CustomEvent('netwatch:refresh'));
+        await this._fetchFreshAlerts();
       } catch (e) {
         console.error(e);
         showToast('Failed to resolve alert', 'error');

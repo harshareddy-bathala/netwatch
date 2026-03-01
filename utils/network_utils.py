@@ -122,6 +122,16 @@ def is_valid_device_ip(ip_address: str) -> bool:
     return True
 
 
+def normalize_mac(mac: str) -> str:
+    """Normalize MAC to lowercase colon-separated format (xx:xx:xx:xx:xx:xx).
+
+    Handles both dash-separated (Windows style) and colon-separated formats.
+    """
+    if not mac:
+        return ""
+    return mac.lower().replace("-", ":")
+
+
 def is_valid_mac(mac: Optional[str]) -> bool:
     """Quick check that *mac* is a real unicast MAC."""
     if not mac or mac == "":

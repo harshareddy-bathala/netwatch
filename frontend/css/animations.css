@@ -19,9 +19,7 @@
 
 .view-exit {
   opacity: 0;
-  transition: opacity 0.15s ease;
-  position: absolute;
-  inset: 0;
+  transition: opacity 0.1s ease;
 }
 
 /* ── Fade in on load ─────────────────────────────────── */

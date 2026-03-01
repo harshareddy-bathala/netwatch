@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 _CACHE_MAX_SIZE = 1024              # Maximum cached entries
 _CACHE_TTL_SECONDS = 300            # 5 minutes (active resolution)
 _PASSIVE_CACHE_TTL_SECONDS = 3600   # 1 hour (passive learning — more reliable)
+_PASSIVE_CACHE_MAX_SIZE = 5000      # Maximum passive cache entries before LRU eviction
 _DNS_TIMEOUT_SECONDS = 1.5          # Per-resolve timeout
 
 # NetBIOS rate limiting (increased from 3 → 8 for better concurrency)
@@ -49,9 +50,22 @@ _nbtstat_pending = 0
 _nbtstat_lock = threading.Lock()
 
 # Background resolution interval
-_BG_RESOLVE_INTERVAL = 10  # seconds
+_BG_RESOLVE_INTERVAL = 3   # seconds (reduced from 10 so new-device hostnames appear quickly)
 
 IS_WINDOWS = sys.platform == "win32"
+
+# Source priority for passive hostname learning.
+# Higher value = more trustworthy.  mDNS/SSDP names are self-advertised
+# by the device and should never be overwritten by generic DHCP names.
+_SOURCE_PRIORITY = {
+    'MDNS': 10,
+    'NETBIOS-NS': 8,
+    'SSDP': 6,
+    'LLMNR': 4,
+    'DHCP': 2,
+    'DNS': 1,
+}
+_DEFAULT_SOURCE_PRIORITY = 0
 
 # Try to import MAC vendor lookup libraries
 _mac_lookup = None
@@ -103,8 +117,8 @@ class HostnameResolver:
     def __init__(self):
         # cache_key -> (hostname, expiry_timestamp)
         self._cache: Dict[str, Tuple[str, float]] = {}
-        # Passive hostname store: ip -> (hostname, expiry_timestamp)
-        self._passive_hostnames: Dict[str, Tuple[str, float]] = {}
+        # Passive hostname store: ip -> (hostname, expiry_timestamp, source_priority)
+        self._passive_hostnames: Dict[str, Tuple[str, float, int]] = {}
         self._lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="DNS")
 
@@ -126,7 +140,11 @@ class HostnameResolver:
         self._bg_shutdown.set()
         if self._bg_thread and self._bg_thread.is_alive():
             self._bg_thread.join(timeout=5)
-        self._executor.shutdown(wait=False)
+        # Wait for pending DNS queries to complete, cancel any remaining
+        try:
+            self._executor.shutdown(wait=True, cancel_futures=True)
+        except Exception:
+            self._executor.shutdown(wait=False)
         # Shut down zeroconf
         with self._zeroconf_lock:
             if self._zeroconf is not None:
@@ -152,16 +170,21 @@ class HostnameResolver:
         self._bg_thread.start()
         logger.info("Background hostname resolver started (interval=%ds)", _BG_RESOLVE_INTERVAL)
 
-    def start_mdns_browser(self):
+    def start_mdns_browser(self, periodic: bool = False):
         """
         Start mDNS service browsing for common service types to
         proactively discover named devices on the network.
+
+        Args:
+            periodic: If True, re-browse every 10 minutes (for port_mirror mode).
+                      If False, browse once for 10 seconds then exit.
         """
         if not _zeroconf_available:
             logger.debug("zeroconf not available — skipping mDNS browser startup")
             return
 
-        def _browse():
+        def _do_browse():
+            """Run a single 10-second mDNS browse cycle."""
             try:
                 zc = self._get_zeroconf()
                 if not zc:
@@ -182,7 +205,7 @@ class HostnameResolver:
                                 # Get IP addresses from the service info
                                 for addr in info.parsed_addresses(IPVersion.V4Only):
                                     if addr and server:
-                                        self._resolver.learn_hostname(addr, server)
+                                        self._resolver.learn_hostname(addr, server, source='MDNS')
                         except Exception:
                             pass
 
@@ -225,7 +248,17 @@ class HostnameResolver:
             except Exception as e:
                 logger.debug("mDNS browse error: %s", e)
 
-        t = threading.Thread(target=_browse, name="mDNS-Browse", daemon=True)
+        def _browse_loop():
+            """Periodic mDNS browsing — re-discovers new devices every 10 min."""
+            while not self._bg_shutdown.is_set():
+                _do_browse()
+                # Wait 10 minutes between browse cycles
+                self._bg_shutdown.wait(600)
+
+        if periodic:
+            t = threading.Thread(target=_browse_loop, name="mDNS-Browse", daemon=True)
+        else:
+            t = threading.Thread(target=_do_browse, name="mDNS-Browse", daemon=True)
         t.start()
 
     def enqueue_for_resolution(self, ip: str, mac: Optional[str] = None):
@@ -244,14 +277,19 @@ class HostnameResolver:
                 self._resolve_queue.append((ip, mac))
                 self._resolve_queue_set.add(key)
 
-    def learn_hostname(self, ip: str, hostname: str) -> None:
+    def learn_hostname(self, ip: str, hostname: str,
+                       source: Optional[str] = None) -> None:
         """
         Passively learn a hostname from captured network traffic
         (mDNS responses, NetBIOS-NS, DHCP, DNS answers, SSDP, etc.).
 
-        This is the most reliable source since the device itself
-        advertises its name. Uses a longer TTL (1 hour) than active
-        resolution (5 minutes).
+        Uses a source-priority system so that high-quality names
+        (mDNS device self-advertisement) are never overwritten by
+        lower-quality sources (DHCP Option 12 generic names).
+
+        Also persists the hostname to the DB immediately with
+        ``from_passive=True`` so it overwrites any stale active-resolution
+        hostname (e.g. "Android_35VI4FNN" replaced by "Galaxy-Tab-A9").
         """
         if not ip or not hostname:
             return
@@ -261,14 +299,63 @@ class HostnameResolver:
         # Filter out IPv6 link-local addresses being used as hostnames
         if hostname.startswith("fe80::") or hostname.startswith("::"):
             return
+
+        new_priority = _SOURCE_PRIORITY.get(
+            (source or '').upper(), _DEFAULT_SOURCE_PRIORITY)
+
         with self._lock:
             now = time.monotonic()
-            self._passive_hostnames[ip] = (hostname, now + _PASSIVE_CACHE_TTL_SECONDS)
+
+            # Check existing entry — protect higher-priority names even
+            # after expiry.  A high-priority name (e.g. mDNS) that expired
+            # must NOT be overwritten by a lower-priority source (e.g. DHCP
+            # or DNS).  Only same-or-higher priority sources may replace it.
+            existing = self._passive_hostnames.get(ip)
+            if existing:
+                existing_priority = existing[2] if len(existing) > 2 else _DEFAULT_SOURCE_PRIORITY
+                if new_priority < existing_priority:
+                    # Lower priority — reject regardless of TTL expiry.
+                    # Just refresh the TTL of the existing entry so it stays
+                    # cached for lookups.
+                    if now >= existing[1]:
+                        self._passive_hostnames[ip] = (existing[0], now + _PASSIVE_CACHE_TTL_SECONDS, existing_priority)
+                    return
+                # Same hostname from same-or-higher priority — just refresh TTL
+                if existing[0] == hostname:
+                    self._passive_hostnames[ip] = (hostname, now + _PASSIVE_CACHE_TTL_SECONDS, max(new_priority, existing_priority))
+                    return
+
+            self._passive_hostnames[ip] = (hostname, now + _PASSIVE_CACHE_TTL_SECONDS, new_priority)
             # Also update the active TTL cache immediately so subsequent lookups hit instantly
             cache_key_prefix = f"{ip}:"
             for key in list(self._cache.keys()):
                 if key.startswith(cache_key_prefix):
                     self._cache[key] = (hostname, now + _PASSIVE_CACHE_TTL_SECONDS)
+            # Enforce size cap — evict oldest 10% when at capacity
+            if len(self._passive_hostnames) > _PASSIVE_CACHE_MAX_SIZE:
+                sorted_ips = sorted(
+                    self._passive_hostnames,
+                    key=lambda k: self._passive_hostnames[k][1],
+                )
+                evict_count = max(1, _PASSIVE_CACHE_MAX_SIZE // 10)
+                for k in sorted_ips[:evict_count]:
+                    del self._passive_hostnames[k]
+
+        # Persist to DB immediately — passive names are authoritative and
+        # should overwrite any stale active-resolution hostname.
+        try:
+            self._persist_hostname_to_db(ip, None, hostname, from_passive=True)
+        except Exception:
+            pass
+
+        # Enqueue for background retry: if the device row doesn't exist yet
+        # (e.g. mDNS browse fires before first packet arrives), _persist_hostname_to_db
+        # silently updates 0 rows.  Enqueueing ensures the background resolver
+        # will re-persist the hostname once the device appears in the DB.
+        with self._queue_lock:
+            if ip not in self._resolve_queue_set:
+                self._resolve_queue_set.add(ip)
+                self._resolve_queue.append((ip, None))
 
     def resolve(self, ip: str, mac: Optional[str] = None) -> str:
         """
@@ -278,11 +365,29 @@ class HostnameResolver:
         or the reverse DNS name.  Falls back to the IP address if nothing found.
         """
         # Fast-path: if the IP is our own machine, return the local hostname
-        # immediately without DNS lookup.
+        # immediately without DNS lookup.  Check ALL local adapter IPs
+        # (not just the primary one) so that hotspot/VPN/secondary IPs
+        # also resolve to our hostname.
         try:
             local_hostname = socket.gethostname()
-            local_ip = socket.gethostbyname(local_hostname)
-            if ip == local_ip:
+            # Collect all IPs for our hostname (may resolve to multiple)
+            _local_ips = set()
+            try:
+                _local_ips.add(socket.gethostbyname(local_hostname))
+            except (socket.error, OSError):
+                pass
+            # Also check all adapter IPs via psutil for cross-adapter coverage
+            try:
+                import psutil
+                for _iname, addrs in psutil.net_if_addrs().items():
+                    for addr in addrs:
+                        if addr.family.name == 'AF_INET':
+                            a = addr.address
+                            if a and a not in ('0.0.0.0', '127.0.0.1'):
+                                _local_ips.add(a)
+            except (ImportError, Exception):
+                pass
+            if ip in _local_ips:
                 return local_hostname
         except (socket.error, OSError):
             pass
@@ -294,15 +399,21 @@ class HostnameResolver:
         with self._lock:
             passive = self._passive_hostnames.get(ip)
         if passive:
-            hostname, expiry = passive
+            hostname, expiry = passive[0], passive[1]
             if now < expiry:
                 # Also update active cache
                 self._put_cache(cache_key, hostname, now, ttl=_PASSIVE_CACHE_TTL_SECONDS)
                 return hostname
             else:
-                # Expired passive entry — remove it
+                # Expired — still return the cached name but refresh TTL.
+                # Don't remove the entry; the priority protection in
+                # learn_hostname() depends on it persisting so lower-priority
+                # sources can't overwrite a good name.
+                priority = passive[2] if len(passive) > 2 else _DEFAULT_SOURCE_PRIORITY
                 with self._lock:
-                    self._passive_hostnames.pop(ip, None)
+                    self._passive_hostnames[ip] = (hostname, now + _PASSIVE_CACHE_TTL_SECONDS, priority)
+                self._put_cache(cache_key, hostname, now, ttl=_PASSIVE_CACHE_TTL_SECONDS)
+                return hostname
 
         # 2. Check active cache (with TTL)
         with self._lock:
@@ -327,8 +438,23 @@ class HostnameResolver:
         if hostname and hostname != ip:
             # Filter out fe80:: style hostnames
             if not hostname.startswith("fe80::") and not hostname.startswith("::"):
-                self._put_cache(cache_key, hostname, now)
-                return hostname
+                # Reject if reverse DNS returned our own machine's hostname.
+                # On Windows Mobile Hotspot, the built-in DNS often resolves
+                # client IPs back to the host's name — giving every connected
+                # device the host's hostname instead of its own.
+                _is_own_name = False
+                try:
+                    _local_name = socket.gethostname().lower()
+                    if hostname.lower() == _local_name:
+                        _is_own_name = True
+                    # Also check short name vs FQDN variants
+                    if hostname.lower().split('.')[0] == _local_name.split('.')[0]:
+                        _is_own_name = True
+                except Exception:
+                    pass
+                if not _is_own_name:
+                    self._put_cache(cache_key, hostname, now)
+                    return hostname
 
         # 5. NetBIOS name resolution (Windows — nbtstat -A)
         if IS_WINDOWS:
@@ -345,6 +471,22 @@ class HostnameResolver:
                 hostname = f"{vendor} ({last_octet})"
                 self._put_cache(cache_key, hostname, now)
                 return hostname
+
+        # 6b. Gateway-aware fallback: if this IP is the known gateway,
+        # label it as "Gateway" (with vendor prefix if available)
+        try:
+            from database.queries.device_queries import _get_gateway_ip
+            gw_ip = _get_gateway_ip()
+            if gw_ip and ip == gw_ip:
+                gw_label = "Gateway / Router"
+                if mac:
+                    vendor = self._get_vendor(mac)
+                    if vendor and vendor != "Unknown":
+                        gw_label = f"{vendor} Gateway"
+                self._put_cache(cache_key, gw_label, now)
+                return gw_label
+        except Exception:
+            pass
 
         # 7. Fallback — cache the miss too (avoid repeated lookups)
         self._put_cache(cache_key, ip, now)
@@ -649,33 +791,66 @@ class HostnameResolver:
         Periodically resolve hostnames for:
         1. Devices enqueued via enqueue_for_resolution()
         2. Devices in DB with hostname IS NULL
+        3. Evict expired passive cache entries (prevents unbounded growth)
 
         Runs every _BG_RESOLVE_INTERVAL seconds. Persists resolved names
         to DB immediately so subsequent API queries see them.
         """
         logger.info("Background hostname resolution loop started")
+        _last_passive_eviction = time.monotonic()
         while not self._bg_shutdown.wait(timeout=_BG_RESOLVE_INTERVAL):
             try:
                 self._process_resolution_queue()
                 self._resolve_null_hostnames_in_db()
+
+                # Every 5 minutes: evict expired entries from passive cache
+                now = time.monotonic()
+                if now - _last_passive_eviction >= 300:
+                    self._evict_expired_passive_entries()
+                    _last_passive_eviction = now
             except Exception as e:
                 logger.debug("Background resolve error: %s", e)
 
+    def _evict_expired_passive_entries(self):
+        """Remove expired entries from the passive hostname cache."""
+        now = time.monotonic()
+        with self._lock:
+            expired = [ip for ip, entry in self._passive_hostnames.items() if now >= entry[1]]
+            for ip in expired:
+                del self._passive_hostnames[ip]
+        if expired:
+            logger.debug("Evicted %d expired passive hostname entries", len(expired))
+
     def _process_resolution_queue(self):
-        """Process devices enqueued for background resolution."""
+        """Process devices enqueued for background resolution.
+
+        When restrict mode is active, only resolves entries matching
+        the restricted IP.
+        """
         batch = []
+        restrict_ip = _restrict_to_own_ip  # snapshot
         with self._queue_lock:
             while self._resolve_queue and len(batch) < 20:
                 item = self._resolve_queue.popleft()
                 key = f"{item[0]}:{item[1] or ''}"
                 self._resolve_queue_set.discard(key)
+                # In restrict mode, skip entries that aren't our IP
+                if restrict_ip and item[0] != restrict_ip:
+                    continue
                 batch.append(item)
 
         for ip, mac in batch:
             try:
+                # Check if we have a passive (mDNS/DHCP) name — use from_passive flag
+                _is_passive = False
+                with self._lock:
+                    passive = self._passive_hostnames.get(ip)
+                    if passive and time.monotonic() < passive[1]:
+                        _is_passive = True
                 resolved = self.resolve(ip, mac)
                 if resolved and resolved != ip:
-                    self._persist_hostname_to_db(ip, mac, resolved)
+                    self._persist_hostname_to_db(ip, mac, resolved,
+                                                 from_passive=_is_passive)
             except Exception:
                 pass
 
@@ -683,17 +858,54 @@ class HostnameResolver:
         """
         Find devices in the DB with hostname IS NULL and attempt resolution.
         This runs in the background, NOT in the API path.
+
+        When ``_restrict_to_own_ip`` is set (public_network mode), only
+        the host's own device is resolved — no DNS/mDNS/NetBIOS probes
+        are made for other devices on the network.
+
+        Also re-resolves devices whose hostname matches the local machine
+        name (caused by Windows hotspot DNS returning the host name for
+        client IPs).
         """
         try:
             from database.connection import get_connection
+
+            restrict_ip = _restrict_to_own_ip  # snapshot module-level flag
+
+            # Detect local hostname for stale-name cleanup
+            _local_hn = ""
+            try:
+                _local_hn = socket.gethostname()
+            except Exception:
+                pass
+
             with get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT ip_address, ipv4_address, mac_address
-                    FROM devices
-                    WHERE (hostname IS NULL OR hostname = '' OR hostname = ip_address)
-                    LIMIT 20
-                """)
+                if restrict_ip:
+                    # Only resolve our own device
+                    cursor.execute("""
+                        SELECT ip_address, ipv4_address, mac_address
+                        FROM devices
+                        WHERE (hostname IS NULL OR hostname = '' OR hostname = ip_address)
+                          AND (ip_address = ? OR ipv4_address = ?)
+                        LIMIT 1
+                    """, (restrict_ip, restrict_ip))
+                else:
+                    # Include devices whose hostname matches the local machine
+                    # name — these are hotspot clients that got the host's name
+                    # from Windows' built-in DNS and need re-resolution.
+                    params = []
+                    host_name_clause = ""
+                    if _local_hn:
+                        host_name_clause = "OR hostname = ?"
+                        params.append(_local_hn)
+                    cursor.execute(f"""
+                        SELECT ip_address, ipv4_address, mac_address
+                        FROM devices
+                        WHERE (hostname IS NULL OR hostname = '' OR hostname = ip_address
+                               {host_name_clause})
+                        LIMIT 20
+                    """, params)
                 rows = cursor.fetchall()
 
             for row in rows:
@@ -704,9 +916,16 @@ class HostnameResolver:
                 if not ip:
                     continue
                 try:
+                    # Check if resolved from passive cache
+                    _is_passive = False
+                    with self._lock:
+                        passive = self._passive_hostnames.get(ip)
+                        if passive and time.monotonic() < passive[1]:
+                            _is_passive = True
                     resolved = self.resolve(ip, mac)
                     if resolved and resolved != ip:
-                        self._persist_hostname_to_db(ip, mac, resolved)
+                        self._persist_hostname_to_db(ip, mac, resolved,
+                                                     from_passive=_is_passive)
                 except Exception:
                     pass
 
@@ -714,20 +933,74 @@ class HostnameResolver:
             logger.debug("DB hostname resolve error: %s", e)
 
     @staticmethod
-    def _persist_hostname_to_db(ip: str, mac: Optional[str], hostname: str):
-        """Persist a resolved hostname to the devices table."""
+    def _persist_hostname_to_db(ip: str, mac: Optional[str], hostname: str,
+                                from_passive: bool = False):
+        """Persist a resolved hostname to the devices table.
+
+        Overwrites existing hostname if it is NULL, empty, equal to the IP,
+        or equal to the local machine's hostname (hotspot DNS leak cleanup).
+
+        When *from_passive* is True (mDNS/NetBIOS/DHCP/SSDP passive learning),
+        the hostname is unconditionally written because passive names are
+        self-advertised by the device and therefore the most reliable source.
+        """
         try:
             from database.connection import get_connection
+
+            # Detect local hostname so we can overwrite leaked host names
+            _local_hn = ""
+            try:
+                _local_hn = socket.gethostname()
+            except Exception:
+                pass
+
             with get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
-                    UPDATE devices
-                    SET hostname = CASE
-                            WHEN (hostname IS NULL OR hostname = '' OR hostname = ip_address)
-                            THEN ? ELSE hostname END
-                    WHERE ip_address = ? OR ipv4_address = ? OR mac_address = ?
-                """, (hostname, ip, ip, mac or ""))
+                # Build WHERE clause — only include MAC condition when
+                # a real MAC is provided.  Passing mac=None (e.g. from
+                # learn_hostname) must NOT match mac_address='' which
+                # would update unrelated rows.
+                if mac:
+                    where = "ip_address = ? OR ipv4_address = ? OR mac_address = ?"
+                    where_params = (ip, ip, mac)
+                else:
+                    where = "ip_address = ? OR ipv4_address = ?"
+                    where_params = (ip, ip)
+
+                if from_passive:
+                    # Passive names (mDNS, NetBIOS-NS, DHCP, SSDP) are the
+                    # most reliable — always overwrite.
+                    cursor.execute(f"""
+                        UPDATE devices
+                        SET hostname = ?
+                        WHERE {where}
+                    """, (hostname, *where_params))
+                elif _local_hn:
+                    cursor.execute(f"""
+                        UPDATE devices
+                        SET hostname = CASE
+                                WHEN (hostname IS NULL OR hostname = '' OR hostname = ip_address
+                                      OR hostname = ?)
+                                THEN ? ELSE hostname END
+                        WHERE {where}
+                    """, (_local_hn, hostname, *where_params))
+                else:
+                    cursor.execute(f"""
+                        UPDATE devices
+                        SET hostname = CASE
+                                WHEN (hostname IS NULL OR hostname = '' OR hostname = ip_address)
+                                THEN ? ELSE hostname END
+                        WHERE {where}
+                    """, (hostname, *where_params))
                 conn.commit()
+
+            # Also update the in-memory dashboard state so the SSE device
+            # list reflects the hostname immediately (without page reload).
+            try:
+                from utils.realtime_state import dashboard_state
+                dashboard_state.update_device_hostname(ip, hostname)
+            except Exception:
+                pass
         except Exception:
             pass  # Don't fail the resolution pipeline
 
@@ -735,15 +1008,36 @@ class HostnameResolver:
 # Singleton instance
 _resolver = HostnameResolver()
 
+# ── Restrict mode (public_network) ─────────────────────────────────
+# When set, the background resolver only resolves the specified IP
+# and the mDNS browser is suppressed.  This prevents DNS/mDNS/NetBIOS
+# queries to the network when on an untrusted / public WiFi.
+_restrict_to_own_ip: Optional[str] = None
+
+
+def set_restrict_mode(own_ip: Optional[str]) -> None:
+    """Restrict background resolution to *own_ip* only.
+
+    Call with ``None`` to lift the restriction (permissive modes).
+    Call with the capture interface IP for restrictive modes
+    (public_network) so the resolver never probes other devices.
+    """
+    global _restrict_to_own_ip
+    _restrict_to_own_ip = own_ip
+    if own_ip:
+        logger.info("Hostname resolver restricted to own IP: %s", own_ip)
+    else:
+        logger.info("Hostname resolver restriction lifted (all devices)")
+
 
 def resolve_hostname(ip: str, mac: Optional[str] = None) -> str:
     """Module-level convenience function."""
     return _resolver.resolve(ip, mac)
 
 
-def learn_hostname(ip: str, hostname: str) -> None:
+def learn_hostname(ip: str, hostname: str, source: Optional[str] = None) -> None:
     """Module-level convenience: passively learn a hostname from captured traffic."""
-    _resolver.learn_hostname(ip, hostname)
+    _resolver.learn_hostname(ip, hostname, source=source)
 
 
 def enqueue_for_resolution(ip: str, mac: Optional[str] = None) -> None:
@@ -751,14 +1045,44 @@ def enqueue_for_resolution(ip: str, mac: Optional[str] = None) -> None:
     _resolver.enqueue_for_resolution(ip, mac)
 
 
+def get_passive_hostname(ip: str) -> Optional[str]:
+    """Return the passively-learned hostname for *ip*, or ``None``.
+
+    Only checks the passive cache (DHCP Option 12, mDNS, NetBIOS-NS,
+    SSDP, LLMNR).  Does **not** trigger any active resolution (rDNS,
+    NetBIOS query, etc.).  Safe to call from hot paths like ARP
+    discovery where blocking DNS lookups would slow the scan and
+    return unreliable results (e.g. Windows hotspot rDNS).
+    """
+    now = time.monotonic()
+    with _resolver._lock:
+        passive = _resolver._passive_hostnames.get(ip)
+    if passive:
+        hostname, expiry = passive[0], passive[1]
+        if now < expiry:
+            return hostname
+    return None
+
+
 def start_background_resolver() -> None:
     """Module-level convenience: start the background resolution thread."""
     _resolver.start_background_resolver()
 
 
-def start_mdns_browser() -> None:
-    """Module-level convenience: start mDNS service browsing."""
-    _resolver.start_mdns_browser()
+def start_mdns_browser(periodic: bool = False) -> None:
+    """Module-level convenience: start mDNS service browsing.
+
+    Suppressed when restrict mode is active (public_network) because
+    mDNS browsing sends multicast queries that probe the network.
+
+    Args:
+        periodic: If True, re-browse every 10 minutes (for port_mirror mode).
+    """
+    if _restrict_to_own_ip:
+        logger.info("mDNS browser suppressed — restrict mode active (own IP: %s)",
+                     _restrict_to_own_ip)
+        return
+    _resolver.start_mdns_browser(periodic=periodic)
 
 
 def close_resolver() -> None:

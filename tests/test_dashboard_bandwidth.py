@@ -34,6 +34,14 @@ def _make_mock_engine():
         'download_mbps': 6.0,
         'packets_per_second': 850,
     }
+    engine.bandwidth.get_recent_rate.return_value = {
+        'total_bps': 1_250_000,
+        'total_mbps': 10.0,
+        'upload_bps': 500_000,
+        'upload_mbps': 4.0,
+        'download_bps': 750_000,
+        'download_mbps': 6.0,
+    }
     engine.bandwidth.get_current_bps.return_value = 1_250_000
     return engine
 

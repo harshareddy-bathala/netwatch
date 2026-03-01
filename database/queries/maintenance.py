@@ -1,6 +1,6 @@
 """
-maintenance.py - Data Retention & Database Maintenance (Phase 2)
-=================================================================
+maintenance.py - Data Retention & Database Maintenance (Phase 2+3)
+===================================================================
 
 Manages automatic data cleanup, retention policies, and database
 health to prevent unbounded growth during 24/7 operation.
@@ -11,6 +11,9 @@ Key responsibilities:
 * VACUUM database to reclaim disk space after large deletions
 * Schedule daily cleanup at 3 AM
 * Report database size and cleanup metrics
+* Adaptive retention — halve retention when DB exceeds MAX_DATABASE_SIZE_GB
+* WAL checkpoint after cleanup cycles
+* Disk space monitoring support
 
 Design principles:
 * Never delete un-resolved alerts
@@ -20,6 +23,7 @@ Design principles:
 """
 
 import os
+import shutil
 import sqlite3
 import logging
 import threading
@@ -27,7 +31,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
-from database.connection import get_connection
+from database.connection import get_connection, wal_checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +89,7 @@ def cleanup_old_traffic(retention_days: int = 7) -> Dict[str, int]:
             # Delete in batches to avoid long locks
             total_deleted = 0
             batch_size = 50_000
+            batches_since_checkpoint = 0
             while True:
                 cursor.execute(
                     "DELETE FROM traffic_summary WHERE rowid IN "
@@ -94,6 +99,15 @@ def cleanup_old_traffic(retention_days: int = 7) -> Dict[str, int]:
                 batch_deleted = cursor.rowcount
                 conn.commit()
                 total_deleted += batch_deleted
+                batches_since_checkpoint += 1
+                # Checkpoint WAL every 5 batches (250K rows) to prevent
+                # unbounded WAL growth during large cleanup operations
+                if batches_since_checkpoint >= 5:
+                    try:
+                        wal_checkpoint("PASSIVE")
+                    except Exception:
+                        pass  # non-critical
+                    batches_since_checkpoint = 0
                 if batch_deleted < batch_size:
                     break
 
@@ -134,6 +148,42 @@ def cleanup_old_alerts(retention_days: int = 30) -> int:
             return deleted
     except sqlite3.Error as e:
         logger.error("cleanup_old_alerts error: %s", e)
+        return 0
+
+
+def auto_resolve_stale_alerts(stale_days: int = 7) -> int:
+    """
+    Auto-resolve unresolved alerts older than *stale_days*.
+
+    Prevents indefinite accumulation of unresolved alerts during 24/7
+    operation.  Tagged with ``resolved_by='auto-stale'`` so operators
+    can distinguish auto-resolved from manually resolved alerts.
+
+    Args:
+        stale_days: Days after which unresolved alerts are auto-resolved.
+
+    Returns:
+        Number of alerts auto-resolved.
+    """
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cutoff = (datetime.now() - timedelta(days=stale_days)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            cursor.execute(
+                "UPDATE alerts SET resolved = 1, resolved_at = datetime('now'), "
+                "resolved_by = 'auto-stale' "
+                "WHERE resolved = 0 AND timestamp < ?",
+                (cutoff,),
+            )
+            conn.commit()
+            count = cursor.rowcount
+            if count:
+                logger.info("Auto-resolved %d stale alerts (>%d days)", count, stale_days)
+            return count
+    except sqlite3.Error as e:
+        logger.error("auto_resolve_stale_alerts error: %s", e)
         return 0
 
 
@@ -294,7 +344,7 @@ def run_full_cleanup(
     Returns:
         Summary dict with counts of deleted records.
     """
-    logger.info("🧹 Full database cleanup starting...")
+    logger.info("Full database cleanup starting...")
     start_time = time.time()
 
     db_size_before = get_database_size_mb()
@@ -315,6 +365,8 @@ def run_full_cleanup(
     traffic_result = cleanup_old_traffic(traffic_retention_days)
     results["traffic_deleted"] = traffic_result.get("deleted", 0)
 
+    # Auto-resolve stale unresolved alerts before deleting old resolved ones
+    results["alerts_auto_resolved"] = auto_resolve_stale_alerts(stale_days=7)
     results["alerts_deleted"] = cleanup_old_alerts(alert_retention_days)
     results["bandwidth_stats_deleted"] = cleanup_old_bandwidth_stats(stats_retention_days)
     results["protocol_stats_deleted"] = cleanup_old_protocol_stats(stats_retention_days)
@@ -350,7 +402,7 @@ def run_full_cleanup(
         pass
 
     logger.info(
-        "✅ Cleanup complete: deleted %s records, freed %.1f MB (took %.1fs)",
+        "Cleanup complete: deleted %s records, freed %.1f MB (took %.1fs)",
         f"{total_deleted:,}", results["freed_mb"], results["duration_seconds"],
     )
 
@@ -457,3 +509,164 @@ def get_maintenance_report() -> Dict:
         report["last_cleanup"] = "Unknown"
 
     return report
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Adaptive retention & WAL checkpoint
+# ---------------------------------------------------------------------------
+
+def get_wal_size_mb(db_path: Optional[str] = None) -> float:
+    """Return the WAL file size in megabytes."""
+    if db_path is None:
+        from config import DATABASE_PATH
+        db_path = DATABASE_PATH
+    wal_path = db_path + "-wal"
+    try:
+        return os.path.getsize(wal_path) / (1024 * 1024)
+    except OSError:
+        return 0.0
+
+
+def run_wal_checkpoint(mode: str = "PASSIVE") -> bool:
+    """Run a WAL checkpoint to prevent unbounded WAL growth.
+
+    Called by the cleanup cycle after batch deletes. Uses PASSIVE mode
+    by default (non-blocking). Returns True on success.
+    """
+    wal_size = get_wal_size_mb()
+    # Only checkpoint if WAL is >10 MB or mode is explicit
+    if wal_size < 10 and mode == "PASSIVE":
+        return True  # nothing to do
+    result = wal_checkpoint(mode)
+    if result:
+        new_wal_size = get_wal_size_mb()
+        logger.info(
+            "WAL checkpoint (%s): %.1f MB -> %.1f MB",
+            mode, wal_size, new_wal_size,
+        )
+    return result
+
+
+def adaptive_cleanup() -> Dict:
+    """Run cleanup with adaptive retention based on database size.
+
+    When the database exceeds ``MAX_DATABASE_SIZE_GB``, retention
+    is progressively shortened to bring it under control.
+
+    Returns a summary dict like ``run_full_cleanup``.
+    """
+    from config import (
+        MAX_DATABASE_SIZE_GB,
+        EMERGENCY_RETENTION_HOURS,
+        HOURLY_CLEANUP_BATCH_SIZE,
+    )
+
+    db_size_mb = get_database_size_mb()
+    max_size_mb = MAX_DATABASE_SIZE_GB * 1024
+
+    # Determine adaptive retention
+    if db_size_mb > max_size_mb * 1.5:
+        # Emergency: DB is 50% over limit — use emergency retention
+        traffic_retention_days = max(1, EMERGENCY_RETENTION_HOURS / 24)
+        logger.warning(
+            "DB size %.1f MB exceeds 150%% of limit (%.0f MB) — "
+            "emergency retention: %.1f days",
+            db_size_mb, max_size_mb, traffic_retention_days,
+        )
+    elif db_size_mb > max_size_mb:
+        # Over limit — halve normal retention
+        traffic_retention_days = 3
+        logger.warning(
+            "DB size %.1f MB exceeds limit (%.0f MB) — "
+            "reduced retention: %d days",
+            db_size_mb, max_size_mb, traffic_retention_days,
+        )
+    else:
+        # Normal operation
+        traffic_retention_days = 7
+
+    result = run_full_cleanup(
+        traffic_retention_days=traffic_retention_days,
+        alert_retention_days=30,
+        stats_retention_days=30,
+        daily_usage_retention_days=90,
+        vacuum=(db_size_mb > max_size_mb),
+    )
+
+    # Always checkpoint WAL after cleanup
+    run_wal_checkpoint("PASSIVE")
+
+    return result
+
+
+def get_disk_space_info(db_path: Optional[str] = None) -> Dict:
+    """Return disk space information for the database partition.
+
+    Returns dict with ``total_gb``, ``free_gb``, ``used_gb``,
+    ``free_percent``, and ``status`` (good/warning/critical).
+    """
+    if db_path is None:
+        from config import DATABASE_PATH
+        db_path = DATABASE_PATH
+
+    try:
+        from config import DISK_SPACE_WARNING_PERCENT, DISK_SPACE_CRITICAL_PERCENT
+    except ImportError:
+        DISK_SPACE_WARNING_PERCENT = 10
+        DISK_SPACE_CRITICAL_PERCENT = 5
+
+    try:
+        usage = shutil.disk_usage(os.path.dirname(db_path) or ".")
+        total_gb = usage.total / (1024 ** 3)
+        free_gb = usage.free / (1024 ** 3)
+        used_gb = usage.used / (1024 ** 3)
+        free_percent = (usage.free / usage.total * 100) if usage.total else 0
+
+        if free_percent < DISK_SPACE_CRITICAL_PERCENT:
+            status = "critical"
+        elif free_percent < DISK_SPACE_WARNING_PERCENT:
+            status = "warning"
+        else:
+            status = "good"
+
+        return {
+            "total_gb": round(total_gb, 2),
+            "free_gb": round(free_gb, 2),
+            "used_gb": round(used_gb, 2),
+            "free_percent": round(free_percent, 1),
+            "status": status,
+        }
+    except OSError as e:
+        logger.error("get_disk_space_info error: %s", e)
+        return {
+            "total_gb": 0, "free_gb": 0, "used_gb": 0,
+            "free_percent": 0, "status": "unknown",
+        }
+
+
+def emergency_cleanup() -> Dict:
+    """Run emergency cleanup when disk space is critically low.
+
+    Shortens retention to EMERGENCY_RETENTION_HOURS, deletes
+    aggressively in batches, checkpoints WAL, and vacuums.
+    """
+    from config import EMERGENCY_RETENTION_HOURS
+
+    retention_hours = EMERGENCY_RETENTION_HOURS
+    logger.warning(
+        "EMERGENCY CLEANUP: disk space critically low — "
+        "retention reduced to %d hours", retention_hours,
+    )
+
+    result = run_full_cleanup(
+        traffic_retention_days=max(1, retention_hours / 24),
+        alert_retention_days=7,
+        stats_retention_days=7,
+        daily_usage_retention_days=30,
+        vacuum=True,
+    )
+
+    # Force a TRUNCATE checkpoint to reclaim WAL space
+    run_wal_checkpoint("TRUNCATE")
+
+    return result

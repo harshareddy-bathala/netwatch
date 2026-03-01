@@ -24,6 +24,7 @@ export default class AlertRules {
     this._container = container;
     this._rules = [];
     this._expanded = false;
+    this._loaded = false;       // true after first API fetch
     this._unsubs = [];
   }
 
@@ -79,10 +80,9 @@ export default class AlertRules {
       }
     }));
 
-    await this._loadRules();
-
-    // Ensure we start collapsed on first render (user can expand manually)
-    this._setExpanded(false);
+    // Don't load rules at render time — defer to first expansion.
+    // This prevents the dropdown from briefly appearing on page load
+    // and avoids an unnecessary API call until the user clicks.
   }
 
   /* ── Data ────────────────────────────────── */
@@ -126,7 +126,13 @@ export default class AlertRules {
   /* ── Expand/Collapse ─────────────────────── */
 
   _toggleExpand() {
-    this._setExpanded(!this._expanded);
+    const expanding = !this._expanded;
+    this._setExpanded(expanding);
+    // Lazy-load rules on first expansion
+    if (expanding && !this._loaded) {
+      this._loaded = true;
+      this._loadRules();
+    }
   }
 
   _setExpanded(expanded) {

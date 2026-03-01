@@ -1,7 +1,8 @@
 # NetWatch API Reference
 
-**Base URL:** `http://localhost:5000`  
+**Base URL:** `http://localhost:5000`
 **Content-Type:** `application/json`
+**Requires:** Python 3.11+
 
 ---
 
@@ -16,6 +17,7 @@
 - [Network Discovery](#network-discovery)
 - [Metrics](#metrics)
 - [Error Codes](#error-codes)
+- [Configuration Reference (Phase 3)](#configuration-reference-phase-3)
 
 ---
 
@@ -29,8 +31,8 @@ Health check endpoint.
 ```json
 {
   "status": "healthy",
-  "uptime": "2d 5h 30m 15s",
-  "version": "2.0.0"
+  "version": "3.0.0",
+  "timestamp": "2026-02-06T10:30:00"
 }
 ```
 
@@ -57,9 +59,10 @@ Application information.
 ```json
 {
   "name": "NetWatch",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "environment": "production",
-  "python_version": "3.12.0"
+  "uptime_seconds": 18900.52,
+  "uptime_formatted": "5h 15m 0s"
 }
 ```
 
@@ -437,7 +440,7 @@ Force re-detection of network mode.
 ```json
 {
   "success": true,
-  "mode": "wifi_client",
+  "mode": "public_network",
   "interface": "Wi-Fi"
 }
 ```
@@ -537,3 +540,41 @@ Application performance metrics.
   "status": 404
 }
 ```
+
+---
+
+## Configuration Reference (Phase 3)
+
+The following configuration values are defined in `config.py` and can be
+overridden via environment variables where noted.
+
+### Database Size and Disk Management
+
+| Variable | Type | Default | Env Override | Description |
+|----------|------|---------|--------------|-------------|
+| `MAX_DATABASE_SIZE_GB` | float | `20` | `MAX_DATABASE_SIZE_GB` | Maximum database size in GB before emergency cleanup triggers |
+| `EMERGENCY_RETENTION_HOURS` | int | `6` | `EMERGENCY_RETENTION_HOURS` | Minimum hours of data to keep when disk space is critically low |
+| `DISK_SPACE_WARNING_PERCENT` | int | `10` | `DISK_SPACE_WARNING_PERCENT` | Free disk space percentage that triggers a warning alert |
+| `DISK_SPACE_CRITICAL_PERCENT` | int | `5` | `DISK_SPACE_CRITICAL_PERCENT` | Free disk space percentage that triggers a critical alert |
+
+### SSE (Server-Sent Events)
+
+| Variable | Type | Default | Env Override | Description |
+|----------|------|---------|--------------|-------------|
+| `SSE_MAX_CONNECTIONS` | int | `10` | `SSE_MAX_CONNECTIONS` | Maximum simultaneous SSE connections allowed (prevents resource exhaustion) |
+
+### Port Mirror Settings
+
+| Variable | Type | Default | Env Override | Description |
+|----------|------|---------|--------------|-------------|
+| `PORT_MIRROR_MAX_PPS` | int | `5000` | `PORT_MIRROR_MAX_PPS` | Maximum packets per second when operating in port-mirror mode |
+| `PORT_MIRROR_MAX_UNIQUE_MACS_PER_MINUTE` | int | `500` | `PORT_MIRROR_MAX_UNIQUE_MACS` | Maximum unique MAC addresses accepted per minute in port-mirror mode |
+| `PORT_MIRROR_CONNECTION_TIMEOUT` | int | `300` | `PORT_MIRROR_CONNECTION_TIMEOUT` | Seconds before an idle port-mirror connection is considered timed out |
+
+### Memory Management and Device Pruning
+
+| Variable | Type | Default | Env Override | Description |
+|----------|------|---------|--------------|-------------|
+| `STALE_DEVICE_PRUNE_INTERVAL` | int | `300` | `STALE_DEVICE_PRUNE_INTERVAL` | How often (seconds) the stale-device pruning task runs |
+| `STALE_DEVICE_TIMEOUT_HOURS` | int | `2` | `STALE_DEVICE_TIMEOUT_HOURS` | Hours of inactivity after which a device is considered stale and eligible for pruning |
+| `MAX_IN_MEMORY_DEVICES` | int | `10000` | `MAX_IN_MEMORY_DEVICES` | Upper limit on devices held in memory; oldest entries are evicted when exceeded |

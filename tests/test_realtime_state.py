@@ -282,3 +282,119 @@ class TestQueryCacheThresholds:
 
         result = get_some_history()
         assert result == "ok"
+
+
+# ===================================================================
+#  Mode-awareness / OWN_TRAFFIC_ONLY scope filtering
+# ===================================================================
+
+class TestModeAwareness:
+    """Verify that set_mode_context() controls which MACs are tracked."""
+
+    OUR_MAC = "aa:bb:cc:dd:ee:01"
+    GW_MAC = "aa:bb:cc:dd:ee:02"
+    STRANGER_MAC = "ff:ff:ff:00:00:01"
+    STRANGER_MAC2 = "ff:ff:ff:00:00:02"
+
+    def _make_state(self, own_traffic_only: bool):
+        state = InMemoryDashboardState()
+        state.set_mode_context(
+            our_mac=self.OUR_MAC,
+            gateway_mac=self.GW_MAC,
+            own_traffic_only=own_traffic_only,
+            gateway_mac_exclude=own_traffic_only,
+        )
+        return state
+
+    # ---- OWN_TRAFFIC_ONLY = True ----
+
+    def test_own_traffic_tracks_our_mac_as_source(self):
+        state = self._make_state(own_traffic_only=True)
+        state.update_from_batch([_make_packet(
+            source_mac=self.OUR_MAC, dest_mac="ff:ff:ff:ff:ff:ff",
+        )])
+        assert state.get_active_device_count() == 1
+
+    def test_own_traffic_excludes_gateway_mac_as_dest(self):
+        """Gateway MAC should be excluded — only self is shown."""
+        state = self._make_state(own_traffic_only=True)
+        state.update_from_batch([_make_packet(
+            source_mac=self.OUR_MAC, dest_mac=self.GW_MAC,
+        )])
+        # Only OUR_MAC should be tracked, not GW_MAC
+        assert state.get_active_device_count() == 1
+
+    def test_own_traffic_rejects_stranger_source(self):
+        state = self._make_state(own_traffic_only=True)
+        state.update_from_batch([_make_packet(
+            source_mac=self.STRANGER_MAC, dest_mac="ff:ff:ff:ff:ff:ff",
+        )])
+        assert state.get_active_device_count() == 0
+
+    def test_own_traffic_rejects_stranger_dest(self):
+        state = self._make_state(own_traffic_only=True)
+        state.update_from_batch([_make_packet(
+            source_mac=self.OUR_MAC, dest_mac=self.STRANGER_MAC,
+        )])
+        # Only OUR_MAC should be tracked, not STRANGER_MAC
+        assert state.get_active_device_count() == 1
+
+    def test_own_traffic_mixed_batch(self):
+        """Batch with both allowed and disallowed MACs."""
+        state = self._make_state(own_traffic_only=True)
+        state.update_from_batch([
+            _make_packet(source_mac=self.OUR_MAC, dest_mac=self.GW_MAC),
+            _make_packet(source_mac=self.STRANGER_MAC, dest_mac=self.STRANGER_MAC2),
+            _make_packet(source_mac=self.OUR_MAC, dest_mac=self.STRANGER_MAC),
+        ])
+        # Only OUR_MAC should be tracked (gateway excluded)
+        assert state.get_active_device_count() == 1
+
+    def test_own_traffic_case_insensitive(self):
+        """MAC comparison should be case-insensitive."""
+        state = self._make_state(own_traffic_only=True)
+        state.update_from_batch([_make_packet(
+            source_mac=self.OUR_MAC.upper(), dest_mac="ff:ff:ff:ff:ff:ff",
+        )])
+        assert state.get_active_device_count() == 1
+
+    # ---- OWN_TRAFFIC_ONLY = False (hotspot / ethernet) ----
+
+    def test_unrestricted_tracks_all_macs(self):
+        state = self._make_state(own_traffic_only=False)
+        state.update_from_batch([
+            _make_packet(source_mac=self.OUR_MAC, dest_mac=self.GW_MAC),
+            _make_packet(source_mac=self.STRANGER_MAC, dest_mac=self.STRANGER_MAC2),
+        ])
+        assert state.get_active_device_count() == 4
+
+    # ---- clear() does NOT reset mode context ----
+
+    def test_clear_preserves_mode_context(self):
+        state = self._make_state(own_traffic_only=True)
+        state.clear()
+        state.update_from_batch([_make_packet(
+            source_mac=self.STRANGER_MAC, dest_mac="ff:ff:ff:ff:ff:ff",
+        )])
+        # Mode context still active → stranger rejected
+        assert state.get_active_device_count() == 0
+
+    # ---- set_mode_context overrides previous setting ----
+
+    def test_set_mode_context_overrides(self):
+        state = self._make_state(own_traffic_only=True)
+        # Switch to unrestricted
+        state.set_mode_context(own_traffic_only=False)
+        state.update_from_batch([_make_packet(
+            source_mac=self.STRANGER_MAC, dest_mac="ff:ff:ff:ff:ff:ff",
+        )])
+        assert state.get_active_device_count() == 1
+
+    def test_default_is_unrestricted(self):
+        """Fresh state should track all MACs (backward compat)."""
+        state = InMemoryDashboardState()
+        state.update_from_batch([
+            _make_packet(source_mac=self.STRANGER_MAC, dest_mac="ff:ff:ff:ff:ff:ff"),
+            _make_packet(source_mac=self.STRANGER_MAC2, dest_mac="ff:ff:ff:ff:ff:ff"),
+        ])
+        assert state.get_active_device_count() == 2

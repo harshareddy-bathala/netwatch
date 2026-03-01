@@ -150,6 +150,7 @@ class AlertEngine:
             logger.warning(
                 "Alert #%d created [%s/%s]: %s", alert_id, alert_type, severity, full_message
             )
+            self._push_alerts_to_dashboard()
         else:
             logger.error("Failed to persist alert [%s/%s]: %s", alert_type, severity, full_message)
 
@@ -378,7 +379,7 @@ class AlertEngine:
 
         device_desc = hostname or vendor or ip or "Unknown"
         title = (
-            "⚠️ Unknown Device on Hotspot" if is_hotspot
+            "Unknown Device on Hotspot" if is_hotspot
             else "New Device Detected"
         )
         message = (
@@ -509,6 +510,26 @@ class AlertEngine:
             "cooldown_seconds": self.dedup.cooldown,
             "tracked_keys": len(self.dedup.last_alerts),
         }
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Phase 4: push alert state into in-memory dashboard cache
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _push_alerts_to_dashboard(self) -> None:
+        """Refresh in-memory alert caches after a new alert is created.
+
+        Reads counts and recent alerts from the DB (acceptable overhead
+        since this only runs on alert creation, not every SSE tick) and
+        pushes them into ``dashboard_state`` so the SSE loop can serve
+        alert data without DB queries.
+        """
+        try:
+            from utils.realtime_state import dashboard_state
+            counts = db_get_alert_summary()
+            recent = db_get_alerts(limit=5, include_resolved=False)
+            dashboard_state.set_alerts(counts, recent)
+        except Exception as exc:
+            logger.debug("_push_alerts_to_dashboard failed: %s", exc)
 
     def __repr__(self) -> str:
         return f"AlertEngine(dedup={self.dedup!r})"

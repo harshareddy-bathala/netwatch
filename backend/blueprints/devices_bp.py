@@ -11,7 +11,7 @@ from flask import Blueprint, jsonify, request
 from database.db_handler import (
     get_top_devices, get_all_devices, get_device_details, update_device_name,
 )
-from backend.helpers import handle_errors, clear_response_cache, is_valid_ip
+from backend.helpers import handle_errors, cached_response, clear_response_cache, is_valid_ip
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,7 @@ def get_top_devices_endpoint():
 
 
 @devices_bp.route('/api/devices')
+@cached_response('devices')
 @handle_errors
 def get_devices():
     """Get all devices."""
@@ -54,6 +55,20 @@ def get_device(ip_address):
         return jsonify({'error': 'Invalid IP address format', 'code': 'INVALID_IP'}), 400
     device = get_device_details(ip_address)
     if device:
+        # Merge in-memory last_seen when it's more recent than the DB value.
+        # The device list uses real-time in-memory state, but device detail
+        # queries the DB — this closes the gap so both views agree.
+        try:
+            from utils.realtime_state import dashboard_state
+            mem_dev = dashboard_state.get_device_by_ip(ip_address)
+            if mem_dev and mem_dev.get("last_seen"):
+                db_last_seen = device.get("last_seen", "")
+                mem_last_seen = mem_dev["last_seen"]
+                # Compare as strings (ISO format sorts correctly)
+                if mem_last_seen > db_last_seen:
+                    device["last_seen"] = mem_last_seen
+        except Exception:
+            pass
         return jsonify({'data': device})
     return jsonify({'error': 'Device not found', 'code': 'NOT_FOUND'}), 404
 

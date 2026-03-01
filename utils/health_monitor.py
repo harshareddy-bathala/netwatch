@@ -1,11 +1,13 @@
 """
-health_monitor.py - System Health Monitoring (Phase 2)
-=======================================================
+health_monitor.py - System Health Monitoring (Phase 2+3)
+=========================================================
 
 Monitors system-level health metrics for 24/7 production operation:
 * CPU usage
 * Memory usage
 * Database size and growth rate
+* Disk space monitoring with auto-response
+* Connection pool utilization
 * Packet capture status
 * ML model status
 * Thread health
@@ -323,6 +325,13 @@ class HealthMonitor:
                 # Check thresholds and raise alerts
                 self._check_thresholds(metrics)
 
+                # Phase 3: check disk space thresholds
+                self._check_disk_thresholds(metrics.get("disk", {}))
+
+                # Phase 4: push health snapshot into in-memory dashboard
+                # state so the SSE loop can serve it without a DB query.
+                self._push_health_to_dashboard(metrics)
+
             except Exception as e:
                 logger.error("Health monitor error: %s", e)
 
@@ -338,6 +347,12 @@ class HealthMonitor:
 
         # Database metrics
         db_metrics = self._get_db_metrics()
+
+        # Disk space metrics (Phase 3)
+        disk_metrics = self._get_disk_metrics()
+
+        # Connection pool metrics (Phase 3)
+        pool_metrics = self._get_pool_metrics()
 
         # Thread info
         thread_info = {
@@ -374,6 +389,16 @@ class HealthMonitor:
                 status = "warning"
             issues.append(f"Database: {db_size:.0f} MB")
 
+        # Disk space status (Phase 3)
+        disk_status = disk_metrics.get("status", "unknown")
+        if disk_status == "critical":
+            status = "critical"
+            issues.append(f"Disk space: {disk_metrics.get('free_percent', 0):.1f}% free")
+        elif disk_status == "warning":
+            if status != "critical":
+                status = "warning"
+            issues.append(f"Disk space: {disk_metrics.get('free_percent', 0):.1f}% free")
+
         return {
             "status": status,
             "issues": issues,
@@ -382,6 +407,8 @@ class HealthMonitor:
             "cpu_percent": round(cpu, 1),
             "memory": memory,
             "database": db_metrics,
+            "disk": disk_metrics,
+            "pool": pool_metrics,
             "threads": thread_info,
             "timestamp": now.isoformat(),
         }
@@ -471,8 +498,118 @@ class HealthMonitor:
                     metadata={"db_size_mb": db_size, "health_subsystem": "database"},
                 )
 
+            # Connection pool exhaustion alert
+            pool = metrics.get("pool", {})
+            pool_total = pool.get("total", 0)
+            pool_available = pool.get("available", 0)
+            if pool_total > 0 and pool_available == 0:
+                self.alert_engine.create_alert(
+                    alert_type="health",
+                    severity="critical",
+                    title="Connection Pool Exhausted",
+                    message=(
+                        f"All {pool_total} database connections are in use. "
+                        "Queries may time out."
+                    ),
+                    metadata={"pool_total": pool_total, "health_subsystem": "pool"},
+                )
+
         except Exception as e:
             logger.error("Threshold check error: %s", e)
+
+    def _check_disk_thresholds(self, disk_metrics: Dict) -> None:
+        """Check disk space thresholds and trigger emergency cleanup if needed."""
+        if not self.alert_engine:
+            return
+
+        status = disk_metrics.get("status", "unknown")
+        free_pct = disk_metrics.get("free_percent", 100)
+        free_gb = disk_metrics.get("free_gb", 0)
+
+        try:
+            if status == "critical":
+                self.alert_engine.create_alert(
+                    alert_type="health",
+                    severity="critical",
+                    title="Critical Disk Space",
+                    message=(
+                        f"Disk space critically low: {free_pct:.1f}% free "
+                        f"({free_gb:.1f} GB). Emergency cleanup triggered."
+                    ),
+                    metadata={
+                        "free_percent": free_pct,
+                        "free_gb": free_gb,
+                        "health_subsystem": "disk",
+                    },
+                )
+                # Trigger emergency cleanup
+                try:
+                    from database.queries.maintenance import emergency_cleanup
+                    emergency_cleanup()
+                except Exception as e:
+                    logger.error("Emergency cleanup failed: %s", e)
+
+            elif status == "warning":
+                self.alert_engine.create_alert(
+                    alert_type="health",
+                    severity="warning",
+                    title="Low Disk Space",
+                    message=(
+                        f"Disk space low: {free_pct:.1f}% free "
+                        f"({free_gb:.1f} GB). Consider cleanup."
+                    ),
+                    metadata={
+                        "free_percent": free_pct,
+                        "free_gb": free_gb,
+                        "health_subsystem": "disk",
+                    },
+                )
+        except Exception as e:
+            logger.error("Disk threshold check error: %s", e)
+
+    @staticmethod
+    def _get_disk_metrics() -> Dict:
+        """Collect disk space metrics for the database partition."""
+        try:
+            from database.queries.maintenance import get_disk_space_info
+            return get_disk_space_info()
+        except Exception as e:
+            logger.debug("Disk metrics error: %s", e)
+            return {
+                "total_gb": 0, "free_gb": 0, "used_gb": 0,
+                "free_percent": 0, "status": "unknown",
+            }
+
+    @staticmethod
+    def _get_pool_metrics() -> Dict:
+        """Collect connection pool utilization metrics."""
+        try:
+            from database.connection import pool_stats
+            return pool_stats()
+        except Exception as e:
+            logger.debug("Pool metrics error: %s", e)
+            return {
+                "total": 0, "available": 0, "in_use": 0,
+                "borrow_count": 0, "wait_count": 0, "replace_count": 0,
+            }
+
+    @staticmethod
+    def _push_health_to_dashboard(metrics: Dict) -> None:
+        """Push the network health score into the in-memory dashboard state.
+
+        Called every ``check_interval`` seconds so the SSE loop can
+        serve health data from memory instead of a DB query.
+
+        Uses ``get_health_score()`` from stats_queries which returns
+        the ``{"score": N, "status": "..."}`` format the frontend expects.
+        """
+        try:
+            from database.queries.stats_queries import get_health_score
+            from utils.realtime_state import dashboard_state
+            health = get_health_score()
+            dashboard_state.set_health_score(health)
+        except Exception as exc:
+            logger.debug("_push_health_to_dashboard failed: %s", exc)
 
     @staticmethod
     def _format_uptime(seconds: float) -> str:

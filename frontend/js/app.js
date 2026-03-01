@@ -48,14 +48,15 @@ class App {
       // Destroy old view
       if (this._currentView?.destroy) this._currentView.destroy();
 
-      // Animate out old content
-      viewContainer.classList.remove('view-active');
-      viewContainer.classList.add('view-enter');
-
       titleEl.textContent = title;
       this.sidebar.setActive(route);
 
-      // Create new view
+      // Mount new view immediately — no delay, no data clearing.
+      // Components render with whatever data the store already has,
+      // then update reactively when fresh data arrives via SSE.
+      viewContainer.classList.remove('view-active');
+      viewContainer.classList.add('view-enter');
+
       this._currentView = new ViewClass(viewContainer);
       this._currentView.render();
 
@@ -155,7 +156,14 @@ class App {
           if (data.health)      store.setState('health', data.health);
 
           // Full alerts list (fixes stale alerts page)
-          if (data.alerts)      store.setState('alerts', data.alerts);
+          // NOTE: SSE sends only 5 recent alerts from in-memory cache.
+          // Do NOT overwrite the store 'alerts' key — AlertFeed manages
+          // its own full list via _fetchFreshAlerts().  Writing the
+          // truncated SSE list here would (a) replace the full 50-alert
+          // fetch with just 5 entries and (b) push stale resolved/acked
+          // status that overwrites fresh data, making resolve appear broken.
+          // Use a separate key for the dashboard's recent-alerts widget.
+          if (data.alerts)      store.setState('recentAlerts', data.alerts);
           // Protocol distribution (fixes blank protocol chart)
           if (data.protocols)   store.setState('protocols', data.protocols);
           // Top devices
@@ -171,40 +179,15 @@ class App {
             }
           }
 
-          // Bandwidth: always prefer the full DB history, then merge live tail
-          {
-            const dbHistory = (data.bandwidth_history && Array.isArray(data.bandwidth_history) && data.bandwidth_history.length > 0)
-              ? data.bandwidth_history
-              : null;
-            const liveHistory = (data.bandwidth_live && Array.isArray(data.bandwidth_live.history) && data.bandwidth_live.history.length > 0)
-              ? data.bandwidth_live.history
-              : null;
-
-            // Helper: parse timestamp string reliably (space → T for ISO 8601)
-            const toMs = (ts) => new Date(typeof ts === 'string' ? ts.replace(' ', 'T') : ts).getTime();
-
-            if (dbHistory && liveHistory) {
-              // Merge: DB points + live tail (numeric timestamp comparison)
-              const lastDbTime = toMs(dbHistory[dbHistory.length - 1].timestamp);
-              const newLive = liveHistory.filter(p => toMs(p.timestamp) > lastDbTime);
-
-              // Clean concatenation — the rounded cutoff on the server ensures
-              // DB and live data meet without a gap, so no synthetic bridge needed.
-              const merged = [...dbHistory, ...newLive].slice(-360);
-              store.setState('bandwidth', { history: merged });
-            } else if (dbHistory) {
-              store.setState('bandwidth', { history: dbHistory });
-            } else if (liveHistory) {
-              // Engine running but no DB history yet — show live data
-              const current = store.get('bandwidth');
-              const existing = current && (current.history || current.data || current);
-              if (Array.isArray(existing) && existing.length > 0) {
-                const dbPoints = existing.filter(p => !p.live);
-                const merged = [...dbPoints, ...liveHistory].slice(-360);
-                store.setState('bandwidth', { history: merged });
-              } else {
-                store.setState('bandwidth', { history: liveHistory });
-              }
+          // Bandwidth: use the pre-merged history from the backend directly.
+          // All DB + live merging happens server-side so the chart gets a
+          // single stable array — no point count changes, no past-wave drift.
+          // Only update from SSE when viewing 1H range — SSE always sends
+          // 1H merged data.  For 6H/24H the timerange handler fetches the
+          // correct data from the DB endpoint and we must not overwrite it.
+          if (data.bandwidth_history && Array.isArray(data.bandwidth_history) && data.bandwidth_history.length > 0) {
+            if (this._hours <= 1) {
+              store.setState('bandwidth', { history: data.bandwidth_history });
             }
           }
 
@@ -247,7 +230,7 @@ class App {
         // Backend returned everything in one payload
         if (dashboard.stats)     store.setState('stats', dashboard.stats);
         if (dashboard.devices)   store.setState('devices', dashboard.devices);
-        if (dashboard.alerts)    store.setState('alerts', dashboard.alerts);
+        if (dashboard.alerts)    store.setState('recentAlerts', dashboard.alerts);
         if (dashboard.protocols) store.setState('protocols', dashboard.protocols);
         if (dashboard.mode)      store.setState('mode', dashboard.mode);
         if (dashboard.health)    store.setState('health', dashboard.health);
@@ -340,8 +323,10 @@ class App {
   _setupRefresh() {
     window.addEventListener('netwatch:refresh', async () => {
       clearTimeout(this._timerId);
-      // Trigger backend mode re-detection, then refresh UI data
+      // Trigger backend mode re-detection + cache invalidation
       try { await api.refreshInterface(); } catch (_) { /* best-effort */ }
+      // Force data refresh — reset guard so update is not skipped
+      this._updating = false;
       this._update();
     });
   }
@@ -366,11 +351,20 @@ class App {
   /* ─────────────────── Time range ────────────────── */
 
   _setupTimeRange() {
-    window.addEventListener('netwatch:timerange', e => {
+    window.addEventListener('netwatch:timerange', async (e) => {
       this._hours = e.detail.hours || 1;
       localStorage.setItem('netwatch-time-range', String(this._hours));
-      clearTimeout(this._timerId);
-      this._update();
+
+      // Only re-fetch bandwidth history for the new range — don't
+      // trigger a full _update() which would overwrite alerts / health
+      // from the dashboard payload and cause a visible flash.
+      try {
+        const bwInterval = this._hours >= 24 ? 'hour' : this._hours <= 1 ? '10s' : 'minute';
+        const bw = await api.getBandwidthDual(this._hours, bwInterval);
+        if (bw && !bw.error && (bw.data || bw.history)) {
+          store.setState('bandwidth', bw);
+        }
+      } catch (_) { /* best-effort */ }
     });
   }
 

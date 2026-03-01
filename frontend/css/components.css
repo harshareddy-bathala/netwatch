@@ -121,6 +121,12 @@
   margin-bottom: var(--spacing-md);
 }
 
+.chart-card__title-group {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
 .chart-card__title {
   font-size: var(--font-size-base);
   font-weight: var(--font-weight-semibold);
@@ -135,7 +141,7 @@
 .chart-card__canvas-wrap {
   position: relative;
   height: 280px;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .chart-card__canvas-wrap canvas {
@@ -143,17 +149,102 @@
   height: 100% !important;
 }
 
-/* Ensure protocol doughnut chart card allows enough room for legend labels */
-.dashboard-grid__charts .chart-card:last-child {
-  min-width: 0;
-  overflow: visible;
-}
-.dashboard-grid__charts .chart-card:last-child .chart-card__canvas-wrap {
-  height: 290px;
-  padding-right: 8px;
+/* Protocol card: centered doughnut */
+.chart-card--protocol .chart-card__protocol-body {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: var(--spacing-sm) 0;
 }
 
-/* Time range buttons */
+.chart-card__canvas-wrap--doughnut {
+  position: relative;
+  height: 220px;
+  width: 220px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.chart-card__canvas-wrap--doughnut canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* Ensure protocol card doesn't overflow */
+.dashboard-grid__charts .chart-card:last-child {
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* ── Speed badge ─────────────────────────────── */
+
+.speed-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-tertiary);
+  border-radius: 20px;
+  padding: 2px 10px;
+  line-height: 1.4;
+}
+
+.speed-badge__dl {
+  color: var(--color-success);
+}
+
+.speed-badge__ul {
+  color: var(--color-info);
+}
+
+.speed-badge__sep {
+  color: var(--color-text-tertiary);
+  opacity: 0.5;
+}
+
+.speed-badge__idle {
+  color: var(--color-text-tertiary);
+  font-style: italic;
+}
+
+/* ── Time range pill toggle ──────────────────── */
+
+.time-range-toggle {
+  display: inline-flex;
+  gap: 2px;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: 20px;
+  padding: 2px;
+}
+
+.time-range-toggle__btn {
+  padding: 4px 12px;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-tertiary);
+  border-radius: 16px;
+  transition: all var(--transition-fast);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.time-range-toggle__btn:hover {
+  color: var(--color-text-secondary);
+}
+
+.time-range-toggle__btn.active {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+/* ── Legacy time buttons (keep for backward compat) ── */
+
 .time-btn {
   padding: 4px 10px;
   font-size: var(--font-size-xs);
@@ -171,6 +262,27 @@
 .time-btn.active {
   background: var(--color-bg-tertiary);
   color: var(--color-text-primary);
+}
+
+/* ── Chart "no data" overlay ─────────────────── */
+
+.chart-no-data {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-tertiary);
+  font-size: 13px;
+  pointer-events: none;
+  z-index: 2;
+  gap: 4px;
+}
+
+.chart-no-data__icon {
+  font-size: 20px;
+  opacity: 0.4;
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -819,6 +931,7 @@
 .alert-rules__toggle svg { transition: transform var(--transition-fast); }
 
 .alert-rules__body {
+  display: none;
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border);
   border-top: none;
@@ -953,18 +1066,14 @@
   color: var(--color-text-secondary, #aaa);
 }
 
-.discovery-banner svg {
-  vertical-align: -2px;
-  margin-right: 4px;
+.discovery-banner__inline {
+  display: flex;
+  align-items: center;
 }
 
-/* ═══════════════════════════════════════════════════════
-   SIDEBAR LOGO SIZE (inline-style replacement)
-   ═══════════════════════════════════════════════════════ */
-
-.sidebar__logo {
-  width: 239px;
-  height: 81px;
+.discovery-banner__inline svg {
+  vertical-align: middle;
+  margin-right: 6px;
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -975,3 +1084,40 @@
   font-size: var(--font-size-xs);
   color: var(--color-text-tertiary);
 }
+
+/* ═══════════════════════════════════════════════════════
+   MODE INFO BUTTON & POPUP (Sidebar)
+   ═══════════════════════════════════════════════════════ */
+
+.btn-mode-info {
+  background: none;
+  border: none;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  opacity: 0.7;
+  transition: opacity 0.15s, color 0.15s;
+  display: inline-flex;
+  align-items: center;
+}
+.btn-mode-info:hover {
+  opacity: 1;
+  color: var(--color-accent, #6366f1);
+}
+
+.mode-detail-popup {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  margin-top: 6px;
+}
+.mode-detail-popup b {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+

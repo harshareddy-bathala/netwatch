@@ -309,15 +309,32 @@ class PacketProcessor:
             return result
 
         # ---- MAC-based fallback (critical for IPv6 traffic) ----
-        # When BPF uses ``ether host <mac>`` we capture IPv6 packets
-        # whose IPs don't match our known IPv4 address.  Use the MAC
-        # to determine direction instead.
+        # When IPv6 IPs don't match the monitored IPv4 subnet, fall back to
+        # MAC-address comparison to determine direction.
+        #
+        # IMPORTANT: the semantics differ by scope:
+        #
+        #   CONNECTED_CLIENTS (hotspot/gateway mode) — "our MAC" is the
+        #   *gateway* adapter.  When Windows ICS forwards a download packet
+        #   to a client, the Ethernet frame has src_mac=gateway (our_mac).
+        #   So src_mac==our_mac means WE (gateway) forwarded it → DOWNLOAD.
+        #   When a client sends to/through the gateway, dst_mac==our_mac → UPLOAD.
+        #
+        #   All other modes — "our MAC" is the end-device.
+        #   src_mac==our_mac means WE sent it → UPLOAD.
+        #   dst_mac==our_mac means WE received it → DOWNLOAD.
         if self._our_mac:
             our_mac_lower = self._our_mac.lower()
-            if src_mac and src_mac.lower() == our_mac_lower:
-                return "upload"
-            if dst_mac and dst_mac.lower() == our_mac_lower:
-                return "download"
+            if self._scope == NetworkScope.CONNECTED_CLIENTS:
+                if src_mac and src_mac.lower() == our_mac_lower:
+                    return "download"   # gateway forwarding to client
+                if dst_mac and dst_mac.lower() == our_mac_lower:
+                    return "upload"     # client sending through gateway
+            else:
+                if src_mac and src_mac.lower() == our_mac_lower:
+                    return "upload"
+                if dst_mac and dst_mac.lower() == our_mac_lower:
+                    return "download"
 
         return "other"
 
@@ -611,31 +628,16 @@ class PacketProcessor:
             if isinstance(payload, bytes):
                 payload = payload.decode('utf-8', errors='replace')
 
-            # Look for SERVER: header which often contains device name
-            # e.g. "SERVER: Linux/3.x UPnP/1.1 MyDevice/1.0"
+            # Look for X-FRIENDLY-NAME header which contains the actual device name.
+            # NOTE: The SERVER: header is intentionally NOT parsed — it contains
+            # software/library identifiers (e.g. "Dalvik/2.1.0", "IpBridge/1.0",
+            # "Samsung/1.0") which are NOT device names and pollute the device list.
             for line in payload.split('\r\n'):
                 line_upper = line.upper().strip()
                 if line_upper.startswith('X-FRIENDLY-NAME:'):
                     name = line.split(':', 1)[1].strip()
                     if name:
                         return name
-                # Also try USN (Unique Service Name) for device names
-                if line_upper.startswith('SERVER:'):
-                    server_val = line.split(':', 1)[1].strip()
-                    # Many devices put their name in SERVER header
-                    # Try to extract meaningful name from common patterns
-                    parts = server_val.split()
-                    if parts:
-                        # Filter out generic OS/UPnP tokens
-                        for part in parts:
-                            if '/' in part:
-                                name_part = part.split('/')[0]
-                                if (name_part.lower() not in
-                                    ('linux', 'windows', 'macos', 'upnp',
-                                     'dlnadoc', 'http', 'miniupnpd', '')):
-                                    # Only return if it's a meaningful name
-                                    if len(name_part) > 2 and not name_part[0].isdigit():
-                                        return name_part
         except Exception:
             pass
         return None

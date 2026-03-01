@@ -35,14 +35,15 @@ from database.queries.alert_queries import (
 
 logger = logging.getLogger(__name__)
 
-# Cache for dashboard data (3s TTL matches SSE push interval)
-_stats_cache = TTLCache(ttl_seconds=3)
+# Cache for dashboard data (10s TTL matches polling interval; SSE serves
+# in-memory state so this cache only matters for /api/dashboard fallback)
+_stats_cache = TTLCache(ttl_seconds=10)
 
 # Separate caches for expensive sub-queries with longer TTLs.
 # These degrade as traffic_summary grows, and don't need sub-second
 # freshness.
-_today_totals_cache = TTLCache(ttl_seconds=10)
-_hourly_traffic_cache = TTLCache(ttl_seconds=15)
+_today_totals_cache = TTLCache(ttl_seconds=30)
+_hourly_traffic_cache = TTLCache(ttl_seconds=30)
 
 
 # ---------------------------------------------------------------------------
@@ -177,50 +178,20 @@ def get_health_score() -> dict:
             critical_alerts = (alert_row["critical_count"] or 0) if alert_row else 0
             warning_alerts = (alert_row["warning_count"] or 0) if alert_row else 0
 
-            # Device count — SINGLE SOURCE OF TRUTH (IP-based counting)
-            # Uses IP addresses (not MAC) as the dedup key so that devices
-            # with randomised MACs are not double-counted.
-            # Phase 1: also filter by active_mode for mode-scoped counting.
-            five_min_ago = (now - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
-            from database.queries.device_queries import VALID_DEVICE_IP_FILTER as _VDIF_HS
-            from database.queries.device_queries import _current_mode_name as _cur_mode
-            _mode_filter = ""
-            _mode_params: list = []
-            if _cur_mode:
-                _mode_filter = "AND active_mode = ?"
-                _mode_params = [_cur_mode]
-            cursor.execute(f"""
-                SELECT COUNT(DISTINCT ip_address) AS count
-                FROM (
-                    SELECT source_ip AS ip_address
-                    FROM traffic_summary
-                    WHERE timestamp >= ?
-                        AND {_VALID_MAC_FILTER_SOURCE}
-                        AND ({_PRIVATE_IP_FILTER_SOURCE})
-                    UNION
-                    SELECT dest_ip AS ip_address
-                    FROM traffic_summary
-                    WHERE timestamp >= ?
-                        AND {_VALID_MAC_FILTER_DEST}
-                        AND ({_PRIVATE_IP_FILTER_DEST})
-                    UNION
-                    SELECT COALESCE(ipv4_address, ip_address) AS ip_address
-                    FROM devices
-                    WHERE last_seen >= ?
-                        AND mac_address IS NOT NULL AND mac_address != ''
-                        AND mac_address != 'ff:ff:ff:ff:ff:ff'
-                        AND mac_address != '00:00:00:00:00:00'
-                        AND {_VDIF_HS}
-                        {_mode_filter}
-                )
-            """, (five_min_ago, five_min_ago, five_min_ago, *_mode_params))
-            device_count = (cursor.fetchone()["count"] or 0)
+            # Device count — delegate to get_active_device_count()
+            # (single source of truth, already optimised to use devices table only)
+            device_count = get_active_device_count(minutes=5, conn=conn)
 
-            # Traffic in last hour
-            cursor.execute("""
-                SELECT COUNT(*) AS count FROM traffic_summary WHERE timestamp >= ?
-            """, (one_hour,))
-            traffic_count = (cursor.fetchone()["count"] or 0)
+            # Traffic in last hour — cached to avoid expensive COUNT(*)
+            traffic_cached = _hourly_traffic_cache.get("hourly_traffic_hs")
+            if traffic_cached is not None:
+                traffic_count = traffic_cached
+            else:
+                cursor.execute("""
+                    SELECT COUNT(*) AS count FROM traffic_summary WHERE timestamp >= ?
+                """, (one_hour,))
+                traffic_count = (cursor.fetchone()["count"] or 0)
+                _hourly_traffic_cache.set("hourly_traffic_hs", traffic_count)
 
             # --- Score ---
             score = 100
@@ -239,8 +210,18 @@ def get_health_score() -> dict:
             if traffic_count:
                 factors.append(f"✓ Traffic monitoring active ({traffic_count:,} packets/hr)")
             else:
-                score -= 5
-                factors.append("-5 pts: No traffic detected in last hour")
+                # Grace period: don't penalise during the first 2 minutes —
+                # no traffic is expected while the capture engine ramps up.
+                try:
+                    from backend.helpers import APP_START_TIME
+                    _startup_secs = (datetime.now() - APP_START_TIME).total_seconds()
+                except Exception:
+                    _startup_secs = 999
+                if _startup_secs < 120:
+                    factors.append("Startup grace — monitoring just began")
+                else:
+                    score -= 5
+                    factors.append("-5 pts: No traffic detected in last hour")
 
             if device_count:
                 factors.append(f"✓ {device_count} device(s) connected")
@@ -388,8 +369,16 @@ def get_dashboard_data() -> dict:
             if traffic_count:
                 factors.append(f"Traffic monitoring active ({traffic_count:,} packets/hr)")
             else:
-                score -= 5
-                factors.append("-5 pts: No traffic detected in last hour")
+                try:
+                    from backend.helpers import APP_START_TIME
+                    _startup_secs = (datetime.now() - APP_START_TIME).total_seconds()
+                except Exception:
+                    _startup_secs = 999
+                if _startup_secs < 120:
+                    factors.append("Startup grace — monitoring just began")
+                else:
+                    score -= 5
+                    factors.append("-5 pts: No traffic detected in last hour")
             if active_devices:
                 factors.append(f"{active_devices} device(s) connected")
             score = max(0, min(100, score))

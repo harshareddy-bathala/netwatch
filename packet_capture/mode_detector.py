@@ -28,11 +28,8 @@ so that the capture engine can reconfigure on the fly.
 
 import ipaddress
 import logging
-import re
-import sys
 import time
-import threading
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from .modes.base_mode import (
     BaseMode,
@@ -40,7 +37,6 @@ from .modes.base_mode import (
     IS_LINUX,
     IS_MACOS,
     IS_WINDOWS,
-    ModeName,
     run_command,
     _cidr_from_ip_and_mask,
 )
@@ -48,12 +44,15 @@ from .modes.ethernet_mode import EthernetMode
 from .modes.hotspot_mode import HotspotMode
 from .modes.port_mirror_mode import PortMirrorMode
 from .modes.public_network_mode import PublicNetworkMode
-from .modes.wifi_client_mode import WiFiClientMode
+from . import platform_helpers as ph
 
 logger = logging.getLogger(__name__)
 
 # Threshold: fraction of foreign source MACs that indicates a mirror port
-PORT_MIRROR_FOREIGN_MAC_THRESHOLD = 0.50
+try:
+    from config import PORT_MIRROR_FOREIGN_MAC_THRESHOLD
+except ImportError:
+    PORT_MIRROR_FOREIGN_MAC_THRESHOLD = 0.50
 
 
 class ModeDetector:
@@ -76,10 +75,22 @@ class ModeDetector:
     _ssid_cache_time: float = 0
     _hostednet_cache: Optional[str] = None
     _hostednet_cache_time: float = 0
+    _adapter_status_cache: Dict[str, str] = {}   # adapter name → "Up" / "Disconnected" / …
+    _adapter_status_cache_time: float = 0
     _CACHE_TTL = 3  # seconds — reduced from 10s (Phase 5) for faster reaction to network changes
 
     # Track last detected mode to avoid log spam
     _last_logged_mode: Optional[str] = None
+
+    # Port-mirror promiscuous probe cooldown — avoids running a 3s Scapy
+    # sniff per interface on every detection cycle (15-30s).  The probe
+    # runs immediately on first boot, then waits 5 minutes between retries.
+    _mirror_probe_time: float = 0
+    _MIRROR_PROBE_COOLDOWN = 300  # 5 minutes
+
+    # macOS hardware port -> interface type cache
+    _macos_hw_ports: Optional[Dict[str, str]] = None
+    _macos_hw_ports_time: float = 0
 
     def __init__(self):
         self._all_interfaces: List[InterfaceInfo] = []
@@ -88,13 +99,21 @@ class ModeDetector:
     #  PUBLIC API
     # ================================================================== #
 
-    def detect(self, sample_source_macs: Optional[List[str]] = None) -> BaseMode:
+    def detect(
+        self,
+        sample_source_macs: Optional[List[str]] = None,
+        capture_interface_mac: Optional[str] = None,
+    ) -> BaseMode:
         """
         Run the full detection pipeline and return the appropriate mode.
 
         Args:
             sample_source_macs: Optional list of source MAC addresses from
                 a short sample capture.  Used for port-mirror heuristic.
+            capture_interface_mac: MAC address of the interface these source
+                MACs were captured on.  Used to scope the port-mirror check
+                to the correct interface and avoid cross-interface false
+                positives.
 
         Returns:
             A concrete ``BaseMode`` subclass instance.
@@ -111,12 +130,15 @@ class ModeDetector:
             logger.warning("No active network interfaces found — network disconnected")
             return self._disconnected_fallback()
 
-        # Step 1 — Port Mirror (needs sample traffic; skip if no sample)
-        if sample_source_macs:
-            mirror_mode = self._check_port_mirror(sample_source_macs)
-            if mirror_mode:
-                self._log_mode_change("PORT_MIRROR")
-                return mirror_mode
+        # Step 1 — Port Mirror (check traffic pattern or probe promiscuously)
+        # Port mirror requires physical Ethernet — Wi-Fi cannot carry
+        # mirrored traffic (shared wireless medium causes false positives).
+        mirror_mode = self._check_port_mirror(
+            sample_source_macs or [], capture_interface_mac,
+        )
+        if mirror_mode:
+            self._log_mode_change("PORT_MIRROR")
+            return mirror_mode
 
         # Step 2 — Hotspot (ONLY if we are actually hosting)
         hotspot_mode = self._check_hotspot()
@@ -130,10 +152,17 @@ class ModeDetector:
             self._log_mode_change("ETHERNET")
             return ethernet_mode
 
-        # Step 4 — WiFi Client
-        wifi_mode = self._check_wifi_client()
+        # Step 4 — WiFi Client (always returns PublicNetworkMode)
+        wifi_mode = self._check_public_network_wifi()
         if wifi_mode:
-            self._log_mode_change("WIFI_CLIENT")
+            # Gateway fallback: if WMI didn't return a gateway for this
+            # WiFi adapter, try netifaces as a secondary source.
+            if not wifi_mode.interface.gateway:
+                wifi_mode.interface.gateway = self._detect_gateway_fallback(
+                    wifi_mode.interface.ip_address
+                )
+            detected_name = wifi_mode.get_mode_name().value.upper()
+            self._log_mode_change(detected_name)
             return wifi_mode
 
         # Step 5 — Fallback: Public / Safe mode
@@ -183,7 +212,7 @@ class ModeDetector:
             if ethernet:
                 return ethernet
 
-            wifi = self._check_wifi_client()
+            wifi = self._check_public_network_wifi()
             if wifi:
                 return wifi
 
@@ -195,11 +224,27 @@ class ModeDetector:
     #  INTERFACE ENUMERATION
     # ================================================================== #
 
+    @staticmethod
+    def _dict_to_interface(d: dict) -> InterfaceInfo:
+        """Convert a platform_helpers dict to an InterfaceInfo object."""
+        return InterfaceInfo(
+            name=d.get("name", ""),
+            friendly_name=d.get("friendly_name", ""),
+            ip_address=d.get("ip_address"),
+            netmask=d.get("netmask"),
+            gateway=d.get("gateway"),
+            mac_address=d.get("mac_address"),
+            ssid=d.get("ssid"),
+            interface_type=d.get("interface_type", "unknown"),
+            is_active=d.get("is_active", False),
+        )
+
     def _prefetch_windows_data(self) -> None:
         """
         Run ipconfig, netsh wlan show interfaces, and netsh wlan show
-        hostednetwork in PARALLEL threads.  Results are cached for
-        ``_CACHE_TTL`` seconds so repeated detect() calls are near-instant.
+        hostednetwork in PARALLEL threads via platform_helpers.
+        Results are cached for ``_CACHE_TTL`` seconds so repeated
+        detect() calls are near-instant.
 
         This reduces first-detect time from ~4-6s (sequential) to ~1.5-2s.
         """
@@ -220,32 +265,7 @@ class ModeDetector:
         if not (needs_ipconfig or needs_ssid or needs_hosted):
             return  # all caches still fresh
 
-        results: Dict[str, Optional[str]] = {}
-
-        def _run(key: str, args: List[str]) -> None:
-            results[key] = run_command(args)
-
-        threads: List[threading.Thread] = []
-        if needs_ipconfig:
-            t = threading.Thread(target=_run, args=("ipconfig", ["ipconfig", "/all"]))
-            threads.append(t)
-        if needs_ssid:
-            t = threading.Thread(
-                target=_run,
-                args=("ssid", ["netsh", "wlan", "show", "interfaces"]),
-            )
-            threads.append(t)
-        if needs_hosted:
-            t = threading.Thread(
-                target=_run,
-                args=("hosted", ["netsh", "wlan", "show", "hostednetwork"]),
-            )
-            threads.append(t)
-
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=4)
+        results = ph.prefetch_windows_commands(needs_ipconfig, needs_ssid, needs_hosted)
 
         now = time.time()
         if "ipconfig" in results:
@@ -293,7 +313,7 @@ class ModeDetector:
         # NOTE: hotspot_virtual is intentionally NOT excluded here —
         # it must remain in _all_interfaces so _check_hotspot() can
         # find the Windows Mobile Hotspot adapter.  Mode-specific
-        # checks (ethernet, wifi_client, port_mirror) already exclude
+        # checks (ethernet, public_network, port_mirror) already exclude
         # it via their own interface_type filters.
         real = [
             i for i in active
@@ -312,14 +332,12 @@ class ModeDetector:
     # ---- Windows -------------------------------------------------------- #
 
     def _enumerate_windows_interfaces(self) -> List[InterfaceInfo]:
-        """Build interface list using PowerShell/WMI (locale-independent).
-
-        Falls back to ``ipconfig /all`` parsing only when PowerShell fails.
-        """
-        interfaces = self._enumerate_windows_interfaces_wmi()
-        if interfaces:
+        """Build interface list via platform_helpers (WMI, then ipconfig fallback)."""
+        raw = ph.enumerate_windows_interfaces_wmi()
+        if raw:
+            interfaces = [self._dict_to_interface(d) for d in raw]
             # Enrich WiFi interfaces with SSID
-            ssid = self._get_windows_ssid()
+            ssid = ph.get_windows_ssid(ModeDetector._ssid_cache)
             if ssid:
                 for iface in interfaces:
                     if iface.interface_type == "wifi":
@@ -327,428 +345,105 @@ class ModeDetector:
             return interfaces
 
         # Fallback: parse ipconfig (English-only labels)
-        return self._enumerate_windows_interfaces_ipconfig()
-
-    def _enumerate_windows_interfaces_wmi(self) -> List[InterfaceInfo]:
-        """Use PowerShell Get-NetIPConfiguration for locale-independent parsing."""
-        ps_cmd = (
-            "Get-NetIPConfiguration -Detailed -ErrorAction SilentlyContinue | "
-            "ForEach-Object { "
-            "$alias = $_.InterfaceAlias; "
-            "$desc  = $_.InterfaceDescription; "
-            "$ipv4  = ($_.IPv4Address | Select-Object -First 1).IPAddress; "
-            "$mask  = ($_.IPv4Address | Select-Object -First 1).PrefixLength; "
-            "$gw    = ($_.IPv4DefaultGateway | Select-Object -First 1).NextHop; "
-            "$mac   = $_.NetAdapter.MacAddress; "
-            "$status = $_.NetAdapter.Status; "
-            "$type  = $_.NetAdapter.InterfaceDescription; "
-            "\"$alias|$desc|$ipv4|$mask|$gw|$mac|$status|$type\" "
-            "}"
-        )
-        out = run_command(["powershell", "-NoProfile", "-Command", ps_cmd])
-        if not out:
-            return []
-
-        interfaces: List[InterfaceInfo] = []
-        for line in out.strip().splitlines():
-            parts = line.strip().split("|")
-            if len(parts) < 8:
-                continue
-            alias, desc, ipv4, prefix, gw, mac, status, itype = (
-                p.strip() for p in parts
-            )
-            if not ipv4 or ipv4 == "" or status.lower() not in ("up", ""):
-                continue
-            # Convert prefix length to netmask
-            netmask = None
-            if prefix and prefix.isdigit():
-                try:
-                    netmask = str(
-                        ipaddress.IPv4Network(f"0.0.0.0/{prefix}").netmask
-                    )
-                except Exception:
-                    pass
-            # Normalise MAC
-            if mac:
-                mac = mac.replace("-", ":").lower()
-            else:
-                mac = None
-            iface = InterfaceInfo(
-                name=alias,
-                friendly_name=alias,
-                ip_address=ipv4 if ipv4 else None,
-                netmask=netmask,
-                gateway=gw if gw else None,
-                mac_address=mac,
-                interface_type=self._guess_type_windows(desc or "", alias),
-                is_active=True,
-            )
-            interfaces.append(iface)
-        return interfaces
-
-    def _enumerate_windows_interfaces_ipconfig(self) -> List[InterfaceInfo]:
-        """Legacy fallback: parse ``ipconfig /all`` (English-only labels)."""
-        interfaces: List[InterfaceInfo] = []
-
-        out = ModeDetector._ipconfig_cache
-        if out is None:
-            out = run_command(["ipconfig", "/all"])
-        if not out:
-            return interfaces
-
-        current: Optional[InterfaceInfo] = None
-        for line in out.splitlines():
-            adapter_match = re.match(r"^(\S.*adapter\s+(.+)):$", line, re.IGNORECASE)
-            if adapter_match:
-                if current and current.ip_address:
-                    current.is_active = True
-                    interfaces.append(current)
-                full_header = adapter_match.group(1)
-                name = adapter_match.group(2).strip()
-                current = InterfaceInfo(
-                    name=name,
-                    friendly_name=name,
-                    interface_type=self._guess_type_windows(full_header, name),
-                )
-                continue
-
-            if current is None:
-                continue
-
-            stripped = line.strip()
-
-            if "IPv4 Address" in stripped or "IP Address" in stripped:
-                ip_match = re.search(r"(\d+\.\d+\.\d+\.\d+)", stripped)
-                if ip_match:
-                    current.ip_address = ip_match.group(1)
-
-            elif "Subnet Mask" in stripped:
-                mask_match = re.search(r"(\d+\.\d+\.\d+\.\d+)", stripped)
-                if mask_match:
-                    current.netmask = mask_match.group(1)
-
-            elif "Default Gateway" in stripped:
-                gw_match = re.search(r"(\d+\.\d+\.\d+\.\d+)", stripped)
-                if gw_match:
-                    current.gateway = gw_match.group(1)
-
-            elif "Physical Address" in stripped:
-                mac_match = re.search(
-                    r"([0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5})", stripped
-                )
-                if mac_match:
-                    current.mac_address = mac_match.group(1).replace("-", ":").lower()
-
-        if current and current.ip_address:
-            current.is_active = True
-            interfaces.append(current)
-
-        ssid = self._get_windows_ssid()
+        raw = ph.enumerate_windows_interfaces_ipconfig(ModeDetector._ipconfig_cache)
+        interfaces = [self._dict_to_interface(d) for d in raw]
+        ssid = ph.get_windows_ssid(ModeDetector._ssid_cache)
         if ssid:
             for iface in interfaces:
                 if iface.interface_type == "wifi":
                     iface.ssid = ssid
-
         return interfaces
-
-    @staticmethod
-    def _guess_type_windows(header: str, name: str) -> str:
-        h = (header + " " + name).lower()
-        if "loopback" in h:
-            return "loopback"
-        # Check virtual adapters BEFORE ethernet/wifi — virtual adapter
-        # names often contain "ethernet" or "wi-fi" (e.g. "VirtualBox
-        # Host-Only Ethernet Adapter") and would otherwise match first.
-        if any(w in h for w in ("vmware", "virtualbox", "vbox", "hyper-v", "vethernet")):
-            return "virtual"
-        # VPN TAP/TUN adapters — treat as virtual so they don't override
-        # the real physical interface.
-        if any(w in h for w in ("tap-windows", "tap adapter", "tun ", "wireguard",
-                                 "openvpn", "wintun", "tailscale", "zerotier")):
-            return "virtual"
-        if "bluetooth" in h:
-            return "bluetooth"
-        if any(w in h for w in ("local area connection*", "wi-fi direct", "hosted")):
-            return "hotspot_virtual"
-        if any(w in h for w in ("wi-fi", "wifi", "wlan", "wireless")):
-            return "wifi"
-        # USB tethering (RNDIS / NCM) — treat as ethernet
-        if any(w in h for w in ("rndis", "remote ndis", "usb ethernet", "ncm")):
-            return "ethernet"
-        if any(w in h for w in ("ethernet", "eth", "realtek", "intel(r) ethernet")):
-            return "ethernet"
-        return "unknown"
-
-    @staticmethod
-    def _get_windows_ssid() -> Optional[str]:
-        # Use cached output if available (populated by _prefetch_windows_data)
-        out = ModeDetector._ssid_cache
-        if out is None:
-            out = run_command(["netsh", "wlan", "show", "interfaces"])
-        if not out:
-            return None
-        for line in out.splitlines():
-            # Match SSID but not BSSID
-            if "SSID" in line and "BSSID" not in line:
-                parts = line.split(":", 1)
-                if len(parts) == 2:
-                    ssid = parts[1].strip()
-                    if ssid:
-                        return ssid
-        return None
 
     # ---- Linux ---------------------------------------------------------- #
 
     def _enumerate_linux_interfaces(self) -> List[InterfaceInfo]:
-        """Parse ``ip -4 addr show`` and enrich with wifi/gateway info."""
-        interfaces: List[InterfaceInfo] = []
-        out = run_command(["ip", "-4", "addr", "show"])
-        if not out:
-            return interfaces
-
-        current_name: Optional[str] = None
-        current_iface: Optional[InterfaceInfo] = None
-
-        for line in out.splitlines():
-            # Interface header: "2: enp0s3: <BROADCAST,...> ..."
-            hdr = re.match(r"^\d+:\s+(\S+):", line)
-            if hdr:
-                if current_iface and current_iface.ip_address:
-                    current_iface.is_active = True
-                    interfaces.append(current_iface)
-                current_name = hdr.group(1)
-                current_iface = InterfaceInfo(
-                    name=current_name,
-                    friendly_name=current_name,
-                    interface_type=self._guess_type_linux(current_name),
-                )
-                continue
-
-            if current_iface is None:
-                continue
-
-            ip_match = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)/(\d+)", line)
-            if ip_match:
-                current_iface.ip_address = ip_match.group(1)
-                # Convert prefix length to dotted netmask
-                prefix = int(ip_match.group(2))
-                current_iface.netmask = str(
-                    ipaddress.IPv4Network(f"0.0.0.0/{prefix}").netmask
-                )
-
-        if current_iface and current_iface.ip_address:
-            current_iface.is_active = True
-            interfaces.append(current_iface)
-
-        # Gateway
-        gw_out = run_command(["ip", "route", "show", "default"])
-        if gw_out:
-            gw_match = re.search(r"via\s+(\d+\.\d+\.\d+\.\d+)\s+dev\s+(\S+)", gw_out)
-            if gw_match:
-                gw_ip = gw_match.group(1)
-                gw_dev = gw_match.group(2)
-                for iface in interfaces:
-                    if iface.name == gw_dev:
-                        iface.gateway = gw_ip
-
-        # SSID for wifi interfaces
-        for iface in interfaces:
-            if iface.interface_type == "wifi":
-                ssid_out = run_command(["iwgetid", "-r", iface.name])
-                if ssid_out and ssid_out.strip():
-                    iface.ssid = ssid_out.strip()
-                # Alternate: iw dev <iface> link
-                if not iface.ssid:
-                    iw_out = run_command(["iw", "dev", iface.name, "link"])
-                    if iw_out:
-                        m = re.search(r"SSID:\s*(.+)", iw_out)
-                        if m:
-                            iface.ssid = m.group(1).strip()
-
-        # MAC addresses
-        for iface in interfaces:
-            mac_out = run_command(["cat", f"/sys/class/net/{iface.name}/address"])
-            if mac_out and mac_out.strip():
-                iface.mac_address = mac_out.strip().lower()
-
-        return interfaces
-
-    @staticmethod
-    def _guess_type_linux(name: str) -> str:
-        n = name.lower()
-        if n in ("lo",):
-            return "loopback"
-        if n.startswith(("wl", "wlan", "ath", "ra")):
-            return "wifi"
-        if n.startswith(("eth", "en", "em", "eno", "enp", "ens")):
-            return "ethernet"
-        # USB tethering (RNDIS/NCM) — often shows as usb0 or enx...
-        if n.startswith(("usb", "enx")):
-            return "ethernet"
-        # VPN / tunnel interfaces — treat as virtual
-        if n.startswith(("tun", "tap", "wg", "tailscale", "zt")):
-            return "virtual"
-        if n.startswith(("docker", "br-", "veth", "virbr")):
-            return "virtual"
-        return "unknown"
+        """Build interface list via platform_helpers."""
+        raw = ph.enumerate_linux_interfaces()
+        return [self._dict_to_interface(d) for d in raw]
 
     # ---- macOS ---------------------------------------------------------- #
 
     def _enumerate_macos_interfaces(self) -> List[InterfaceInfo]:
-        """Parse ``ifconfig`` output on macOS."""
-        interfaces: List[InterfaceInfo] = []
-        out = run_command(["ifconfig"])
-        if not out:
-            return interfaces
-
-        current: Optional[InterfaceInfo] = None
-        for line in out.splitlines():
-            hdr = re.match(r"^(\w+):\s+flags=", line)
-            if hdr:
-                if current and current.ip_address:
-                    current.is_active = True
-                    interfaces.append(current)
-                name = hdr.group(1)
-                current = InterfaceInfo(
-                    name=name,
-                    friendly_name=name,
-                    interface_type=self._guess_type_macos(name),
-                )
-                continue
-
-            if current is None:
-                continue
-
-            stripped = line.strip()
-            inet_match = re.match(
-                r"inet\s+(\d+\.\d+\.\d+\.\d+)\s+netmask\s+(0x[0-9a-fA-F]+)", stripped
-            )
-            if inet_match:
-                current.ip_address = inet_match.group(1)
-                # Convert hex netmask to dotted decimal
-                hex_mask = int(inet_match.group(2), 16)
-                current.netmask = str(ipaddress.IPv4Address(hex_mask))
-
-            ether_match = re.match(r"ether\s+([0-9a-f:]+)", stripped)
-            if ether_match:
-                current.mac_address = ether_match.group(1)
-
-        if current and current.ip_address:
-            current.is_active = True
-            interfaces.append(current)
-
-        # Gateway
-        gw_out = run_command(["netstat", "-rn"])
-        if gw_out:
-            for gw_line in gw_out.splitlines():
-                if gw_line.startswith("default"):
-                    parts = gw_line.split()
-                    if len(parts) >= 4:
-                        gw_ip = parts[1]
-                        gw_iface = parts[3] if len(parts) > 3 else ""
-                        for iface in interfaces:
-                            if iface.name == gw_iface:
-                                iface.gateway = gw_ip
-                        break
-
-        # WiFi SSID via airport
-        airport_path = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
-        ssid_out = run_command([airport_path, "-I"])
-        if ssid_out:
-            m = re.search(r"\sSSID:\s*(.+)", ssid_out)
-            if m:
-                ssid = m.group(1).strip()
-                for iface in interfaces:
-                    if iface.interface_type == "wifi":
-                        iface.ssid = ssid
-
-        return interfaces
-
-    # Class-level cache for macOS hardware port → interface mapping
-    _macos_hw_ports: Optional[Dict[str, str]] = None
-    _macos_hw_ports_time: float = 0
-
-    @staticmethod
-    def _guess_type_macos(name: str) -> str:
-        n = name.lower()
-        if n in ("lo0",):
-            return "loopback"
-        # VPN / tunnel interfaces
-        if n.startswith(("utun", "tun", "tap", "ipsec", "ppp")):
-            return "virtual"
-        if n.startswith(("bridge", "awdl", "llw")):
-            return "virtual"
-
-        # Use networksetup -listallhardwareports to detect real type
+        """Build interface list via platform_helpers."""
         now = time.time()
         if (
             ModeDetector._macos_hw_ports is None
             or now - ModeDetector._macos_hw_ports_time > 30
         ):
-            hw_map: Dict[str, str] = {}
-            try:
-                out = run_command(["networksetup", "-listallhardwareports"])
-                if out:
-                    current_type = None
-                    for line in out.splitlines():
-                        line = line.strip()
-                        if line.startswith("Hardware Port:"):
-                            port_name = line.split(":", 1)[1].strip().lower()
-                            if "wi-fi" in port_name or "airport" in port_name:
-                                current_type = "wifi"
-                            elif "ethernet" in port_name or "thunderbolt" in port_name:
-                                current_type = "ethernet"
-                            elif "bluetooth" in port_name:
-                                current_type = "bluetooth"
-                            else:
-                                current_type = "unknown"
-                        elif line.startswith("Device:") and current_type:
-                            dev = line.split(":", 1)[1].strip()
-                            if dev:
-                                hw_map[dev.lower()] = current_type
-                            current_type = None
-            except Exception:
-                pass
-            ModeDetector._macos_hw_ports = hw_map
+            ModeDetector._macos_hw_ports = ph.fetch_macos_hardware_ports()
             ModeDetector._macos_hw_ports_time = now
 
-        hw = ModeDetector._macos_hw_ports or {}
-        if n in hw:
-            return hw[n]
-
-        # Fallback heuristics if networksetup was unavailable
-        if n.startswith(("en", "eth")):
-            return "ethernet"
-        return "unknown"
+        raw = ph.enumerate_macos_interfaces(ModeDetector._macos_hw_ports)
+        return [self._dict_to_interface(d) for d in raw]
 
     # ================================================================== #
     #  MODE CHECKS — in priority order
     # ================================================================== #
 
-    def _check_port_mirror(self, source_macs: List[str]) -> Optional[PortMirrorMode]:
-        """Return PortMirrorMode if traffic analysis suggests a SPAN port."""
-        # MAC-based heuristic: check ALL non-loopback, non-virtual interfaces
-        # (including WiFi — a WiFi adapter can receive mirrored traffic on
-        # some enterprise setups via monitor mode).
-        for iface in self._all_interfaces:
-            if iface.mac_address and iface.interface_type not in (
-                "loopback", "virtual", "bluetooth", "hotspot_virtual"
-            ):
+    def _check_port_mirror(
+        self,
+        source_macs: List[str],
+        capture_interface_mac: Optional[str] = None,
+    ) -> Optional[PortMirrorMode]:
+        """Return PortMirrorMode if traffic analysis suggests a SPAN port.
+
+        Port mirroring requires a physical Ethernet cable to a managed
+        switch's SPAN port.  Wi-Fi, virtual, bluetooth, and hotspot
+        adapters can NEVER carry mirrored traffic, so only ``"ethernet"``
+        type interfaces are considered.
+
+        When ``capture_interface_mac`` is provided the check is scoped to
+        that specific interface to avoid cross-interface false positives
+        (e.g. Wi-Fi MACs tested against an Ethernet adapter's MAC).
+        """
+        if source_macs and capture_interface_mac:
+            # Scoped check: only test against the interface the MACs
+            # were actually captured on.
+            capture_iface = None
+            cap_mac = capture_interface_mac.lower().replace("-", ":")
+            for iface in self._all_interfaces:
+                if (iface.mac_address
+                        and iface.mac_address.lower().replace("-", ":") == cap_mac):
+                    capture_iface = iface
+                    break
+
+            # Port mirror only on physical Ethernet
+            if capture_iface and capture_iface.interface_type == "ethernet":
                 is_mirror = PortMirrorMode.detect_mirror_traffic(
                     source_macs,
-                    iface.mac_address,
+                    capture_interface_mac,
                     threshold=PORT_MIRROR_FOREIGN_MAC_THRESHOLD,
                 )
                 if is_mirror:
-                    return PortMirrorMode(iface)
+                    return PortMirrorMode(capture_iface)
+            # Scoped check didn't match — fall through to promiscuous
+            # probe which may detect a SPAN port on a *different* ethernet
+            # adapter (e.g. when the current capture is on Wi-Fi).
+            pass
 
-        # Promiscuous-mode probe: if no source MACs were provided but we
-        # have an interface, try a short Scapy sniff to see if we receive
-        # frames with foreign source MACs (indicates mirror / monitor mode).
-        if not source_macs:
-            mirror_iface = self._probe_promiscuous_mode()
-            if mirror_iface:
-                return PortMirrorMode(mirror_iface)
+        if source_macs and not capture_interface_mac:
+            # Source MACs without capture interface info (legacy / safety).
+            # Check only Ethernet interfaces.
+            for iface in self._all_interfaces:
+                if iface.mac_address and iface.interface_type == "ethernet":
+                    is_mirror = PortMirrorMode.detect_mirror_traffic(
+                        source_macs,
+                        iface.mac_address,
+                        threshold=PORT_MIRROR_FOREIGN_MAC_THRESHOLD,
+                    )
+                    if is_mirror:
+                        return PortMirrorMode(iface)
+            return None
+
+        # No source MACs available — fall back to promiscuous probe with
+        # cooldown to avoid running a 3s Scapy sniff every detection cycle.
+        now = time.time()
+        if (now - ModeDetector._mirror_probe_time) < ModeDetector._MIRROR_PROBE_COOLDOWN:
+            return None  # Too recent — skip expensive probe
+        ModeDetector._mirror_probe_time = now
+        mirror_iface = self._probe_promiscuous_mode()
+        if mirror_iface:
+            return PortMirrorMode(mirror_iface)
 
         return None
 
@@ -758,6 +453,10 @@ class ModeDetector:
 
         Captures ~20 packets and checks whether a majority have foreign
         source MACs — the hallmark of a SPAN/mirror port.
+
+        Only probes ``"ethernet"`` interfaces.  Wi-Fi in promiscuous mode
+        naturally sees foreign MACs from the shared wireless medium, which
+        would cause false positives.
         """
         try:
             from scapy.all import sniff, Ether  # type: ignore[import-untyped]
@@ -766,10 +465,8 @@ class ModeDetector:
             return None
 
         for iface in self._all_interfaces:
-            if not iface.mac_address or iface.interface_type in (
-                "loopback", "virtual", "bluetooth", "hotspot_virtual"
-            ):
-                continue
+            if not iface.mac_address or iface.interface_type != "ethernet":
+                continue  # Port mirror only possible on physical Ethernet
             try:
                 pkts = sniff(
                     iface=iface.name,
@@ -822,8 +519,11 @@ class ModeDetector:
            creates a "Microsoft Wi-Fi Direct Virtual Adapter" named
            "Local Area Connection* N".  When the hotspot is active the
            adapter receives a valid private IP (typically 192.168.137.1
-           for ICS).  Checking for an active ``hotspot_virtual`` adapter
-           with a routable IP is the most reliable method for Win10/11.
+           for ICS).  However, the adapter **retains its IP even when
+           the hotspot is turned off**, so we additionally verify the
+           adapter's ``MediaConnectState`` via ``Get-NetAdapter``:
+           an active hotspot shows ``Status: Up`` whereas a deactivated
+           one shows ``Disconnected``.
 
         2. **Legacy ``netsh wlan show hostednetwork``** — For the older
            ``netsh wlan start hostednetwork`` API.  Checks for
@@ -867,8 +567,20 @@ class ModeDetector:
                     )
                     continue
 
+                # Verify the adapter is actually connected (Up).
+                # On Windows the hotspot virtual adapter retains its IP
+                # even after the Mobile Hotspot is turned off, so the IP
+                # check alone is not sufficient.
+                if not self._is_hotspot_adapter_active(iface.name):
+                    logger.debug(
+                        "Hotspot adapter %s has IP %s but adapter status "
+                        "is not Up — skipping",
+                        iface.name, iface.ip_address,
+                    )
+                    continue
+
                 # Enrich interface with hotspot SSID if available
-                iface.ssid = self._get_hotspot_ssid()
+                iface.ssid = ph.get_hotspot_ssid(ModeDetector._hostednet_cache)
 
                 logger.info(
                     "Hotspot detected via virtual adapter: %s (%s), subnet=%s",
@@ -888,7 +600,7 @@ class ModeDetector:
                         iface.ip_address,
                         iface.netmask or "255.255.255.0",
                     )
-                    iface.ssid = self._get_hotspot_ssid()
+                    iface.ssid = ph.get_hotspot_ssid(ModeDetector._hostednet_cache)
                     logger.info(
                         "Hotspot detected via legacy hosted network: %s (%s), subnet=%s",
                         iface.name, iface.ip_address, subnet,
@@ -896,8 +608,13 @@ class ModeDetector:
                     return HotspotMode(iface, hotspot_subnet=subnet)
 
             # Fallback: any adapter on 192.168.137.x (ICS default subnet)
+            # Only match the ICS HOST — the host has NO gateway on the sharing
+            # adapter (it IS the gateway).  ICS clients have a gateway (= the
+            # host's IP) and should fall through to ethernet detection instead.
             for iface in self._all_interfaces:
-                if iface.ip_address and iface.ip_address.startswith("192.168.137."):
+                if (iface.ip_address
+                        and iface.ip_address.startswith("192.168.137.")
+                        and not iface.gateway):
                     subnet = _cidr_from_ip_and_mask(
                         iface.ip_address,
                         iface.netmask or "255.255.255.0",
@@ -907,51 +624,60 @@ class ModeDetector:
         logger.debug("No active hotspot detected on Windows")
         return None
 
-    @staticmethod
-    def _get_hotspot_ssid() -> Optional[str]:
-        """Extract the hotspot SSID from ``netsh wlan show hostednetwork``."""
-        hosted_out = ModeDetector._hostednet_cache
-        if hosted_out is None:
-            hosted_out = run_command(["netsh", "wlan", "show", "hostednetwork"])
-        if hosted_out:
-            for line in hosted_out.splitlines():
-                if "SSID" in line and "BSSID" not in line:
-                    parts = line.split(":", 1)
-                    if len(parts) == 2:
-                        ssid = parts[1].strip()
-                        if ssid:
-                            return ssid
-        return None
+    def _is_hotspot_adapter_active(self, adapter_name: str) -> bool:
+        """Return *True* only if the Windows hotspot adapter is genuinely active.
+
+        Delegates the subprocess call (``Get-NetAdapter``) to
+        ``platform_helpers.check_hotspot_adapter_status()``.  Cache
+        management stays here.
+
+        **Fail-closed:** if the PowerShell command fails we return
+        ``False`` to avoid falsely entering hotspot mode on a WiFi
+        client connection.
+
+        Results are cached for ``_CACHE_TTL`` seconds.
+        """
+        now = time.time()
+        if (
+            ModeDetector._adapter_status_cache
+            and (now - ModeDetector._adapter_status_cache_time) < ModeDetector._CACHE_TTL
+            and adapter_name in ModeDetector._adapter_status_cache
+        ):
+            return ModeDetector._adapter_status_cache[adapter_name] == "Up"
+
+        status, media_state = ph.check_hotspot_adapter_status(adapter_name)
+
+        if not status:
+            logger.debug(
+                "Could not query adapter status for %s — assuming inactive (fail-closed)",
+                adapter_name,
+            )
+            return False
+
+        # MediaConnectionState: 1 = Connected, 0 = Disconnected, 2 = Unknown
+        # The adapter must be Up AND media-connected for a real hotspot.
+        is_active = (status == "Up" and media_state in ("1", "Connected"))
+
+        # Cache the effective status
+        effective = "Up" if is_active else status
+        ModeDetector._adapter_status_cache[adapter_name] = effective
+        ModeDetector._adapter_status_cache_time = time.time()
+
+        logger.debug(
+            "Adapter %s status=%s, media_state=%s → active=%s",
+            adapter_name, status, media_state, is_active,
+        )
+        return is_active
 
     def _check_hotspot_linux(self) -> Optional[HotspotMode]:
         """
         Linux: hosting if ``hostapd`` or ``dnsmasq`` is running on a wifi iface.
+        Subprocess checks delegated to ``platform_helpers``.
         """
-        # Check hostapd
-        hostapd_running = False
-        out = run_command(["pgrep", "-x", "hostapd"])
-        if out and out.strip():
-            hostapd_running = True
-
-        # Check dnsmasq (often paired with hostapd for DHCP)
-        dnsmasq_running = False
-        out = run_command(["pgrep", "-x", "dnsmasq"])
-        if out and out.strip():
-            dnsmasq_running = True
+        hostapd_running, dnsmasq_running, hostapd_iface = ph.check_linux_hotspot_processes()
 
         if not (hostapd_running or dnsmasq_running):
             return None
-
-        # Find the wifi interface that hostapd is using
-        # Try parsing hostapd config
-        hostapd_iface: Optional[str] = None
-        out = run_command(["cat", "/etc/hostapd/hostapd.conf"])
-        if out:
-            for line in out.splitlines():
-                m = re.match(r"^interface\s*=\s*(\S+)", line)
-                if m:
-                    hostapd_iface = m.group(1)
-                    break
 
         for iface in self._all_interfaces:
             if hostapd_iface and iface.name == hostapd_iface:
@@ -964,6 +690,7 @@ class ModeDetector:
     def _check_hotspot_macos(self) -> Optional[HotspotMode]:
         """
         macOS: Check Internet Sharing pref and bridge100 interface.
+        Subprocess check delegated to ``platform_helpers``.
         """
         # Internet Sharing creates a bridge100 interface on 192.168.2.x
         for iface in self._all_interfaces:
@@ -972,12 +699,7 @@ class ModeDetector:
                     return HotspotMode(iface, hotspot_subnet="192.168.2.0/24")
 
         # Also check the preference plist
-        out = run_command([
-            "defaults", "read",
-            "/Library/Preferences/SystemConfiguration/com.apple.nat",
-            "NAT",
-        ])
-        if out and "Enabled = 1" in out:
+        if ph.check_macos_internet_sharing():
             # NAT is enabled — look for the bridge interface
             for iface in self._all_interfaces:
                 if iface.name.startswith("bridge") and iface.ip_address:
@@ -1000,22 +722,117 @@ class ModeDetector:
                 return EthernetMode(iface)
         return None
 
-    def _check_wifi_client(self) -> Optional[WiFiClientMode]:
+    def _check_public_network_wifi(self) -> Optional[BaseMode]:
         """
-        Return WiFiClientMode if we are connected to WiFi as a regular client.
+        Return PublicNetworkMode for any WiFi connection.
 
         **This is NOT a hotspot.**  We only reach this point because
         ``_check_hotspot()`` already returned None — meaning the machine is
         NOT hosting.  Being *connected to* someone else's WiFi (or phone
-        hotspot) is a client relationship, so WiFiClientMode is correct.
+        hotspot) is a client relationship.
+
+        All WiFi client connections (home, campus, hotspot) use
+        ``PublicNetworkMode`` with a restrictive posture.
         """
+        wifi_iface: Optional[InterfaceInfo] = None
         for iface in self._all_interfaces:
             if iface.interface_type == "wifi" and iface.ssid:
-                return WiFiClientMode(iface)
-        # WiFi adapter active but no SSID (odd but possible)
-        for iface in self._all_interfaces:
-            if iface.interface_type == "wifi" and iface.ip_address:
-                return WiFiClientMode(iface)
+                wifi_iface = iface
+                break
+
+        # Fallback: WiFi adapter active but no SSID (odd but possible)
+        if wifi_iface is None:
+            for iface in self._all_interfaces:
+                if iface.interface_type == "wifi" and iface.ip_address:
+                    wifi_iface = iface
+                    break
+
+        if wifi_iface is None:
+            return None
+
+        return PublicNetworkMode(wifi_iface)
+
+    def _is_public_network(self, iface: InterfaceInfo) -> bool:
+        """Return *True* if the WiFi network should be treated as public.
+
+        On Windows, uses ``detect_network_category()`` (NLM / PowerShell).
+        On other platforms, falls back to a subnet-size heuristic: any
+        subnet larger than /22 (>1 024 hosts) is considered public
+        because home networks almost never exceed that.
+        """
+        # --- Windows: authoritative OS-level category ------------------
+        if IS_WINDOWS:
+            category = ph.detect_network_category()
+            if category in ("public", "domain_authenticated"):
+                return True
+            if category == "private":
+                return False
+            # category is None (detection failed) — fall through to
+            # the subnet heuristic so we still have a reasonable guess.
+
+        # --- Cross-platform heuristic: subnet size ---------------------
+        mask = iface.netmask
+        if mask:
+            try:
+                prefix_len = ipaddress.IPv4Network(
+                    f"0.0.0.0/{mask}"
+                ).prefixlen
+                if prefix_len < 22:          # > 1 024 hosts
+                    logger.debug(
+                        "Subnet /%d is large — treating as public",
+                        prefix_len,
+                    )
+                    return True
+            except (ValueError, TypeError):
+                pass
+
+        return False
+
+    # Cache for gateway fallback detection — avoids re-running netifaces/route
+    # on every 30-second detect() cycle.
+    _gw_fallback_cache: Optional[str] = None
+    _gw_fallback_cache_time: float = 0
+    _GW_FALLBACK_TTL = 60  # seconds — re-check once a minute
+
+    @staticmethod
+    def _detect_gateway_fallback(our_ip: Optional[str]) -> Optional[str]:
+        """Try alternative methods to detect the default gateway IP.
+
+        Called when WMI / PowerShell returned no gateway for a WiFi
+        adapter (common on campus networks and some DHCP configs).
+
+        Tries (via platform_helpers):
+        1. ``netifaces.gateways()['default']`` -- cross-platform
+        2. ``route print`` parsing (Windows) -- matches our IP's subnet
+
+        Results are cached for 60 seconds so this is not re-run on
+        every detect() cycle.
+        """
+        now = time.time()
+        if (ModeDetector._gw_fallback_cache
+                and now - ModeDetector._gw_fallback_cache_time < ModeDetector._GW_FALLBACK_TTL):
+            return ModeDetector._gw_fallback_cache
+
+        # 1. netifaces
+        gw_ip = ph.detect_gateway_netifaces()
+        if gw_ip:
+            if gw_ip != ModeDetector._gw_fallback_cache:
+                logger.info("Gateway detected (netifaces): %s", gw_ip)
+            ModeDetector._gw_fallback_cache = gw_ip
+            ModeDetector._gw_fallback_cache_time = now
+            return gw_ip
+
+        # 2. route print (Windows only)
+        if IS_WINDOWS and our_ip:
+            gw_ip = ph.detect_gateway_route_print(our_ip)
+            if gw_ip:
+                if gw_ip != ModeDetector._gw_fallback_cache:
+                    logger.info("Gateway detected (route print): %s", gw_ip)
+                ModeDetector._gw_fallback_cache = gw_ip
+                ModeDetector._gw_fallback_cache_time = now
+                return gw_ip
+
+        ModeDetector._gw_fallback_cache_time = now
         return None
 
     def _safe_fallback(self) -> PublicNetworkMode:
@@ -1039,85 +856,6 @@ class ModeDetector:
 
         # Truly nothing available — create a minimal InterfaceInfo
         return self._disconnected_fallback()
-
-    # ================================================================== #
-    #  PUBLIC / PRIVATE NETWORK DETECTION (Windows NLM API)
-    # ================================================================== #
-
-    @staticmethod
-    def detect_network_category() -> Optional[str]:
-        """
-        Use the Windows Network List Manager (NLM) COM API to determine
-        whether the active network connection is ``public``, ``private``,
-        or ``domain_authenticated``.
-
-        Returns
-        -------
-        str or None
-            ``"public"``, ``"private"``, ``"domain_authenticated"``,
-            or ``None`` if detection is unavailable (non-Windows or COM error).
-
-        The NLM ``NLM_NETWORK_CATEGORY`` enum values are:
-            0 = NLM_NETWORK_CATEGORY_PUBLIC
-            1 = NLM_NETWORK_CATEGORY_PRIVATE
-            2 = NLM_NETWORK_CATEGORY_DOMAIN_AUTHENTICATED
-        """
-        if not IS_WINDOWS:
-            return None
-
-        try:
-            import comtypes  # type: ignore[import-untyped]
-            from comtypes import GUID, HRESULT, CoClass  # noqa: F401
-
-            # Network List Manager CLSID & IID
-            CLSID_NetworkListManager = GUID("{DCB00C01-570F-4A9B-8D69-199FDBA5723B}")
-            IID_INetworkListManager = GUID("{DCB00000-570F-4A9B-8D69-199FDBA5723B}")
-
-            nlm = comtypes.CoCreateInstance(
-                CLSID_NetworkListManager, interface=None
-            )
-            # INetworkListManager::GetConnectedNetworks
-            networks = nlm.GetNetworks(1)  # NLM_ENUM_NETWORK_CONNECTED = 1
-            categories = []
-            for net in networks:
-                cat = net.GetCategory()
-                categories.append(cat)
-
-            if not categories:
-                return None
-
-            # If ANY connected network is domain, treat as domain
-            if 2 in categories:
-                return "domain_authenticated"
-            # If ANY is private, treat as private
-            if 1 in categories:
-                return "private"
-            return "public"
-
-        except ImportError:
-            # comtypes not installed — fall back to PowerShell
-            pass
-        except Exception as exc:
-            logger.debug("NLM COM API failed: %s — trying PowerShell fallback", exc)
-
-        # PowerShell fallback (works without comtypes)
-        try:
-            out = run_command([
-                "powershell", "-Command",
-                "Get-NetConnectionProfile | Select-Object -ExpandProperty NetworkCategory"
-            ])
-            if out:
-                raw = out.strip().lower()
-                if "domain" in raw:
-                    return "domain_authenticated"
-                if "private" in raw:
-                    return "private"
-                if "public" in raw:
-                    return "public"
-        except Exception as exc:
-            logger.debug("PowerShell network category detection failed: %s", exc)
-
-        return None
 
     def _disconnected_fallback(self) -> PublicNetworkMode:
         """

@@ -193,9 +193,9 @@ def hotspot_mode(mock_hotspot_info):
 
 @pytest.fixture
 def wifi_mode(mock_wifi_info):
-    """Create a WiFiClientMode instance."""
-    from packet_capture.modes.wifi_client_mode import WiFiClientMode
-    return WiFiClientMode(mock_wifi_info)
+    """Create a PublicNetworkMode instance for WiFi client scenarios."""
+    from packet_capture.modes.public_network_mode import PublicNetworkMode
+    return PublicNetworkMode(mock_wifi_info)
 
 
 @pytest.fixture

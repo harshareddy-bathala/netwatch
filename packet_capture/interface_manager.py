@@ -69,7 +69,6 @@ MODE_STRATEGY_MAP = {
     ModeName.ETHERNET:       EthernetCaptureStrategy,
     ModeName.PORT_MIRROR:    MirrorCaptureStrategy,
     ModeName.HOTSPOT:        None,   # uses default CaptureEngine logic
-    ModeName.WIFI_CLIENT:    None,   # uses default CaptureEngine logic
     ModeName.PUBLIC_NETWORK: None,   # uses default CaptureEngine logic
 }
 
@@ -115,12 +114,20 @@ class InterfaceManager:
         self._pending_mode: Optional[BaseMode] = None
         self._pending_count = 0
 
-        # Adaptive detection interval: start fast (15s) to converge
-        # quickly on the correct mode, then back off to 30s once stable.
+        # Adaptive detection interval (Phase 4):
+        # Start fast (15s) to converge quickly on the correct mode, then
+        # progressively back off: 30s → 60s → 120s as the mode stays stable.
         self._startup_interval = 15
-        self._stable_interval = 30
+        self._stable_intervals = [30, 60, 120]  # progressive backoff
+        self._stable_index = 0
         self._refresh_interval = self._startup_interval
         self._is_stable = False
+        self._consecutive_stable = 0  # count of consecutive stable detections
+
+        # Phase 4: Mode transition cooldown — prevents rapid mode flaps
+        # (e.g. cable briefly disconnected and reconnected).
+        self._transition_cooldown = 60  # seconds between allowed transitions
+        self._last_transition_time = 0.0
 
     # ================================================================== #
     #  PUBLIC API
@@ -195,6 +202,8 @@ class InterfaceManager:
         refreshes (via ``/api/interface/refresh``) take effect immediately
         instead of requiring 2 consecutive matching detections.
         """
+        from packet_capture.mode_detector import ModeDetector
+        ModeDetector._mirror_probe_time = 0  # Allow immediate port-mirror probe
         with self._lock:
             saved_threshold = self._stability_threshold
             self._stability_threshold = 1
@@ -212,13 +221,16 @@ class InterfaceManager:
         """Called when the capture engine detects its interface has disappeared.
 
         Resets any pending stability counter and forces an immediate
-        re-detection that bypasses the stability threshold, so the system
-        switches to the correct mode without delay.
+        re-detection that bypasses the stability threshold and cooldown,
+        so the system switches to the correct mode without delay.
         """
         logger.info("Interface lost notification — forcing immediate re-detection")
+        from packet_capture.mode_detector import ModeDetector
+        ModeDetector._mirror_probe_time = 0  # Allow immediate port-mirror probe
         with self._lock:
             self._pending_mode = None
             self._pending_count = 0
+            self._last_transition_time = 0.0  # bypass cooldown
             # Temporarily set threshold to 1 so the FIRST detection is accepted
             saved_threshold = self._stability_threshold
             self._stability_threshold = 1
@@ -332,7 +344,6 @@ class InterfaceManager:
         # Add mode_display for the frontend sidebar badge
         mode_labels = {
             "hotspot": "Hotspot Mode",
-            "wifi_client": "Wi-Fi Client",
             "ethernet": "Ethernet",
             "port_mirror": "Port Mirror",
             "public_network": "Public Network",
@@ -388,14 +399,36 @@ class InterfaceManager:
 
         Stability logic: a detected mode must appear for
         ``_stability_threshold`` consecutive cycles before it is accepted.
-        This prevents rapid flip-flopping (e.g. wifi_client → public → wifi_client).
+        This prevents rapid flip-flopping (e.g. public_network → ethernet → public_network).
         On the very first detection (``_current_mode is None``) the mode is
         accepted immediately so the system boots without delay.
         """
         if self._force_safe:
             new_mode = self._make_safe_mode()
         else:
-            new_mode = self._detector.detect()
+            # Feed source MACs from the running capture engine (if available)
+            # so the port-mirror heuristic can use live traffic data instead
+            # of falling back to the expensive promiscuous Scapy probe.
+            sample_macs = []
+            try:
+                from main import _capture_engine
+                if _capture_engine and _capture_engine.is_running:
+                    sample_macs = _capture_engine.get_recent_source_macs()
+            except (ImportError, AttributeError):
+                pass
+
+            # Pass the current capture interface MAC so the port-mirror
+            # check is scoped to the correct interface (avoids cross-
+            # interface false positives, e.g. Wi-Fi MACs tested against
+            # an Ethernet adapter's MAC).
+            capture_iface_mac = None
+            if self._current_mode and self._current_mode.interface.mac_address:
+                capture_iface_mac = self._current_mode.interface.mac_address
+
+            new_mode = self._detector.detect(
+                sample_source_macs=sample_macs or None,
+                capture_interface_mac=capture_iface_mac,
+            )
 
         with self._lock:
             old_mode = self._current_mode
@@ -418,13 +451,26 @@ class InterfaceManager:
                     # Same mode as current — reset any pending transition
                     self._pending_mode = None
                     self._pending_count = 0
-                    # Back off to the slower interval once mode is stable
+                    self._consecutive_stable += 1
+
+                    # Progressive backoff: as mode stays stable for longer,
+                    # increase the detection interval to reduce overhead.
                     if not self._is_stable:
                         self._is_stable = True
-                        self._refresh_interval = self._stable_interval
+                        self._stable_index = 0
+                        self._consecutive_stable = 0
+                    elif self._consecutive_stable >= 10 and self._stable_index < len(self._stable_intervals) - 1:
+                        # After 10 consecutive stable detections at current
+                        # interval, move to next slower interval
+                        self._stable_index += 1
+                        self._consecutive_stable = 0
+
+                    new_interval = self._stable_intervals[min(self._stable_index, len(self._stable_intervals) - 1)]
+                    if self._refresh_interval != new_interval:
+                        self._refresh_interval = new_interval
                         logger.debug(
-                            "Mode stable — detection interval backed off to %ds",
-                            self._stable_interval,
+                            "Mode stable — detection interval: %ds",
+                            new_interval,
                         )
                 else:
                     # Different from current mode — count as pending
@@ -438,20 +484,32 @@ class InterfaceManager:
                         self._pending_count = 1
 
                     if self._pending_count >= self._stability_threshold:
-                        # Stable: accept the new mode
-                        self._current_mode = new_mode
-                        self._pending_mode = None
-                        self._pending_count = 0
-                        changed = True
-                        # Mode just changed — revert to fast detection interval
-                        self._is_stable = False
-                        self._refresh_interval = self._startup_interval
-                        logger.info(
-                            "Mode change (stable): %s → %s — detection interval reset to %ds",
-                            old_mode.get_mode_name().value,
-                            new_mode.get_mode_name().value,
-                            self._startup_interval,
-                        )
+                        # Phase 4: transition cooldown check
+                        now_ts = time.time()
+                        cooldown_remaining = self._transition_cooldown - (now_ts - self._last_transition_time)
+                        if cooldown_remaining > 0 and self._last_transition_time > 0:
+                            logger.debug(
+                                "Mode change suppressed by cooldown (%.0fs remaining)",
+                                cooldown_remaining,
+                            )
+                        else:
+                            # Stable: accept the new mode
+                            self._current_mode = new_mode
+                            self._pending_mode = None
+                            self._pending_count = 0
+                            self._last_transition_time = now_ts
+                            changed = True
+                            # Mode just changed — revert to fast detection interval
+                            self._is_stable = False
+                            self._stable_index = 0
+                            self._consecutive_stable = 0
+                            self._refresh_interval = self._startup_interval
+                            logger.info(
+                                "Mode change (stable): %s -> %s — detection interval reset to %ds",
+                                old_mode.get_mode_name().value,
+                                new_mode.get_mode_name().value,
+                                self._startup_interval,
+                            )
                     else:
                         logger.debug(
                             "Pending mode %s (%d/%d)",
@@ -459,6 +517,10 @@ class InterfaceManager:
                             self._pending_count,
                             self._stability_threshold,
                         )
+                        # Fast re-check: shorten interval to 3s so the
+                        # confirmation detection happens quickly instead
+                        # of waiting the full 15-30s refresh interval.
+                        self._refresh_interval = 3
 
                 callbacks = list(self._callbacks) if changed else []
 
@@ -480,6 +542,13 @@ class InterfaceManager:
         if old.interface.ip_address != new.interface.ip_address:
             return True
         if old.interface.name != new.interface.name:
+            return True
+        # Same mode but different SSID → network changed (e.g. switched
+        # from one hotspot to another).  Must reset devices/state.
+        if old.interface.ssid != new.interface.ssid:
+            return True
+        # Same mode but gateway changed → different network segment
+        if old.interface.gateway != new.interface.gateway:
             return True
         return False
 
