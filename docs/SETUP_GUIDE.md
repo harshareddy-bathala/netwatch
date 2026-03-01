@@ -346,7 +346,7 @@ python main.py
 # Reset database and start fresh
 python main.py --reset-db
 
-# Run on a custom host and port
+# Run on all interfaces (remote access) with custom port
 python main.py --host 0.0.0.0 --port 8080
 
 # Dashboard-only mode (no packet capture)
@@ -415,181 +415,24 @@ NetWatch reads configuration from environment variables. You can also place them
 
 ---
 
-## Network Connection Types & Monitoring Capabilities
+## Network Monitoring Modes
 
-### Understanding What NetWatch Can Monitor
+NetWatch automatically detects your connection type and adjusts its capture
+strategy accordingly. For a full explanation of each mode — including network
+topology diagrams, traffic visibility tables, and setup instructions for
+hotspot / port mirror configurations — see
+**[Monitoring Modes & Network Topology](ARCHITECTURE.md#monitoring-modes--network-topology)**
+in the Architecture documentation.
 
-NetWatch's monitoring capabilities depend on **how your laptop is connected** to the network. This section explains each scenario.
+**Quick reference:**
 
-#### Scenario 1: Ethernet (Wired) Connection
-
-**Setup:** Laptop connected via ethernet cable to router/switch
-
-**What NetWatch Can Monitor:**
-- ✅ Your laptop's own traffic (all protocols)
-- ✅ Broadcast traffic (ARP, DHCP, network discovery)
-- ⚠️ Other devices (depends on switch configuration)
-
-**Limitations:**
-- Modern managed switches isolate traffic between ports for security
-- You may only see your own traffic + broadcasts
-- To monitor other devices, ask network admin to configure port mirroring (SPAN)
-
-**Best For:** Personal device monitoring, office networks
-
-**Production Ready:** ✅ YES
-
----
-
-#### Scenario 2: WiFi Client Mode (Connected TO WiFi)
-
-**Setup:** Laptop connected as a client to WiFi network (home/office WiFi)
-
-**What NetWatch Can Monitor:**
-- ✅ Your laptop's own traffic (full visibility)
-- ✅ Nearby devices via passive ARP cache reads (no packets sent)
-- ⚠️ Traffic capture limited to your device's packets
-
-**Capabilities:**
-- ✅ **Passive ARP Cache:** Lists devices already known to the OS
-- ❌ **Active ARP Scan:** Disabled — no probe packets are sent
-- ❌ **Promiscuous Mode:** Disabled — AP isolation makes it useless
-- ✅ **BPF Filter:** `ether host <MAC>` captures IPv4 + IPv6
-
-**Note on Traffic Visibility:**
-- WiFi AP isolation limits captured traffic to your own host
-- Device list is populated from the OS ARP cache (passive, zero network impact)
-- For active device discovery, use Hotspot or Ethernet mode
-
-**Example:** If you connect to WiFi and use the network:
-- ✅ NetWatch reads your ARP cache and lists known neighbors
-- ✅ NetWatch captures your laptop's traffic in detail
-- ⚠️ Other devices' traffic not captured (WiFi security feature)
-
-**Best For:** Personal bandwidth monitoring, lightweight device awareness
-
-**Production Ready:** ✅ YES (own traffic + passive device list)
-
----
-
-#### Scenario 3: WiFi Hotspot Mode (Laptop as Access Point)
-
-**Setup:** Mobile Hotspot enabled ON THE LAPTOP, other devices connect to it
-
-**What NetWatch Can Monitor:**
-- ✅ ALL devices connected to your laptop's hotspot
-- ✅ Complete traffic visibility for every connected device
-- ✅ Real-time bandwidth per device
-- ✅ Full network monitoring
-
-**How to Enable:**
-
-**Windows:**
-1. Settings → Network & Internet → Mobile Hotspot
-2. Turn on "Share my Internet connection"
-3. Choose: Share WiFi or Ethernet connection
-4. Set hotspot name and password
-5. Other devices connect to your laptop's hotspot
-6. Run NetWatch - will see ALL traffic
-
-**macOS:**
-1. System Preferences → Sharing
-2. Enable "Internet Sharing"
-3. Share from: Ethernet or WiFi
-4. To computers using: WiFi
-5. WiFi Options: Set network name and password
-6. Check "Internet Sharing" to start
-7. Other devices connect to your Mac's hotspot
-8. Run NetWatch with sudo
-
-**Linux (Ubuntu/Debian):**
-```bash
-# Install required packages
-sudo apt install hostapd dnsmasq
-
-# Use NetworkManager for easy setup
-nm-connection-editor
-# → Add → Wi-Fi → Mode: Hotspot
-```
-
-**Best For:** Full network monitoring, classroom environments, home network analysis
-
-**Production Ready:** ✅ YES (Best scenario for multi-device monitoring)
-
----
-
-#### Scenario 4: Switch/Router Network
-
-**Setup:** Multiple devices on same network switch
-
-**What NetWatch Can Monitor:**
-- ✅ Your own device traffic
-- ✅ Broadcast/multicast traffic
-- ⚠️ Other devices (requires network configuration)
-
-**Advanced: Port Mirroring for Full Visibility**
-
-For enterprise monitoring, configure switch port mirroring:
-
-1. Access switch management interface
-2. Configure SPAN (Switched Port Analyzer) or port mirroring
-3. Mirror target ports → monitoring port
-4. Connect laptop to monitoring port
-5. NetWatch will see all mirrored traffic
-
-**Example (Cisco Switch):**
-```
-monitor session 1 source interface Gi1/0/1 - 10
-monitor session 1 destination interface Gi1/0/24
-```
-
-**Port Mirror Detection (NEW):**
-NetWatch automatically detects when connected to a port mirror/SPAN port:
-- Analyzes traffic patterns for foreign MAC addresses
-- Reports full network visibility when detected
-- API: `GET /api/discovery/port-mirror-status`
-
-**Best For:** Network admin use, enterprise monitoring
-
-**Production Ready:** ✅ YES (with port mirroring configured)
-
----
-
-#### Scenario 5: Mobile Hotspot (Phone as Access Point)
-
-**Setup:** Laptop connected TO mobile phone's hotspot
-
-**What NetWatch Can Monitor:**
-- ✅ Laptop's own internet traffic
-- ❌ Phone's own cellular data usage
-- ❌ Other devices connected to phone's hotspot
-
-**Why Limited:**
-- This is WiFi Client Mode (see Scenario 2)
-- Phone's own traffic: Phone → Cell Tower (doesn't pass through laptop)
-- Laptop's traffic: Laptop → Phone → Cell Tower (visible to NetWatch)
-
-**Best For:** Monitoring laptop's mobile data consumption
-
-**Production Ready:** ✅ YES (for laptop monitoring only)
-
----
-
-### Monitoring Mode Detection
-
-NetWatch automatically detects your connection type:
-
-```python
-# Run this to see your current mode:
-python -c "from packet_capture.monitor import get_interface_detector; d=get_interface_detector(); print(f'Mode: {d.detected_mode}\nInterface: {d.detected_interface}')"
-```
-
-**Modes:**
-- `ETHERNET` - Wired connection
-- `PUBLIC_NETWORK` - Connected to WiFi (own traffic only)
-- `WIFI_HOTSPOT` - Laptop is Access Point (full monitoring)
-- `VIRTUAL` - VPN/Docker/VM interface
-- `LOOPBACK` - Local only (127.0.0.1)
+| Mode | Trigger | What You See |
+|------|---------|--------------|
+| **Hotspot** | Mobile hotspot active on laptop | All connected client devices |
+| **Wi-Fi Client / Public Network** | Connected to WiFi | Own traffic only + passive ARP cache |
+| **Ethernet** | Wired NIC with gateway | Own + broadcast + ARP discovery |
+| **Port Mirror** | SPAN port detected | Full network segment |
+| **Disconnected** | No active interface | Capture paused; dashboard accessible |
 
 ---
 

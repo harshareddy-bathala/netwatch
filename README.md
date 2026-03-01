@@ -142,7 +142,7 @@ present or NetWatch will not be able to capture packets.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--port` | 5000 | Web server port |
-| `--host` | 0.0.0.0 | Bind address |
+| `--host` | 127.0.0.1 | Bind address |
 | `--no-capture` | off | Start without packet capture |
 | `--log-level` | INFO | DEBUG, INFO, WARNING, ERROR |
 | `--log-file` | auto | Custom log file path |
