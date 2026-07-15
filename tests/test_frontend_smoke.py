@@ -94,3 +94,39 @@ class TestFrontendSmoke:
         assert resp.status_code == 200
         html = resp.data.decode('utf-8')
         assert 'NetWatch' in html
+
+
+class TestIncidentsView:
+    """The Phase 2 incident timeline view is served and wired in."""
+
+    def test_incidents_view_served(self, client):
+        resp = client.get('/js/components/IncidentsView.js')
+        assert resp.status_code == 200
+        body = resp.data.decode('utf-8')
+        # Renders via DOM APIs (no HTML interpolation of untrusted text)
+        assert 'getIncidents' in body
+        assert 'resolveIncident' in body
+
+    def test_incidents_route_registered(self, client):
+        """app.js must route /incidents to the IncidentsView."""
+        body = client.get('/js/app.js').data.decode('utf-8')
+        assert "IncidentsView" in body
+        assert "'/incidents'" in body
+
+    def test_incidents_nav_entry(self, client):
+        """Sidebar must expose an Incidents nav item."""
+        body = client.get('/js/components/Sidebar.js').data.decode('utf-8')
+        assert "data-route=\"/incidents\"" in body
+
+    def test_incidents_api_methods(self, client):
+        """api.js must expose the incident endpoints the view calls."""
+        body = client.get('/js/api.js').data.decode('utf-8')
+        for method in ('getIncidents', 'getIncident', 'getIncidentStats',
+                       'resolveIncident'):
+            assert method in body
+
+    def test_incidents_css_present(self, client):
+        """components.css must carry the incident timeline styles."""
+        body = client.get('/css/components.css').data.decode('utf-8')
+        assert '.incident-timeline' in body
+        assert '.incident-row' in body

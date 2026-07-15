@@ -14,6 +14,7 @@ import Dashboard from './components/Dashboard.js';
 import DeviceList from './components/DeviceList.js';
 import AlertFeed from './components/AlertFeed.js';
 import TopologyView from './components/TopologyView.js';
+import IncidentsView from './components/IncidentsView.js';
 
 class App {
   constructor() {
@@ -86,6 +87,9 @@ class App {
       })
       .on('/topology', () => {
         loadView(TopologyView, 'Topology', '/topology');
+      })
+      .on('/incidents', () => {
+        loadView(IncidentsView, 'Incidents', '/incidents');
       })
       .start();
 

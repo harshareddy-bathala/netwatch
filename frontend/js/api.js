@@ -97,6 +97,13 @@ const api = {
   getForecastBandwidth: (horizon=30) => request(`/forecast/bandwidth?horizon=${horizon}`),
   getForecastDevices:   (horizon=6)  => request(`/forecast/devices?horizon=${horizon}`),
 
+  // Incidents (Phase 2)
+  getIncidents:     (status=null, limit=50) =>
+    request(`/incidents?limit=${limit}${status ? `&status=${status}` : ''}`),
+  getIncident:      (id)   => request(`/incidents/${id}`),
+  getIncidentStats: ()     => request('/incidents/stats'),
+  resolveIncident:  (id)   => request(`/incidents/${id}/resolve`, { method: 'POST' }),
+
   // Alerts
   getAlerts: (limit=50, severity=null, acknowledged=null) => {
     let url = `/alerts?limit=${limit}`;
