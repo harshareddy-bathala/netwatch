@@ -94,6 +94,13 @@ def shutdown():
         except Exception as e:
             logger.error("Error stopping behavior analyzer: %s", e)
 
+    if state.threat_detector:
+        try:
+            state.threat_detector.stop()
+            logger.info("Threat detector stopped")
+        except Exception as e:
+            logger.error("Error stopping threat detector: %s", e)
+
     if state.twin_builder:
         try:
             state.twin_builder.stop()

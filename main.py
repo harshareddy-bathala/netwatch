@@ -65,6 +65,7 @@ from orchestration.background_tasks import (
     start_anomaly_detector, start_cleanup_task,
     start_health_monitor, start_thread_watchdog,
     start_flow_normalizer, start_twin_builder, start_behavior_analyzer,
+    start_threat_detector,
 )
 
 # Hostname resolver functions
@@ -463,6 +464,13 @@ def main():
             logger.debug("Twin context not set: %s", e)
     if capture_started and start_behavior_analyzer(alert_engine):
         logger.info("Behavior analyzer started (per-device baselines)")
+
+    # Start threat detector pack (Phase 2, AI-first)
+    if capture_started and start_threat_detector(alert_engine):
+        logger.info(
+            "Threat detector started (port-scan, beaconing, DNS-tunneling, "
+            "rogue-device, lateral-movement)"
+        )
 
     # Start system health monitor
     health_started = start_health_monitor(alert_engine)

@@ -48,6 +48,11 @@ def _get_behavior():
     return getattr(state, 'behavior_analyzer', None)
 
 
+def _get_threats():
+    from orchestration import state
+    return getattr(state, 'threat_detector', None)
+
+
 @twin_bp.route('/api/twin', methods=['GET'])
 @handle_errors
 def get_twin():
@@ -63,9 +68,10 @@ def get_twin():
 @twin_bp.route('/api/twin/stats', methods=['GET'])
 @handle_errors
 def get_twin_stats():
-    """Diagnostics for the intelligence layer (twin, behavior, bus)."""
+    """Diagnostics for the intelligence layer (twin, behavior, threats, bus)."""
     twin = _get_twin()
     behavior = _get_behavior()
+    threats = _get_threats()
     try:
         from intelligence.event_bus import event_bus
         bus_stats = event_bus.get_stats()
@@ -74,6 +80,7 @@ def get_twin_stats():
     return jsonify({'data': {
         'twin': twin.get_stats() if twin else {'running': False},
         'behavior': behavior.get_stats() if behavior else {'running': False},
+        'threats': threats.get_stats() if threats else {'running': False},
         'event_bus': bus_stats,
     }})
 

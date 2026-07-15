@@ -28,6 +28,7 @@ health_monitor = None        # HealthMonitor instance
 flow_normalizer = None       # intelligence.flow_normalizer.FlowNormalizer
 twin_builder = None          # intelligence.twin.TwinBuilder
 behavior_analyzer = None     # intelligence.behavior.BehaviorAnalyzer
+threat_detector = None       # intelligence.threats.ThreatDetector
 
 app = None                   # Flask application instance
 logger = None                # Root application logger

@@ -105,6 +105,21 @@ def start_behavior_analyzer(alert_engine):
         return False
 
 
+def start_threat_detector(alert_engine):
+    """Start the Phase 2 threat detector pack (event-bus consumer)."""
+    from intelligence.threats import ThreatDetector
+
+    try:
+        state.threat_detector = ThreatDetector(
+            alert_engine=alert_engine,
+            shutdown_event=state.shutdown_event,
+        )
+        return state.threat_detector.start()
+    except Exception as e:
+        logger.error("Failed to start threat detector: %s", e)
+        return False
+
+
 # =========================================================================
 # Health monitor
 # =========================================================================
