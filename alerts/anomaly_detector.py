@@ -20,7 +20,7 @@ import logging
 import time
 import threading
 from datetime import datetime, timedelta
-from typing import Dict, Tuple, Optional
+from typing import Callable, Dict, Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -70,7 +70,12 @@ class AnomalyDetector:
     packet counts, active connections, protocol distribution, etc.
     """
 
-    def __init__(self, alert_engine: AlertEngine, shutdown_event: Optional["threading.Event"] = None):
+    def __init__(
+        self,
+        alert_engine: AlertEngine,
+        shutdown_event: Optional["threading.Event"] = None,
+        capture_alive_fn: Optional[Callable[[], bool]] = None,
+    ):
         """
         Parameters
         ----------
@@ -79,6 +84,11 @@ class AnomalyDetector:
         shutdown_event : threading.Event, optional
             If provided, ``run()`` will use ``event.wait()`` instead of
             ``time.sleep()`` so the detector shuts down promptly.
+        capture_alive_fn : callable, optional
+            Returns True while the capture engine is running.  When it
+            reports False, threshold and ML checks are paused — a dead
+            capture pipeline reads as 0 Mbps, which is missing data, not
+            a network anomaly.
         """
         # ML model — tuned for network traffic anomalies
         self.model = IsolationForest(
@@ -102,6 +112,8 @@ class AnomalyDetector:
         # Runtime
         self.running = False
         self._shutdown_event = shutdown_event or threading.Event()
+        self._capture_alive_fn = capture_alive_fn
+        self._capture_down_logged = False
         self.lock = threading.Lock()
 
         # Try to load persisted model from disk
@@ -618,8 +630,24 @@ class AnomalyDetector:
                 try:
                     current_stats = get_realtime_stats()
                     if current_stats:
+                        # A dead capture engine means the stats read 0 Mbps
+                        # because there is no data, not because the network
+                        # went quiet — pause all checks until it recovers.
+                        capture_ok = (
+                            self._capture_alive_fn is None or self._capture_alive_fn()
+                        )
+                        if not capture_ok and not self._capture_down_logged:
+                            logger.warning(
+                                "Capture engine not running — pausing anomaly "
+                                "checks until capture resumes"
+                            )
+                            self._capture_down_logged = True
+                        elif capture_ok and self._capture_down_logged:
+                            logger.info("Capture engine back — resuming anomaly checks")
+                            self._capture_down_logged = False
+
                         # Threshold-based alerts — skip during warmup
-                        if time.time() - _start_time >= _WARMUP_SECONDS:
+                        if capture_ok and time.time() - _start_time >= _WARMUP_SECONDS:
                             self.check_thresholds(current_stats)
                         elif self.check_count <= 3:
                             logger.info(
@@ -634,10 +662,11 @@ class AnomalyDetector:
                         bw_bps = current_stats.get("bandwidth_bps", 0)
                         bw_mbps = (bw_bps * 8) / 1_000_000 if bw_bps else 0
 
-                        # ML detection also honours the warmup window: a
-                        # persisted model would otherwise score the idle
-                        # startup state (0 Mbps) as a critical anomaly.
-                        if time.time() - _start_time < _WARMUP_SECONDS:
+                        # ML detection also honours the warmup window and the
+                        # capture-liveness gate: a persisted model would
+                        # otherwise score the idle startup state or a dead
+                        # capture pipeline (0 Mbps) as a critical anomaly.
+                        if not capture_ok or time.time() - _start_time < _WARMUP_SECONDS:
                             is_anomaly, score = False, 0.0
                         else:
                             is_anomaly, score = self.detect_anomaly(enriched_stats)

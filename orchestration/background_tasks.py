@@ -24,10 +24,18 @@ def start_anomaly_detector(alert_engine):
     """Start ML anomaly detector in background thread."""
     from alerts.anomaly_detector import AnomalyDetector
 
+    def _capture_alive() -> bool:
+        engine = state.capture_engine
+        try:
+            return engine is not None and engine.is_running()
+        except Exception:
+            return False
+
     try:
         state.detector = AnomalyDetector(
             alert_engine=alert_engine,
             shutdown_event=state.shutdown_event,
+            capture_alive_fn=_capture_alive,
         )
 
         state.detector_thread = threading.Thread(

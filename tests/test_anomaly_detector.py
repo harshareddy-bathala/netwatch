@@ -226,3 +226,73 @@ class TestEnrichmentPerBucket:
         history = [{"timestamp": "2026-07-14 10:00:00", "bytes_per_second": 123.4}]
         enriched = self._enrich(detector, history)
         assert enriched[0]["total_bandwidth"] == 123.4
+
+
+# ===================================================================
+# Capture-liveness gate (dead capture pipeline is not an anomaly)
+# ===================================================================
+
+class TestCaptureLivenessGate:
+    """With the capture engine down, threshold and ML checks must pause —
+    0 Mbps from a dead pipeline is missing data, not a network anomaly."""
+
+    def _run_one_iteration(self, det, monkeypatch):
+        """Drive exactly one pass of the monitor loop, past warmup."""
+        det.detect_anomaly = MagicMock(return_value=(False, 0.0))
+        det.check_thresholds = MagicMock()
+        det._enrich_current_stats = MagicMock(return_value={"total_bandwidth": 0})
+        det._enrich_with_features = MagicMock(return_value=[])
+        det.train_model = MagicMock(return_value=False)
+
+        stats = {"bandwidth_bps": 0, "device_count": 0}
+
+        def stats_then_stop():
+            det._shutdown_event.set()
+            return stats
+
+        # Monotonic clock stepping 200s per call: whatever call sets
+        # _start_time, every later reading is >=200s past it, so the 120s
+        # warmup window has always passed.  (Patching time.time also feeds
+        # logging timestamps, so the consumption order is unpredictable.)
+        import itertools
+        clock = itertools.count(0.0, 200.0)
+        monkeypatch.setattr(
+            'alerts.anomaly_detector.time.time', lambda: float(next(clock))
+        )
+        monkeypatch.setattr(
+            'alerts.anomaly_detector.get_bandwidth_history', lambda: []
+        )
+        monkeypatch.setattr(
+            'alerts.anomaly_detector.get_realtime_stats', stats_then_stop
+        )
+        det.run()
+
+    def test_checks_paused_while_capture_down(self, mock_alert_engine, monkeypatch):
+        with patch('alerts.anomaly_detector._os.path.exists', return_value=False):
+            from alerts.anomaly_detector import AnomalyDetector
+            det = AnomalyDetector(
+                alert_engine=mock_alert_engine,
+                capture_alive_fn=lambda: False,
+            )
+        self._run_one_iteration(det, monkeypatch)
+        det.detect_anomaly.assert_not_called()
+        det.check_thresholds.assert_not_called()
+
+    def test_checks_run_while_capture_alive(self, mock_alert_engine, monkeypatch):
+        with patch('alerts.anomaly_detector._os.path.exists', return_value=False):
+            from alerts.anomaly_detector import AnomalyDetector
+            det = AnomalyDetector(
+                alert_engine=mock_alert_engine,
+                capture_alive_fn=lambda: True,
+            )
+        self._run_one_iteration(det, monkeypatch)
+        det.detect_anomaly.assert_called_once()
+        det.check_thresholds.assert_called_once()
+
+    def test_no_gate_when_fn_not_provided(self, mock_alert_engine, monkeypatch):
+        with patch('alerts.anomaly_detector._os.path.exists', return_value=False):
+            from alerts.anomaly_detector import AnomalyDetector
+            det = AnomalyDetector(alert_engine=mock_alert_engine)
+        self._run_one_iteration(det, monkeypatch)
+        det.detect_anomaly.assert_called_once()
+        det.check_thresholds.assert_called_once()
