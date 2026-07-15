@@ -71,13 +71,25 @@ baseline measured; dashboard runs fully offline.
 evidence fields. Remaining for later sprints: SSE push for twin deltas (currently
 10s polling), hostname enrichment on behavior alerts from the twin.*
 
-### Phase 2 — Detection + prediction (Sprints 6–7, weeks 11–14)
+### Phase 2 — Detection + prediction (Sprints 6–7, weeks 11–14)  ← **complete (2026-07-15)**
 
-- Threat detector pack: port-scan, beaconing, DNS-tunneling signals, rogue device, lateral movement
-- Forecasting service (bandwidth saturation, device-count trend) + forecast overlay on BandwidthChart
-- Incident triage: alert→incident fusion (fixes dedup-by-type weakness)
+- [x] **P2.1** Threat detector pack (`intelligence/threats.py`): port-scan
+  (vertical/horizontal), beaconing (low-jitter C2 heartbeat), DNS-tunneling
+  (query burst + long/high-entropy qnames), rogue device (unknown MAC),
+  lateral movement (internal fan-out on admin ports) — subscribes to
+  `flow.completed`/`dns.query`, alerts with `evidence[]`+`confidence` via
+  `AlertEngine.create_threat_alert`, `THREAT_*` config
+- [x] **P2.2** Forecasting (`intelligence/forecast.py`): Holt bandwidth
+  forecast with confidence band + saturation ETA, least-squares device-count
+  trend; `/api/forecast/bandwidth`, `/api/forecast/devices`; dashed overlay
+  on BandwidthChart with shaded band (`--chart-forecast`); `FORECAST_*` config
+- [x] **P2.3** Incident triage (`intelligence/incidents.py`): alert→incident
+  fusion by device + rolling window (migration 012 `incidents` +
+  `alerts.incident_id`), `/api/incidents*`; fixes the dedup-by-type weakness
 
-*Exit:* red-team demo script triggers named threats; forecast line on the chart.
+*Exit met:* named threats fire with evidence; forecast line + band on the
+chart; related alerts collapse into incidents. Remaining polish for later:
+red-team demo script in `scripts/`, incident timeline UI view (API is ready).
 
 ### Phase 2.5 — Privilege separation (parallel with Phase 2)
 
