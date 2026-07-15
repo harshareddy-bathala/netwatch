@@ -141,10 +141,27 @@ without a model via the scripted runtime. Remaining for a later sprint:
 richer time-series/knowledge-graph tools, citation-faithfulness eval
 harness (Phase 4).
 
-### Phase 4 — Evaluation + packaging (Sprints 11–12, weeks 21–24)
+### Phase 4 — Evaluation + packaging (Sprints 11–12, weeks 21–24)  ← **evaluation core complete (2026-07-15)**
 
-- Labeled evaluation dataset from lab traffic; precision/recall tables; ablations (LLM with vs without tool grounding)
-- Installer updates (models ship beside `models/`); thesis material
+- [x] **P4.1** Labeled traffic dataset (`evaluation/threat_dataset.py`,
+  published to `docs/evaluation/threat_dataset.json`): 18 deterministic
+  scenarios, incl. 6 benign near-misses that make precision a real measure
+- [x] **P4.2** Detector precision/recall harness (`evaluation/detector_eval.py`,
+  `scripts/eval_detectors.py`): per-detector P/R/F1, macro-F1, benign
+  FP-rate. Current pack: **macro-F1 1.000, accuracy 1.000, benign FP-rate
+  0.000**; documented multi-label overlap (admin-port sweeps)
+- [x] **P4.3** Citation-faithfulness metric + tool-grounding ablation
+  (`evaluation/faithfulness.py`, `scripts/eval_faithfulness.py`):
+  citation_validity / grounded / claim_support; model-free in CI via the
+  scripted runtime, real numbers against local llama3
+- [x] **P4.4** Thesis material: `docs/evaluation/` (README + published
+  dataset + detector report JSON)
+- [ ] **P4.5** Installer updates (models ship beside `models/`) — remaining
+
+*Exit (evaluation):* reproducible precision/recall table + a
+faithfulness/ablation harness, all offline. Also fixed a robustness gap the
+eval surfaced: the investigator now degrades gracefully when the Ollama
+server is up but the model isn't pulled (was an unhandled mid-loop error).
 
 ---
 
