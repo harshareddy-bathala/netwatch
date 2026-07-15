@@ -91,10 +91,35 @@ evidence fields. Remaining for later sprints: SSE push for twin deltas (currentl
 chart; related alerts collapse into incidents. Remaining polish for later:
 red-team demo script in `scripts/`, incident timeline UI view (API is ready).
 
-### Phase 2.5 — Privilege separation (parallel with Phase 2)
+### Phase 2.5 — Privilege separation (parallel with Phase 2)  ← **complete (2026-07-15)**
 
-- Capture moves behind a local socket as a minimal privileged process; API/intelligence run unprivileged
-- pcap-replay through the normalizer becomes the primary test strategy
+- [x] **P2.5.1** Capture IPC transport (`packet_capture/capture_ipc.py`):
+  zero-dependency loopback-TCP, length-prefixed JSON framing, token
+  handshake, datetime revival; `CaptureServer.publish` (privileged) →
+  `CaptureClient` (unprivileged), publish never blocks
+- [x] **P2.5.2** Capture daemon (`capture_daemon.py`): minimal privileged
+  entrypoint reusing the whole capture stack with its sink redirected via a
+  `CaptureServerWriter` adapter (CaptureEngine gained an injectable
+  `db_writer`); advertises host:port:token in an endpoint file
+- [x] **P2.5.3** Unprivileged bridge (`packet_capture/capture_bridge.py`):
+  connects to the daemon, feeds batches into the real `DatabaseWriter` so
+  DB / realtime-state / event-bus run unchanged; auto-reconnect
+- [x] **P2.5.4** pcap-replay (`packet_capture/pcap_replay.py`) is the
+  root-free primary test strategy — parse→batch→transport→bridge exercised
+  end to end on synthetic pcaps. Surfaced + fixed a real defect: parsing
+  did a blocking reverse-DNS/nbtstat lookup per packet
+  (`parse_packet(resolve_names=False)`)
+
+Default OFF (`CAPTURE_IPC_ENABLED`); the in-process monolith is untouched.
+Remaining for a later sprint: wire the daemon spawn into `main.py`'s
+mode-handler lifecycle (transport + bridge + daemon are ready and tested).
+
+### Phase 3 — LLM investigations (Sprints 8–10, weeks 15–20)
+
+- Knowledge-graph projection (twin + time + provenance)
+- Local LLM runtime (Ollama/llama.cpp, quantized 4–8B) in a **separate process**, strict JSON tool calls only: `query_metrics`, `query_graph`, `list_incidents`
+- "Ask NetWatch" chat view + incident timeline view
+- Explainability: every alert/incident carries `evidence[]`, `confidence`, feature attributions
 
 ### Phase 3 — LLM investigations (Sprints 8–10, weeks 15–20)
 

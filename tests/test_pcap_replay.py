@@ -118,3 +118,36 @@ def _wait_for(pred, timeout):
             return True
         time.sleep(0.02)
     return False
+
+
+class TestFullSplitLoop:
+    """pcap replay (privileged side) → CaptureServer → CaptureBridge →
+    DatabaseWriter-shaped sink (unprivileged side), end to end, no root."""
+
+    class _RecordingWriter:
+        def __init__(self):
+            self.batches = []
+        def enqueue(self, batch):
+            self.batches.append(batch)
+
+    def test_replay_reaches_writer_through_bridge(self, sample_pcap):
+        from packet_capture.capture_bridge import CaptureBridge
+        token = "bridge-token"
+        server = CaptureServer(host="127.0.0.1", port=0, token=token)
+        server.start()
+        writer = self._RecordingWriter()
+        bridge = CaptureBridge(writer, host="127.0.0.1", port=server.port,
+                               token=token)
+        bridge.start()
+        try:
+            _wait_for(lambda: server._client is not None, 3.0)
+            total = replay_to_sink(sample_pcap, server.publish, batch_size=5)
+            _wait_for(
+                lambda: sum(len(b) for b in writer.batches) >= total, 3.0)
+            assert total == 15
+            got = sum(len(b) for b in writer.batches)
+            assert got == 15
+            assert bridge.batches_forwarded >= 1
+        finally:
+            bridge.stop()
+            server.stop()
