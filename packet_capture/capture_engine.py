@@ -424,6 +424,23 @@ class CaptureEngine(CaptureProcessorMixin):
                             logger.exception("Error in interface-lost callback")
                     break
                 time.sleep(1)  # back off before retrying
+            except RuntimeError as exc:
+                if self._stop_event.is_set():
+                    break
+                # Scapy raises RuntimeError when no libpcap provider exists
+                # (Npcap not installed) — unrecoverable, so stop instead of
+                # crash-looping a traceback every second.
+                msg = str(exc)
+                if 'winpcap is not installed' in msg or 'not available at layer 2' in msg:
+                    logger.error(
+                        "Packet capture unavailable: no libpcap provider found. "
+                        "Install Npcap (https://npcap.com) and restart NetWatch. "
+                        "Dashboard continues without live capture."
+                    )
+                    self._stop_event.set()
+                    break
+                logger.exception("Unexpected error in capture loop: %s", exc)
+                time.sleep(1)
             except Exception as exc:
                 if self._stop_event.is_set():
                     break

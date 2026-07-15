@@ -311,7 +311,7 @@ def vacuum_database() -> bool:
             db_size_after = get_database_size_mb()
             freed = db_size_before - db_size_after
             logger.info(
-                "VACUUM complete: %.1f MB → %.1f MB (freed %.1f MB)",
+                "VACUUM complete: %.1f MB -> %.1f MB (freed %.1f MB)",
                 db_size_before, db_size_after, freed,
             )
             return True

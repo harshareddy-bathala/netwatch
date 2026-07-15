@@ -634,7 +634,13 @@ class AnomalyDetector:
                         bw_bps = current_stats.get("bandwidth_bps", 0)
                         bw_mbps = (bw_bps * 8) / 1_000_000 if bw_bps else 0
 
-                        is_anomaly, score = self.detect_anomaly(enriched_stats)
+                        # ML detection also honours the warmup window: a
+                        # persisted model would otherwise score the idle
+                        # startup state (0 Mbps) as a critical anomaly.
+                        if time.time() - _start_time < _WARMUP_SECONDS:
+                            is_anomaly, score = False, 0.0
+                        else:
+                            is_anomaly, score = self.detect_anomaly(enriched_stats)
                         if is_anomaly:
                             self.anomaly_count += 1
                             severity = (
