@@ -651,6 +651,58 @@ class AlertEngine:
             dedup_key=f"behavior:{mac.lower()}",
         )
 
+    def create_threat_alert(
+        self,
+        threat_type: str,
+        mac: str,
+        message: str,
+        evidence: list,
+        confidence: float,
+        severity: str = SEVERITY_WARNING,
+    ) -> Optional[int]:
+        """
+        Create a named-threat alert (Phase 2 threat detector pack).
+
+        Deduplicated per (threat, device) so a port scan and a beacon from
+        the same device raise separately, and two scanning devices both
+        alert inside one cooldown window.
+
+        Parameters
+        ----------
+        threat_type : str
+            One of port_scan / beaconing / dns_tunneling / rogue_device /
+            lateral_movement.
+        mac : str
+            Source device the threat originates from.
+        message : str
+            Human-readable summary built by the detector.
+        evidence : list of dict
+            Explainable evidence items (signal, counts, samples, window).
+        confidence : float
+            0-1 confidence assigned by the detector.
+        """
+        titles = {
+            "port_scan": "Port Scan Detected",
+            "beaconing": "Beaconing (Possible C2) Detected",
+            "dns_tunneling": "DNS Tunneling Suspected",
+            "rogue_device": "Unrecognized Device Joined",
+            "lateral_movement": "Lateral Movement Detected",
+        }
+        return self._create_alert_with_dedup(
+            alert_type=ALERT_SECURITY,
+            severity=severity,
+            title=titles.get(threat_type, "Security Threat Detected"),
+            message=message,
+            metadata={
+                "threat_type": threat_type,
+                "device_mac": mac,
+                "confidence": round(confidence, 4),
+                "evidence": evidence,
+                "detector": "threat_pack",
+            },
+            dedup_key=f"threat:{threat_type}:{mac.lower()}",
+        )
+
     def create_anomaly_alert(
         self,
         anomaly_score: float,

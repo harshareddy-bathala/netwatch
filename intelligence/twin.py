@@ -287,6 +287,7 @@ class TwinBuilder:
                 nbytes=int(f.get("bytes_total") or 0),
                 npackets=int(f.get("packets_total") or 0),
                 touch_liveness=False,
+                direction=f.get("direction") or "",
             )
 
     # ------------------------------------------------------------------ #
@@ -306,6 +307,7 @@ class TwinBuilder:
                     npackets=1,
                     device_name=p.get("device_name"),
                     vendor=p.get("vendor"),
+                    direction=p.get("direction") or "",
                 )
 
     def ingest_dns(self, dns_event: dict) -> None:
@@ -350,10 +352,20 @@ class TwinBuilder:
             self._nodes[node_id] = node
         return node
 
-    def _endpoint_node(self, mac: str, ip: str) -> Optional[_Node]:
-        """Resolve one side of a communication to a twin node."""
+    def _endpoint_node(self, mac: str, ip: str,
+                       local_hint: bool = False) -> Optional[_Node]:
+        """Resolve one side of a communication to a twin node.
+
+        Role (self/gateway MAC) and *local_hint* (from the packet's
+        direction) beat IP-based classification: a local device using a
+        global IPv6 address must not become an "external" node.
+        """
         if ip and _is_noise_ip(ip):
             return None
+        if not _is_excluded_mac(mac) and (
+            local_hint or self._role_for(mac, "") is not None
+        ):
+            return self._get_or_create_local(mac, ip)
         if ip and not is_private_ip(ip):
             return self._get_or_create_external(ip)
         if not _is_excluded_mac(mac):
@@ -365,9 +377,14 @@ class TwinBuilder:
                             nbytes: int, npackets: int,
                             device_name: Optional[str] = None,
                             vendor: Optional[str] = None,
-                            touch_liveness: bool = True) -> None:
-        src = self._endpoint_node(src_mac, src_ip)
-        dst = self._endpoint_node(dst_mac, dst_ip)
+                            touch_liveness: bool = True,
+                            direction: str = "") -> None:
+        # Direction identifies the local side even when its IP is a
+        # global IPv6 address: upload → source is local, download → dest.
+        src = self._endpoint_node(src_mac, src_ip,
+                                  local_hint=(direction == "upload"))
+        dst = self._endpoint_node(dst_mac, dst_ip,
+                                  local_hint=(direction == "download"))
         if src is None or dst is None or src.node_id == dst.node_id:
             return
 

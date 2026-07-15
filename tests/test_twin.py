@@ -118,6 +118,20 @@ class TestRoles:
         node = next(n for n in twin.snapshot()["nodes"] if n["id"] == "ip:8.8.8.8")
         assert node["type"] == "external"
 
+    def test_global_ipv6_source_stays_local_on_upload(self):
+        """Regression (live-run finding): a local device uploading from a
+        global IPv6 address must be keyed by MAC, not become 'external'."""
+        twin = _twin(our_mac=LAPTOP)
+        twin.ingest_packets([_pkt(
+            src_mac=LAPTOP, src_ip="2401:4900:c97a:f3b4::1234",
+            dst_ip="2606:4700:103::2", direction="upload",
+        )])
+        snap = twin.snapshot()
+        ids = {n["id"] for n in snap["nodes"]}
+        assert f"mac:{LAPTOP}" in ids
+        assert "ip:2401:4900:c97a:f3b4::1234" not in ids
+        assert snap["edges"][0]["source"] == f"mac:{LAPTOP}"
+
 
 class TestEnrichment:
 

@@ -12,6 +12,7 @@ All writes are batched ``executemany`` calls, mirroring
 
 import logging
 import sqlite3
+import time
 from datetime import datetime, timedelta
 from typing import List, Optional
 
@@ -19,56 +20,78 @@ from database.connection import get_connection
 
 logger = logging.getLogger(__name__)
 
+# Lock-retry policy — mirrors alert_queries/packet_store: SQLite allows one
+# writer, and flow flushes race the packet-batch writer during busy periods.
+_MAX_RETRIES = 3
+_BASE_DELAY = 0.15  # seconds, doubled per attempt
+
+
+def _executemany_with_retry(label: str, sql: str, rows: List[dict]) -> int:
+    """Run a batched INSERT with retry on 'database is locked'.
+
+    Returns rows written, or -1 after exhausting retries / on error.
+    """
+    for attempt in range(_MAX_RETRIES):
+        try:
+            with get_connection() as conn:
+                conn.executemany(sql, rows)
+                conn.commit()
+            return len(rows)
+        except sqlite3.OperationalError as e:
+            msg = str(e).lower()
+            if ("locked" in msg or "busy" in msg) and attempt < _MAX_RETRIES - 1:
+                delay = _BASE_DELAY * (2 ** attempt)
+                logger.warning(
+                    "%s: DB locked (attempt %d/%d), retrying in %.2fs",
+                    label, attempt + 1, _MAX_RETRIES, delay,
+                )
+                time.sleep(delay)
+                continue
+            logger.error("%s error: %s", label, e)
+            return -1
+        except sqlite3.Error as e:
+            logger.error("%s error: %s", label, e)
+            return -1
+    return -1
+
 
 def save_flows_batch(flows: List[dict]) -> int:
     """Bulk-insert completed flow records.  Returns rows written (-1 on error)."""
     if not flows:
         return 0
-    try:
-        with get_connection() as conn:
-            conn.executemany(
-                """
-                INSERT INTO flows (
-                    first_seen, last_seen, source_ip, dest_ip,
-                    source_port, dest_port, protocol, direction,
-                    source_mac, dest_mac, bytes_total, packets_total,
-                    is_control, duration_seconds
-                ) VALUES (
-                    :first_seen, :last_seen, :source_ip, :dest_ip,
-                    :source_port, :dest_port, :protocol, :direction,
-                    :source_mac, :dest_mac, :bytes_total, :packets_total,
-                    :is_control, :duration_seconds
-                )
-                """,
-                flows,
-            )
-            conn.commit()
-        return len(flows)
-    except sqlite3.Error as e:
-        logger.error("save_flows_batch error: %s", e)
-        return -1
+    return _executemany_with_retry(
+        "save_flows_batch",
+        """
+        INSERT INTO flows (
+            first_seen, last_seen, source_ip, dest_ip,
+            source_port, dest_port, protocol, direction,
+            source_mac, dest_mac, bytes_total, packets_total,
+            is_control, duration_seconds
+        ) VALUES (
+            :first_seen, :last_seen, :source_ip, :dest_ip,
+            :source_port, :dest_port, :protocol, :direction,
+            :source_mac, :dest_mac, :bytes_total, :packets_total,
+            :is_control, :duration_seconds
+        )
+        """,
+        flows,
+    )
 
 
 def save_dns_queries_batch(rows: List[dict]) -> int:
     """Bulk-insert DNS query events.  Returns rows written (-1 on error)."""
     if not rows:
         return 0
-    try:
-        with get_connection() as conn:
-            conn.executemany(
-                """
-                INSERT INTO dns_queries (timestamp, source_ip, source_mac,
-                                         qname, qtype, protocol)
-                VALUES (:timestamp, :source_ip, :source_mac,
-                        :qname, :qtype, :protocol)
-                """,
-                rows,
-            )
-            conn.commit()
-        return len(rows)
-    except sqlite3.Error as e:
-        logger.error("save_dns_queries_batch error: %s", e)
-        return -1
+    return _executemany_with_retry(
+        "save_dns_queries_batch",
+        """
+        INSERT INTO dns_queries (timestamp, source_ip, source_mac,
+                                 qname, qtype, protocol)
+        VALUES (:timestamp, :source_ip, :source_mac,
+                :qname, :qtype, :protocol)
+        """,
+        rows,
+    )
 
 
 def get_recent_flows(limit: int = 100, since: Optional[str] = None,

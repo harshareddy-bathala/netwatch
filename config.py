@@ -684,6 +684,33 @@ BEHAVIOR_Z_THRESHOLD = float(os.getenv('BEHAVIOR_Z_THRESHOLD', '4.0'))
 BEHAVIOR_MAX_DEVICES = int(os.getenv('BEHAVIOR_MAX_DEVICES', '1000'))
 
 # =============================================================================
+# THREAT DETECTOR PACK (Phase 2, AI-first roadmap)
+# =============================================================================
+
+# Port scan: distinct ports on one host (vertical) / hosts on one port
+# (horizontal) inside the window before alerting.
+THREAT_PORTSCAN_WINDOW_SECONDS = int(os.getenv('THREAT_PORTSCAN_WINDOW_SECONDS', '120'))
+THREAT_PORTSCAN_PORT_THRESHOLD = int(os.getenv('THREAT_PORTSCAN_PORT_THRESHOLD', '15'))
+THREAT_PORTSCAN_HOST_THRESHOLD = int(os.getenv('THREAT_PORTSCAN_HOST_THRESHOLD', '10'))
+
+# Beaconing: minimum repeated intervals to one external (host, port), and
+# the maximum coefficient of variation (std/mean) still deemed "regular".
+THREAT_BEACON_MIN_OBSERVATIONS = int(os.getenv('THREAT_BEACON_MIN_OBSERVATIONS', '6'))
+THREAT_BEACON_MAX_JITTER_RATIO = float(os.getenv('THREAT_BEACON_MAX_JITTER_RATIO', '0.25'))
+
+# DNS tunneling: query burst to one registered domain plus long or
+# high-entropy qnames.
+THREAT_DNS_TUNNEL_WINDOW_SECONDS = int(os.getenv('THREAT_DNS_TUNNEL_WINDOW_SECONDS', '300'))
+THREAT_DNS_TUNNEL_QUERY_THRESHOLD = int(os.getenv('THREAT_DNS_TUNNEL_QUERY_THRESHOLD', '25'))
+THREAT_DNS_TUNNEL_QNAME_LENGTH = int(os.getenv('THREAT_DNS_TUNNEL_QNAME_LENGTH', '40'))
+THREAT_DNS_TUNNEL_ENTROPY = float(os.getenv('THREAT_DNS_TUNNEL_ENTROPY', '3.8'))
+
+# Lateral movement: distinct internal hosts contacted on admin ports
+# (SMB/RDP/SSH/WinRM/VNC) inside the window.
+THREAT_LATERAL_WINDOW_SECONDS = int(os.getenv('THREAT_LATERAL_WINDOW_SECONDS', '300'))
+THREAT_LATERAL_HOST_THRESHOLD = int(os.getenv('THREAT_LATERAL_HOST_THRESHOLD', '3'))
+
+# =============================================================================
 # PERFORMANCE TUNING — Prevents NetWatch from degrading network performance
 # =============================================================================
 

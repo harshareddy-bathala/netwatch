@@ -310,5 +310,9 @@ class FlowNormalizer:
             count = self._save_dns(dns_rows)
             if count and count > 0:
                 self.dns_saved += count
+            elif count is not None and count < 0:
+                # Save failed (e.g. DB locked past retries) — re-buffer so
+                # the next flush retries, capped to avoid unbounded growth.
+                self._dns_buffer = (dns_rows + self._dns_buffer)[:5000]
 
         return written
