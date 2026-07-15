@@ -199,10 +199,11 @@ class CaptureProcessorMixin:
                     bw_info = ""
                     try:
                         bw = self.bandwidth.get_stats()
+                        # ASCII only — arrows crash the cp1252 console handler
                         bw_info = (
                             f", bw={bw.get('total_mbps', 0):.3f} Mbps "
-                            f"(↓{bw.get('download_mbps', 0):.3f} "
-                            f"↑{bw.get('upload_mbps', 0):.3f})"
+                            f"(dl {bw.get('download_mbps', 0):.3f} "
+                            f"ul {bw.get('upload_mbps', 0):.3f})"
                         )
                     except Exception:
                         pass

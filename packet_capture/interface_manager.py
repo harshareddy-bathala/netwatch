@@ -293,7 +293,7 @@ class InterfaceManager:
             callbacks = list(self._callbacks)
 
         logger.info(
-            "Manual interface selection: %s → mode=%s",
+            "Manual interface selection: %s -> mode=%s",
             interface_name, new_mode.get_mode_name().value,
         )
 

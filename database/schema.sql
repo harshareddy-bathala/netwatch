@@ -85,7 +85,10 @@ CREATE TABLE IF NOT EXISTS alerts (
     incident_id INTEGER DEFAULT NULL REFERENCES incidents(id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_alerts_incident ON alerts(incident_id);
+-- NOTE: no index on alerts(incident_id) here — on pre-012 databases the
+-- alerts table exists without the column (CREATE TABLE IF NOT EXISTS is a
+-- no-op) and the index statement would abort initialization before the
+-- migration runner could add the column.  Migration 012 creates it.
 
 -- =============================================================================
 -- INCIDENTS TABLE (Phase 2, AI-first)

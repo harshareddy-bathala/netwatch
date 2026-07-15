@@ -389,6 +389,12 @@ class ThreatDetector:
             )
 
     def _check_dns_tunneling(self, now: float, src: str, qname: str) -> None:
+        # Reverse-DNS lookups (PTR) have legitimately long qnames — an
+        # IPv6 address spelled nibble-by-nibble under ip6.arpa is ~72
+        # chars.  The OS resolver emits bursts of these; never treat the
+        # .arpa zone as tunneling.
+        if qname.lower().rstrip(".").endswith(".arpa"):
+            return
         domain = _registered_domain(qname)
         if not domain:
             return
