@@ -23,10 +23,48 @@ from backend.helpers import (
     handle_errors, cached_response, get_engine, get_iface_manager,
 )
 from utils.realtime_state import dashboard_state
+from config import (
+    IDLE_DISPLAY_APP_BPS_THRESHOLD,
+    IDLE_DISPLAY_APP_PPS_THRESHOLD,
+)
 
 logger = logging.getLogger(__name__)
 
 bandwidth_bp = Blueprint('bandwidth', __name__)
+
+
+def _to_float(value) -> float:
+    """Best-effort numeric conversion for stat fields."""
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _apply_idle_floor(stats: dict) -> None:
+    """Clamp tiny app-traffic jitter to zero for clearer idle UX.
+
+    The app/control split is still preserved; only app-facing realtime
+    display fields are floored.
+    """
+    app_bps = _to_float(stats.get('bandwidth_bps', 0.0))
+    app_pps = _to_float(stats.get('packets_per_second', 0.0))
+
+    is_idle = (
+        app_bps <= IDLE_DISPLAY_APP_BPS_THRESHOLD
+        and app_pps <= IDLE_DISPLAY_APP_PPS_THRESHOLD
+    )
+    stats['is_idle_app'] = bool(is_idle)
+
+    if not is_idle:
+        return
+
+    stats['bandwidth_bps'] = 0.0
+    stats['bandwidth_mbps'] = 0.0
+    stats['upload_bps'] = 0.0
+    stats['download_bps'] = 0.0
+    stats['upload_mbps'] = 0.0
+    stats['download_mbps'] = 0.0
 
 
 @bandwidth_bp.route('/api/stats/realtime')
@@ -57,21 +95,47 @@ def get_dashboard():
     if engine and engine.is_running:
         # ── Fast path: in-memory state ──────────────────────────────
         mem = dashboard_state.snapshot()
-        bw_stats = engine.bandwidth.get_stats()
+        bw_stats = engine.bandwidth.get_recent_rate(seconds=10)
+        full_bw = engine.bandwidth.get_stats()
+
+        stats_payload = {
+            'today_bytes': mem.get('today_bytes_app', mem.get('today_bytes', 0)),
+            'today_packets': mem.get('today_packets_app', mem.get('today_packets', 0)),
+            'today_bytes_app': mem.get('today_bytes_app', mem.get('today_bytes', 0)),
+            'today_packets_app': mem.get('today_packets_app', mem.get('today_packets', 0)),
+            'today_bytes_control': mem.get('today_bytes_control', 0),
+            'today_packets_control': mem.get('today_packets_control', 0),
+            'today_bytes_total': mem.get('today_bytes_total', mem.get('today_bytes', 0)),
+            'today_packets_total': mem.get('today_packets_total', mem.get('today_packets', 0)),
+            'total_bytes_today': mem.get('today_bytes_app', mem.get('today_bytes', 0)),
+            'total_packets_today': mem.get('today_packets_app', mem.get('today_packets', 0)),
+            'active_devices': mem.get('active_devices', 0),
+            'bandwidth_bps': round(bw_stats['total_bps'] * 8, 2),
+            'bandwidth_mbps': bw_stats['total_mbps'],
+            'control_bandwidth_bps': round(bw_stats.get('control_total_bps', 0) * 8, 2),
+            'control_bandwidth_mbps': bw_stats.get('control_total_mbps', 0),
+            'combined_bandwidth_bps': round(bw_stats.get('combined_total_bps', bw_stats['total_bps']) * 8, 2),
+            'combined_bandwidth_mbps': bw_stats.get('combined_total_mbps', bw_stats['total_mbps']),
+            'upload_bps': round(bw_stats['upload_bps'] * 8, 2),
+            'download_bps': round(bw_stats['download_bps'] * 8, 2),
+            'upload_mbps': bw_stats['upload_mbps'],
+            'download_mbps': bw_stats['download_mbps'],
+            'control_upload_bps': round(bw_stats.get('control_upload_bps', 0) * 8, 2),
+            'control_download_bps': round(bw_stats.get('control_download_bps', 0) * 8, 2),
+            'control_upload_mbps': bw_stats.get('control_upload_mbps', 0),
+            'control_download_mbps': bw_stats.get('control_download_mbps', 0),
+            'packets_per_second': full_bw['packets_per_second'],
+            'control_packets_per_second': full_bw.get('control_packets_per_second', 0),
+            'packets_per_second_total': round(
+                (full_bw.get('packets_per_second', 0) or 0)
+                + (full_bw.get('control_packets_per_second', 0) or 0),
+                2,
+            ),
+        }
+        _apply_idle_floor(stats_payload)
 
         result = {
-            'stats': {
-                'today_bytes': mem.get('today_bytes', 0),
-                'today_packets': mem.get('today_packets', 0),
-                'active_devices': mem.get('active_devices', 0),
-                'bandwidth_bps': round(bw_stats['total_bps'] * 8, 2),
-                'bandwidth_mbps': bw_stats['total_mbps'],
-                'upload_bps': round(bw_stats['upload_bps'] * 8, 2),
-                'download_bps': round(bw_stats['download_bps'] * 8, 2),
-                'upload_mbps': bw_stats['upload_mbps'],
-                'download_mbps': bw_stats['download_mbps'],
-                'packets_per_second': bw_stats['packets_per_second'],
-            },
+            'stats': stats_payload,
             'health': mem.get('health_score', {'score': 0, 'status': 'unknown'}),
             'devices': mem.get('top_devices', []),
             'protocols': mem.get('protocols', []),
@@ -92,8 +156,30 @@ def get_dashboard():
         # ── Slow path: DB fallback (engine stopped / --no-capture) ──
         base = get_dashboard_data()
         bw_hist = base.get('bandwidth_history')
+        stats = dict(base.get('stats') or {})
+        stats.setdefault('control_bandwidth_bps', 0)
+        stats.setdefault('control_bandwidth_mbps', 0)
+        stats.setdefault('combined_bandwidth_bps', stats.get('bandwidth_bps', 0))
+        stats.setdefault('combined_bandwidth_mbps', stats.get('bandwidth_mbps', 0))
+        stats.setdefault('control_upload_bps', 0)
+        stats.setdefault('control_download_bps', 0)
+        stats.setdefault('control_upload_mbps', 0)
+        stats.setdefault('control_download_mbps', 0)
+        stats.setdefault('control_packets_per_second', 0)
+        stats.setdefault('packets_per_second_total', stats.get('packets_per_second', 0))
+
+        stats.setdefault('today_bytes_app', stats.get('total_bytes_today', stats.get('today_bytes', 0)))
+        stats.setdefault('today_packets_app', stats.get('total_packets_today', stats.get('today_packets', 0)))
+        stats.setdefault('today_bytes_control', 0)
+        stats.setdefault('today_packets_control', 0)
+        stats.setdefault('today_bytes_total', stats.get('today_bytes_app', 0))
+        stats.setdefault('today_packets_total', stats.get('today_packets_app', 0))
+        stats.setdefault('today_bytes', stats.get('today_bytes_app', 0))
+        stats.setdefault('today_packets', stats.get('today_packets_app', 0))
+        _apply_idle_floor(stats)
+
         result = {
-            'stats': base.get('stats'),
+            'stats': stats,
             'health': base.get('health'),
             'devices': base.get('top_devices'),
             'protocols': base.get('protocols'),
@@ -267,11 +353,12 @@ def invalidate_sse_cache():
     Only mode_handler.on_mode_change() clears dashboard state when the
     network actually changes (different subnet/gateway).
     """
-    global _sse_cached_payload, _sse_cache_time, _bw_history_cache_time
+    global _sse_cached_payload, _sse_cache_time, _bw_history_cache, _bw_history_cache_time
     with _sse_cache_lock:
         _sse_cached_payload = None
         _sse_cache_time = 0.0
-    _bw_history_cache_time = 0.0  # force DB re-query on next SSE tick
+        _bw_history_cache = []
+        _bw_history_cache_time = 0.0  # force DB re-query on next SSE tick
 
 
 def expire_sse_cache():
@@ -353,33 +440,83 @@ def _build_sse_payload() -> str:
             pass
 
         # Build stats dict from in-memory bandwidth + state
-        # Use get_stats() (30-second sliding window) for the card.
-        # YouTube DASH and similar adaptive-bitrate protocols download in
-        # short 2-4s bursts separated by 10-15s pauses.  A 5-second window
-        # oscillates wildly between burst-peak and zero; the 30s window
-        # always contains 2-3 bursts, producing a stable average that
-        # matches the actual sustained throughput.
+        # Use get_recent_rate(10) so the card aligns with the 10-second
+        # history buckets used by the chart merge path.
         stats = {}
         if engine and engine.is_running:
-            bw = engine.bandwidth.get_stats()
+            bw = engine.bandwidth.get_recent_rate(seconds=10)
             stats['bandwidth_bps'] = round(bw['total_bps'] * 8, 2)
             stats['bandwidth_mbps'] = bw['total_mbps']
+            stats['control_bandwidth_bps'] = round(bw.get('control_total_bps', 0) * 8, 2)
+            stats['control_bandwidth_mbps'] = bw.get('control_total_mbps', 0)
+            stats['combined_bandwidth_bps'] = round(bw.get('combined_total_bps', bw['total_bps']) * 8, 2)
+            stats['combined_bandwidth_mbps'] = bw.get('combined_total_mbps', bw['total_mbps'])
             stats['upload_bps'] = round(bw['upload_bps'] * 8, 2)
             stats['download_bps'] = round(bw['download_bps'] * 8, 2)
             stats['upload_mbps'] = bw['upload_mbps']
             stats['download_mbps'] = bw['download_mbps']
-            stats['packets_per_second'] = bw['packets_per_second']
+            stats['control_upload_bps'] = round(bw.get('control_upload_bps', 0) * 8, 2)
+            stats['control_download_bps'] = round(bw.get('control_download_bps', 0) * 8, 2)
+            stats['control_upload_mbps'] = bw.get('control_upload_mbps', 0)
+            stats['control_download_mbps'] = bw.get('control_download_mbps', 0)
+            full_bw = engine.bandwidth.get_stats()
+            stats['packets_per_second'] = full_bw['packets_per_second']
+            stats['control_packets_per_second'] = full_bw.get('control_packets_per_second', 0)
+            stats['packets_per_second_total'] = round(
+                (full_bw.get('packets_per_second', 0) or 0)
+                + (full_bw.get('control_packets_per_second', 0) or 0),
+                2,
+            )
         elif live_bw is not None:
             stats['bandwidth_bps'] = round(live_bw * 8, 2)
             stats['bandwidth_mbps'] = round((live_bw * 8) / 1_000_000, 4)
+            stats['upload_bps'] = 0
+            stats['download_bps'] = 0
+            stats['upload_mbps'] = 0
+            stats['download_mbps'] = 0
+            stats['control_bandwidth_bps'] = 0
+            stats['control_bandwidth_mbps'] = 0
+            stats['combined_bandwidth_bps'] = stats['bandwidth_bps']
+            stats['combined_bandwidth_mbps'] = stats['bandwidth_mbps']
+            stats['control_upload_bps'] = 0
+            stats['control_download_bps'] = 0
+            stats['control_upload_mbps'] = 0
+            stats['control_download_mbps'] = 0
+            stats['packets_per_second'] = 0
+            stats['control_packets_per_second'] = 0
+            stats['packets_per_second_total'] = 0
         else:
             stats['bandwidth_bps'] = 0
             stats['bandwidth_mbps'] = 0
+            stats['control_bandwidth_bps'] = 0
+            stats['control_bandwidth_mbps'] = 0
+            stats['combined_bandwidth_bps'] = 0
+            stats['combined_bandwidth_mbps'] = 0
+            stats['upload_bps'] = 0
+            stats['download_bps'] = 0
+            stats['upload_mbps'] = 0
+            stats['download_mbps'] = 0
+            stats['control_upload_bps'] = 0
+            stats['control_download_bps'] = 0
+            stats['control_upload_mbps'] = 0
+            stats['control_download_mbps'] = 0
+            stats['packets_per_second'] = 0
+            stats['control_packets_per_second'] = 0
+            stats['packets_per_second_total'] = 0
 
         stats['active_devices'] = mem_state.get('active_devices', 0)
-        stats['total_bytes_today'] = mem_state.get('today_bytes', 0)
-        stats['total_packets_today'] = mem_state.get('today_packets', 0)
+        stats['today_bytes_app'] = mem_state.get('today_bytes_app', mem_state.get('today_bytes', 0))
+        stats['today_packets_app'] = mem_state.get('today_packets_app', mem_state.get('today_packets', 0))
+        stats['today_bytes_control'] = mem_state.get('today_bytes_control', 0)
+        stats['today_packets_control'] = mem_state.get('today_packets_control', 0)
+        stats['today_bytes_total'] = mem_state.get('today_bytes_total', stats['today_bytes_app'])
+        stats['today_packets_total'] = mem_state.get('today_packets_total', stats['today_packets_app'])
+        stats['today_bytes'] = stats['today_bytes_app']
+        stats['today_packets'] = stats['today_packets_app']
+        stats['total_bytes_today'] = stats['today_bytes_app']
+        stats['total_packets_today'] = stats['today_packets_app']
         stats['timestamp'] = datetime.now().isoformat()
+        _apply_idle_floor(stats)
 
         data['stats'] = stats
 
@@ -417,21 +554,40 @@ def _build_sse_payload() -> str:
                 if not _bw_history_cache:
                     _bw_history_cache = []
 
-        unified = list(_bw_history_cache)
+        db_points = list(_bw_history_cache)
+        live_points = []
         if engine and engine.is_running:
             try:
                 live_points = engine.bandwidth.get_recent_history(
                     bucket_seconds=10, max_points=20,
                 )
-                if live_points:
-                    # Cut-over: keep DB points before the first live timestamp,
-                    # then append the full live tail for seamless higher resolution.
-                    first_live_ts = live_points[0].get('timestamp', '')
-                    if first_live_ts:
-                        unified = [p for p in unified if p.get('timestamp', '') < first_live_ts]
-                    unified.extend(live_points)
             except Exception:
-                pass
+                live_points = []
+
+        # Stable server-side merge strategy:
+        # 1) DB points are the source of truth for completed buckets.
+        # 2) Live points fill gaps and only override the *latest* live bucket.
+        #    This keeps historical waves immutable while still reflecting
+        #    active in-progress traffic immediately.
+        merged = {}
+        for point in db_points:
+            ts = str(point.get('timestamp', '') or '')
+            if ts:
+                merged[ts] = point
+
+        latest_live_ts = ''
+        if live_points:
+            latest_live_ts = max(str(p.get('timestamp', '') or '') for p in live_points)
+
+        for point in live_points:
+            ts = str(point.get('timestamp', '') or '')
+            if not ts:
+                continue
+            if ts not in merged or ts == latest_live_ts:
+                merged[ts] = point
+
+        unified = [merged[k] for k in sorted(merged.keys())] if merged else []
+
         data['bandwidth_history'] = unified[-360:]
 
         payload = json.dumps(data, default=str)
@@ -458,7 +614,7 @@ def sse_stream():
             return jsonify({'error': 'Too many SSE connections'}), 429
         _sse_active += 1
 
-    interval = request.args.get('interval', 3, type=int)
+    interval = request.args.get('interval', 2, type=int)
     interval = min(max(interval, 1), 30)
 
     def _generate():

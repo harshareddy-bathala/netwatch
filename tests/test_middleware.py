@@ -66,10 +66,12 @@ class TestCSPPolicy:
         csp = resp.headers.get('Content-Security-Policy', '')
         assert "default-src 'self'" in csp
 
-    def test_csp_allows_cdn(self, client):
+    def test_csp_scripts_self_only(self, client):
+        """Chart.js is vendored (Phase 0) — no CDN script source allowed."""
         resp = client.get('/api/status')
         csp = resp.headers.get('Content-Security-Policy', '')
-        assert 'cdn.jsdelivr.net' in csp
+        assert 'cdn.jsdelivr.net' not in csp
+        assert "script-src 'self';" in csp + ';'
 
     def test_csp_allows_google_fonts(self, client):
         resp = client.get('/api/status')

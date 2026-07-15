@@ -429,7 +429,7 @@ in the Architecture documentation.
 | Mode | Trigger | What You See |
 |------|---------|--------------|
 | **Hotspot** | Mobile hotspot active on laptop | All connected client devices |
-| **Wi-Fi Client / Public Network** | Connected to WiFi | Own traffic only + passive ARP cache |
+| **Wi-Fi Client / Public Network** | Connected to WiFi | Own traffic only (neighbor discovery disabled) |
 | **Ethernet** | Wired NIC with gateway | Own + broadcast + ARP discovery |
 | **Port Mirror** | SPAN port detected | Full network segment |
 | **Disconnected** | No active interface | Capture paused; dashboard accessible |

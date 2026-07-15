@@ -125,34 +125,76 @@ def get_alert_by_id(alert_id: int) -> Optional[dict]:
 
 def acknowledge_alert(alert_id: int) -> bool:
     """Mark alert as seen (but not resolved)."""
-    try:
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE alerts SET acknowledged = 1, acknowledged_at = ?
-                WHERE id = ?
-            """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), alert_id))
-            conn.commit()
-            return cursor.rowcount > 0
-    except sqlite3.Error as e:
-        logger.error("acknowledge_alert error: %s", e)
-        return False
+    import time as _time
+
+    max_retries = 5
+    base_delay = 0.10
+
+    for attempt in range(max_retries):
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE alerts SET acknowledged = 1, acknowledged_at = ?
+                    WHERE id = ?
+                """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), alert_id))
+                conn.commit()
+                return cursor.rowcount > 0
+        except sqlite3.OperationalError as e:
+            msg = str(e).lower()
+            if ("locked" in msg or "busy" in msg) and attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                logger.warning(
+                    "acknowledge_alert: DB locked (attempt %d/%d), retrying in %.2fs",
+                    attempt + 1, max_retries, delay,
+                )
+                _time.sleep(delay)
+                continue
+            logger.error("acknowledge_alert error: %s", e)
+            return False
+        except sqlite3.Error as e:
+            logger.error("acknowledge_alert error: %s", e)
+            return False
+
+    logger.error("acknowledge_alert: exhausted %d retries", max_retries)
+    return False
 
 
 def resolve_alert(alert_id: int, resolved_by: str = None) -> bool:
     """Mark alert as fully resolved."""
-    try:
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE alerts SET resolved = 1, resolved_at = ?, resolved_by = ?
-                WHERE id = ?
-            """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), resolved_by, alert_id))
-            conn.commit()
-            return cursor.rowcount > 0
-    except sqlite3.Error as e:
-        logger.error("resolve_alert error: %s", e)
-        return False
+    import time as _time
+
+    max_retries = 5
+    base_delay = 0.10
+
+    for attempt in range(max_retries):
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE alerts SET resolved = 1, resolved_at = ?, resolved_by = ?
+                    WHERE id = ?
+                """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), resolved_by, alert_id))
+                conn.commit()
+                return cursor.rowcount > 0
+        except sqlite3.OperationalError as e:
+            msg = str(e).lower()
+            if ("locked" in msg or "busy" in msg) and attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                logger.warning(
+                    "resolve_alert: DB locked (attempt %d/%d), retrying in %.2fs",
+                    attempt + 1, max_retries, delay,
+                )
+                _time.sleep(delay)
+                continue
+            logger.error("resolve_alert error: %s", e)
+            return False
+        except sqlite3.Error as e:
+            logger.error("resolve_alert error: %s", e)
+            return False
+
+    logger.error("resolve_alert: exhausted %d retries", max_retries)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +337,20 @@ def list_alert_rules() -> list:
         return []
 
 
+def list_enabled_alert_rules() -> list:
+    """List enabled custom alert rules only."""
+    try:
+        with get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM alert_rules WHERE enabled = 1 ORDER BY created_at DESC"
+            )
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, row)) for row in cursor.fetchall()]
+    except sqlite3.Error as e:
+        logger.error("list_enabled_alert_rules error: %s", e)
+        return []
+
+
 def create_alert_rule(name: str, description: str, metric: str,
                       operator: str, threshold: float, severity: str,
                       cooldown_seconds: int = 300) -> Optional[int]:
@@ -336,6 +392,29 @@ def delete_alert_rule(rule_id: int) -> bool:
         return True
     except sqlite3.Error as e:
         logger.error("delete_alert_rule error: %s", e)
+        return False
+
+
+def mark_alert_rule_triggered(rule_id: int) -> bool:
+    """Update ``last_triggered_at`` for a rule after it fires."""
+    try:
+        with get_connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE alert_rules
+                SET last_triggered_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    rule_id,
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logger.error("mark_alert_rule_triggered error: %s", e)
         return False
 
 

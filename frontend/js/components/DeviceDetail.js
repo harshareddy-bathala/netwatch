@@ -8,6 +8,7 @@
  */
 
 import api from '../api.js';
+import store from '../store.js';
 import { formatBytes, formatRelativeTime, escapeHtml } from '../utils/formatters.js';
 import { showToast } from '../utils/toast.js';
 
@@ -16,20 +17,35 @@ export default class DeviceDetail {
    * @param {HTMLElement} container - The root container of the view.
    * @param {string} ip - Device IP to display.
    */
-  constructor(container, ip) {
+  constructor(container, ip, includeControl = null) {
     this._container = container;
     this._ip = ip;
     this._overlay = null;
+    this._includeControl = includeControl == null
+      ? !!store.get('includeControlTraffic')
+      : !!includeControl;
   }
 
   async open() {
     // Fetch device data — backend wraps in { data: device }
-    const response = await api.getDeviceDetails(this._ip);
+    const response = await api.getDeviceDetails(this._ip, this._includeControl);
     const device = response?.data || response;
     if (!device || device.error) {
       this._showToast('Device not found');
       return;
     }
+
+    const appSent = device.total_bytes_sent_app ?? device.total_bytes_sent ?? 0;
+    const appReceived = device.total_bytes_received_app ?? device.total_bytes_received ?? 0;
+    const appTotal = device.total_bytes_app ?? (appSent + appReceived);
+    const controlTotal = device.total_bytes_control ?? 0;
+    const combinedTotal = device.total_bytes_total ?? (appTotal + controlTotal);
+    const appPackets = device.packet_count_24h_app ?? device.total_packets ?? 0;
+    const controlPackets = device.packet_count_24h_control ?? device.control_packets ?? 0;
+    const overheadRatio = combinedTotal > 0
+      ? (controlTotal / combinedTotal)
+      : (device.control_overhead_ratio || 0);
+    const overheadPct = Math.round(overheadRatio * 100);
 
     // Build overlay
     this._overlay = document.createElement('div');
@@ -56,25 +72,26 @@ export default class DeviceDetail {
 
           <!-- Traffic -->
           <section class="device-detail__section">
-            <h3>Traffic</h3>
+            <h3>${this._includeControl ? 'Traffic (App + Control View)' : 'Traffic (App View)'}</h3>
             <div class="device-detail__traffic-grid">
               <div class="device-detail__stat">
-                <span class="device-detail__stat-label">Total Sent</span>
-                <span class="device-detail__stat-value">${formatBytes(device.total_bytes_sent || 0)}</span>
+                <span class="device-detail__stat-label">App Sent</span>
+                <span class="device-detail__stat-value">${formatBytes(appSent)}</span>
               </div>
               <div class="device-detail__stat">
-                <span class="device-detail__stat-label">Total Received</span>
-                <span class="device-detail__stat-value">${formatBytes(device.total_bytes_received || 0)}</span>
+                <span class="device-detail__stat-label">App Received</span>
+                <span class="device-detail__stat-value">${formatBytes(appReceived)}</span>
               </div>
               <div class="device-detail__stat">
-                <span class="device-detail__stat-label">Total Bytes</span>
-                <span class="device-detail__stat-value">${formatBytes(device.total_bytes || 0)}</span>
+                <span class="device-detail__stat-label">App Total</span>
+                <span class="device-detail__stat-value">${formatBytes(appTotal)}</span>
               </div>
               <div class="device-detail__stat">
-                <span class="device-detail__stat-label">Packets</span>
-                <span class="device-detail__stat-value">${(device.total_packets || 0).toLocaleString()}</span>
+                <span class="device-detail__stat-label">App Packets</span>
+                <span class="device-detail__stat-value">${(appPackets || 0).toLocaleString()}</span>
               </div>
             </div>
+            ${this._renderControlSummary(controlTotal, combinedTotal, controlPackets, overheadPct)}
           </section>
 
           <!-- Protocol breakdown (if available) -->
@@ -135,6 +152,27 @@ export default class DeviceDetail {
           <tbody>${rows}</tbody>
         </table>
       </section>
+    `;
+  }
+
+  _renderControlSummary(controlTotal, combinedTotal, controlPackets, overheadPct) {
+    if (!controlTotal && !controlPackets && !this._includeControl) return '';
+
+    return `
+      <div class="device-detail__control-summary">
+        <div class="device-detail__control-item">
+          <span class="device-detail__control-label">Control Overhead</span>
+          <span class="device-detail__control-value">${formatBytes(controlTotal)} (${overheadPct}%)</span>
+        </div>
+        <div class="device-detail__control-item">
+          <span class="device-detail__control-label">Combined Total</span>
+          <span class="device-detail__control-value">${formatBytes(combinedTotal)}</span>
+        </div>
+        <div class="device-detail__control-item">
+          <span class="device-detail__control-label">Control Packets</span>
+          <span class="device-detail__control-value">${(controlPackets || 0).toLocaleString()}</span>
+        </div>
+      </div>
     `;
   }
 

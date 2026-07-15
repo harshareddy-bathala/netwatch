@@ -171,9 +171,9 @@ HEALTH_WEIGHT_PACKET_LOSS = 0.25
 HEALTH_WEIGHT_LATENCY = 0.25
 HEALTH_WEIGHT_ANOMALIES = 0.2
 
-# Health score thresholds
+# Health score status bands (HEALTH_SCORE_WARNING is defined once above,
+# in the alert-thresholds section — score >= 50 and < 80 is "Warning")
 HEALTH_SCORE_GOOD = 80  # Score >= 80 is "Good"
-HEALTH_SCORE_WARNING = 50  # Score >= 50 and < 80 is "Warning"
 # Score < 50 is "Critical"
 
 # =============================================================================
@@ -296,8 +296,8 @@ ALERT_SEVERITY_MAPPING = {
 # Number of worker threads for packet processing (0 = auto-detect CPU count)
 PACKET_WORKER_THREADS = 0
 
-# Queue size for buffering packets between capture and processing
-PACKET_QUEUE_MAX_SIZE = 100000
+# Queue size for capture→processing buffering lives in the
+# "PACKET CAPTURE ENGINE SETTINGS" section below (PACKET_QUEUE_SIZE).
 
 # Timeout for queue operations in seconds
 QUEUE_TIMEOUT_SECONDS = 1
@@ -344,9 +344,7 @@ MIN_PACKETS_TO_TRACK_DEVICE = 5
 # =============================================================================
 # DATA AGGREGATION CONFIGURATION
 # =============================================================================
-
-# Interval for aggregating traffic statistics (in seconds)
-TRAFFIC_STATS_AGGREGATION_INTERVAL = 60
+# (Aggregation interval is STATS_AGGREGATION_INTERVAL in "REFRESH INTERVALS".)
 
 # Number of aggregation periods to keep in memory
 AGGREGATION_PERIODS_IN_MEMORY = 1440  # 24 hours if aggregation_interval is 60s
@@ -556,7 +554,11 @@ else:
 # Enable API key authentication on all /api/* routes.
 # In development mode this defaults to OFF so the dashboard works out-of-box.
 # In production, set NETWATCH_API_KEY to enable.
-AUTH_ENABLED = os.getenv('NETWATCH_AUTH_ENABLED', 'false').lower() in ('1', 'true', 'yes') or IS_PRODUCTION
+# AUTH_EXPLICITLY_ENABLED: the operator asked for auth via env var.  If they
+# did but provided no API key, the middleware FAILS CLOSED (denies /api/*)
+# rather than silently running unauthenticated.
+AUTH_EXPLICITLY_ENABLED = os.getenv('NETWATCH_AUTH_ENABLED', 'false').lower() in ('1', 'true', 'yes')
+AUTH_ENABLED = AUTH_EXPLICITLY_ENABLED or IS_PRODUCTION
 API_KEY = os.getenv('NETWATCH_API_KEY', '')
 
 # Routes that bypass authentication (health checks, static assets)
@@ -579,7 +581,6 @@ DB_SYNCHRONOUS = 'NORMAL'  # Balance between safety and performance
 DB_CACHE_SIZE = -64000  # 64MB cache
 DB_TEMP_STORE = 'MEMORY'  # Use memory for temporary tables
 DB_FOREIGN_KEYS = True  # Enable foreign key constraints
-DB_BUSY_TIMEOUT = 5000  # Wait 5 seconds on locked database
 
 # Connection pooling
 # Dev needs more connections: SSE stream + dashboard + bandwidth/dual +
@@ -591,7 +592,8 @@ DB_CONNECTION_POOL_SIZE = int(os.getenv('DB_CONNECTION_POOL_SIZE', '15'))
 # Query optimization
 DB_QUERY_TIMEOUT = 30  # Maximum query execution time in seconds
 
-# Busy handler timeout — increase for port mirror high-write scenarios
+# Busy handler timeout (ms) — how long SQLite waits on a locked database.
+# Default 10s; increase for port mirror high-write scenarios.
 DB_BUSY_TIMEOUT = int(os.getenv('DB_BUSY_TIMEOUT', '10000'))
 
 # =============================================================================
@@ -613,7 +615,7 @@ PACKET_QUEUE_SIZE = 100000
 BATCH_SIZE = 500
 
 # Maximum seconds to wait before flushing a partial batch to DB
-BATCH_TIMEOUT = 1.0
+BATCH_TIMEOUT = 0.5
 
 # Sliding window (seconds) for real-time bandwidth calculation.
 # 30s smooths bursty protocols like YouTube (which downloads in 3-5s
@@ -622,6 +624,64 @@ BATCH_TIMEOUT = 1.0
 # burst in the window for a stable, realistic rate display.
 # Still drops to 0 within 30s when traffic truly stops.
 BANDWIDTH_WINDOW_SECONDS = 30
+
+# Display deadband for app traffic in the dashboard.
+# Small background jitter under this threshold is shown as idle so the
+# UI stays stable when clients are connected but not actively transferring
+# user traffic.
+IDLE_DISPLAY_APP_BPS_THRESHOLD = float(os.getenv('IDLE_DISPLAY_APP_BPS_THRESHOLD', '8192'))
+IDLE_DISPLAY_APP_PPS_THRESHOLD = float(os.getenv('IDLE_DISPLAY_APP_PPS_THRESHOLD', '2.0'))
+
+# Phase 5 idle-client baseline targets (used by health endpoint/tests/scripts).
+IDLE_BASELINE_APP_BYTES_PER_HOUR_LIMIT = int(
+    os.getenv('IDLE_BASELINE_APP_BYTES_PER_HOUR_LIMIT', str(100 * 1024))
+)
+IDLE_BASELINE_APP_PPS_LIMIT = float(os.getenv('IDLE_BASELINE_APP_PPS_LIMIT', '5.0'))
+IDLE_BASELINE_CONTROL_BYTES_PER_HOUR_MIN = int(
+    os.getenv('IDLE_BASELINE_CONTROL_BYTES_PER_HOUR_MIN', str(1 * 1024 * 1024))
+)
+IDLE_BASELINE_CONTROL_BYTES_PER_HOUR_MAX = int(
+    os.getenv('IDLE_BASELINE_CONTROL_BYTES_PER_HOUR_MAX', str(5 * 1024 * 1024))
+)
+
+# =============================================================================
+# FLOW TELEMETRY (Phase 0, AI-first roadmap)
+# =============================================================================
+
+# A flow is flushed to the DB after this many seconds without new packets.
+FLOW_IDLE_TIMEOUT_SECONDS = int(os.getenv('FLOW_IDLE_TIMEOUT_SECONDS', '30'))
+
+# Long-lived flows are flushed (and restarted) after this age, so the
+# flows table stays close to real time.
+FLOW_MAX_AGE_SECONDS = int(os.getenv('FLOW_MAX_AGE_SECONDS', '300'))
+
+# How often the normalizer checks for expired flows / flushes DNS events.
+FLOW_FLUSH_INTERVAL_SECONDS = float(os.getenv('FLOW_FLUSH_INTERVAL_SECONDS', '5'))
+
+# Retention for flow-level telemetry (behavior learning needs multi-day
+# history; raw packets keep the shorter TRAFFIC_DATA_RETENTION_HOURS).
+FLOW_RETENTION_HOURS = int(os.getenv('FLOW_RETENTION_HOURS', '72'))
+
+# Cap on concurrently tracked (un-flushed) flows — memory guard.
+FLOW_MAX_ACTIVE = int(os.getenv('FLOW_MAX_ACTIVE', '50000'))
+
+# =============================================================================
+# DEVICE BEHAVIOR LEARNING (Phase 1, AI-first roadmap)
+# =============================================================================
+
+# Observation window per device (seconds).  Each closed window becomes one
+# sample in that device's hour-of-week baseline.
+BEHAVIOR_WINDOW_SECONDS = int(os.getenv('BEHAVIOR_WINDOW_SECONDS', '600'))
+
+# Baseline samples required for a (device, hour-of-week, metric) before
+# anomaly scoring activates — prevents cold-start false positives.
+BEHAVIOR_MIN_BASELINE_SAMPLES = int(os.getenv('BEHAVIOR_MIN_BASELINE_SAMPLES', '12'))
+
+# Z-score at which a window metric counts as anomalous evidence.
+BEHAVIOR_Z_THRESHOLD = float(os.getenv('BEHAVIOR_Z_THRESHOLD', '4.0'))
+
+# Memory guard: maximum devices with active behavior windows.
+BEHAVIOR_MAX_DEVICES = int(os.getenv('BEHAVIOR_MAX_DEVICES', '1000'))
 
 # =============================================================================
 # PERFORMANCE TUNING — Prevents NetWatch from degrading network performance
@@ -715,6 +775,10 @@ PORT_MIRROR_CONNECTION_TIMEOUT = int(os.getenv('PORT_MIRROR_CONNECTION_TIMEOUT',
 STALE_DEVICE_PRUNE_INTERVAL = int(os.getenv('STALE_DEVICE_PRUNE_INTERVAL', '300'))
 STALE_DEVICE_TIMEOUT_HOURS = int(os.getenv('STALE_DEVICE_TIMEOUT_HOURS', '2'))
 MAX_IN_MEMORY_DEVICES = int(os.getenv('MAX_IN_MEMORY_DEVICES', '10000'))
+
+# Hotspot realtime presence tuning.
+# Lower values remove disconnected clients faster from the dashboard.
+HOTSPOT_STALE_DEVICE_SECONDS = int(os.getenv('HOTSPOT_STALE_DEVICE_SECONDS', '60'))
 
 # Write queue overflow thresholds (percentage of BATCH_SIZE * max_queue_batches)
 WRITE_QUEUE_WARNING_PERCENT = 80

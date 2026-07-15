@@ -13,10 +13,12 @@ import Sidebar from './components/Sidebar.js';
 import Dashboard from './components/Dashboard.js';
 import DeviceList from './components/DeviceList.js';
 import AlertFeed from './components/AlertFeed.js';
+import TopologyView from './components/TopologyView.js';
 
 class App {
   constructor() {
-    this.UPDATE_INTERVAL = 10000;  // 10 s between fetches (light on CPU/DB)
+    // Keep fallback polling within 3-5 seconds when SSE is unavailable.
+    this.UPDATE_INTERVAL = 5000;
     this._timerId = null;
     this._isActive = true;
     this._currentView = null;
@@ -65,12 +67,26 @@ class App {
         viewContainer.classList.remove('view-enter');
         viewContainer.classList.add('view-active');
       });
+
+      if (route === '/devices') {
+        this._refreshDevicesList();
+      }
     };
 
     this.router
-      .on('/',        () => loadView(Dashboard, 'Dashboard', '/'))
-      .on('/devices', () => loadView(DeviceList, 'Devices', '/devices'))
-      .on('/alerts',  () => loadView(AlertFeed, 'Alerts', '/alerts'))
+      .on('/', () => {
+        loadView(Dashboard, 'Dashboard', '/');
+      })
+      .on('/devices', () => {
+        loadView(DeviceList, 'Devices', '/devices');
+        this._refreshDevicesList();
+      })
+      .on('/alerts', () => {
+        loadView(AlertFeed, 'Alerts', '/alerts');
+      })
+      .on('/topology', () => {
+        loadView(TopologyView, 'Topology', '/topology');
+      })
       .start();
 
     // Global events
@@ -166,8 +182,8 @@ class App {
           if (data.alerts)      store.setState('recentAlerts', data.alerts);
           // Protocol distribution (fixes blank protocol chart)
           if (data.protocols)   store.setState('protocols', data.protocols);
-          // Top devices
-          if (data.devices)     store.setState('devices', data.devices);
+          // Top devices (dashboard widget only)
+          if (data.devices)     store.setState('topDevices', data.devices);
           // Network mode (fixes stale mode after hotspot detection)
           if (data.mode) {
             const prev = store.get('mode');
@@ -229,7 +245,13 @@ class App {
       if (dashboard && !dashboard.error) {
         // Backend returned everything in one payload
         if (dashboard.stats)     store.setState('stats', dashboard.stats);
-        if (dashboard.devices)   store.setState('devices', dashboard.devices);
+        if (dashboard.devices) {
+          const topDevices = this._extractDeviceArray(dashboard.devices);
+          store.setState('topDevices', topDevices);
+          if (this.router.currentRoute !== '/devices') {
+            store.setState('devices', topDevices);
+          }
+        }
         if (dashboard.alerts)    store.setState('recentAlerts', dashboard.alerts);
         if (dashboard.protocols) store.setState('protocols', dashboard.protocols);
         if (dashboard.mode)      store.setState('mode', dashboard.mode);
@@ -239,6 +261,11 @@ class App {
         // otherwise the unfiltered REST data and the merged SSE data keep
         // overwriting each other, causing the chart to jump back and forth.
         if (dashboard.bandwidth && !this._sseHealthy) store.setState('bandwidth', dashboard.bandwidth);
+
+        // Keep full devices list independent from dashboard top-devices payload.
+        if (this.router.currentRoute === '/devices') {
+          await this._refreshDevicesList();
+        }
       } else {
         // Fallback: individual parallel requests
         await this._individualFetch();
@@ -283,12 +310,37 @@ class App {
 
     if (stats.status === 'fulfilled' && !stats.value?.error)      store.setState('stats', stats.value);
     if (!this._sseHealthy && bandwidth.status === 'fulfilled' && !bandwidth.value?.error)   store.setState('bandwidth', bandwidth.value);
-    if (devices.status === 'fulfilled' && !devices.value?.error)     store.setState('devices', devices.value);
+    if (devices.status === 'fulfilled' && !devices.value?.error) {
+      const payload = devices.value;
+      const normalized = this._extractDeviceArray(payload);
+      store.setState('devices', normalized);
+      const deviceRows = this._extractDeviceArray(devices.value);
+      if (deviceRows.length) {
+        store.setState('topDevices', deviceRows.slice(0, 5));
+      }
+    }
     if (alerts.status === 'fulfilled' && !alerts.value?.error)      store.setState('alerts', alerts.value);
     if (protocols.status === 'fulfilled' && !protocols.value?.error)   store.setState('protocols', protocols.value);
     if (mode.status === 'fulfilled' && !mode.value?.error)        store.setState('mode', mode.value);
     if (health.status === 'fulfilled' && !health.value?.error)      store.setState('health', health.value);
     if (alertStats.status === 'fulfilled' && !alertStats.value?.error)  store.setState('alertStats', alertStats.value);
+  }
+
+  _extractDeviceArray(payload) {
+    if (!payload) return [];
+    if (Array.isArray(payload)) return payload;
+    if (Array.isArray(payload.devices)) return payload.devices;
+    if (Array.isArray(payload.data)) return payload.data;
+    return [];
+  }
+
+  async _refreshDevicesList() {
+    const includeControl = !!store.get('includeControlTraffic');
+    const devices = await api.getAllDevices(200, 0, includeControl);
+    if (devices && !devices.error) {
+      const rows = this._extractDeviceArray(devices);
+      store.setState('devices', rows);
+    }
   }
 
   /* ─────────────────── Visibility ────────────────── */

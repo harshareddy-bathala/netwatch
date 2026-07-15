@@ -122,10 +122,14 @@ def guess_type_windows(header: str, name: str, mac: str = "") -> str:
     # Host-Only Ethernet Adapter") and would otherwise match first.
     if any(w in h for w in ("vmware", "virtualbox", "vbox", "hyper-v", "vethernet")):
         return "virtual"
-    # VPN TAP/TUN adapters -- treat as virtual so they don't override
-    # the real physical interface.
-    if any(w in h for w in ("tap-windows", "tap adapter", "tun ", "wireguard",
-                             "openvpn", "wintun", "tailscale", "zerotier")):
+    # VPN/TUN adapters -- treat as virtual so they never override
+    # the real physical interface selection.
+    if any(w in h for w in (
+        "tap-windows", "tap adapter", "tun ", "tunnel",
+        "wireguard", "openvpn", "wintun", "tailscale", "zerotier",
+        "protonvpn", "proton vpn", "nordlynx", "anyconnect",
+        "globalprotect", "forticlient", "pulse secure", "hamachi", "vpn",
+    )):
         return "virtual"
     if "bluetooth" in h:
         return "bluetooth"
@@ -338,21 +342,65 @@ def check_hotspot_adapter_status(adapter_name: str) -> Tuple[str, str]:
     Returns ``(status, media_state)`` strings, e.g. ``("Up", "1")``.
     Returns ``("", "")`` if the query fails.
     """
+    # Fast path: netsh returns quickly and avoids PowerShell startup latency.
+    out = run_command([
+        "netsh", "interface", "show", "interface", f"name={adapter_name}"
+    ], timeout=3)
+
+    if out:
+        raw = out.strip()
+
+        # Backward-compatible parser: some callers/tests may mock the
+        # legacy "Status|MediaState" format directly.
+        if "|" in raw and "connect state" not in raw.lower():
+            parts = raw.split("|")
+            status = parts[0].strip() if parts else ""
+            media_state = parts[1].strip() if len(parts) > 1 else ""
+            if status:
+                return (status, media_state)
+
+        lower = raw.lower()
+        if "connect state" in lower:
+            admin_state = ""
+            connect_state = ""
+            for line in raw.splitlines():
+                l = line.strip()
+                ll = l.lower()
+                if "administrative state" in ll and ":" in l:
+                    admin_state = l.split(":", 1)[1].strip()
+                elif "connect state" in ll and ":" in l:
+                    connect_state = l.split(":", 1)[1].strip()
+
+            if connect_state:
+                is_connected = connect_state.lower() == "connected"
+                status = "Up" if is_connected else (admin_state or "Disconnected")
+                media_state = "Connected" if is_connected else "Disconnected"
+                return (status, media_state)
+
+    # Fallback: exact-name PowerShell query for non-English netsh output.
+    safe_name = (adapter_name or "").replace("'", "''")
     out = run_command([
         "powershell", "-NoProfile", "-Command",
-        f"Get-NetAdapter -Name '{adapter_name}' -ErrorAction SilentlyContinue "
-        "| Select-Object -Property Status, MediaConnectionState "
-        "| ForEach-Object { \"$($_.Status)|$($_.MediaConnectionState)\" }",
-    ])
+        f"$a = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {{ $_.Name -eq '{safe_name}' }} | Select-Object -First 1; "
+        "if ($a) { \"$($a.Status)|$($a.MediaConnectionState)\" }",
+    ], timeout=8)
 
     if out is None:
         return ("", "")
 
     raw = out.strip()
-    parts = raw.split("|")
-    status = parts[0].strip() if parts else ""
-    media_state = parts[1].strip() if len(parts) > 1 else ""
-    return (status, media_state)
+    # Choose the first non-empty pipe-formatted line.
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or "|" not in line:
+            continue
+        parts = line.split("|")
+        status = parts[0].strip() if parts else ""
+        media_state = parts[1].strip() if len(parts) > 1 else ""
+        if status:
+            return (status, media_state)
+
+    return ("", "")
 
 
 def detect_network_category() -> Optional[str]:

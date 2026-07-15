@@ -20,6 +20,7 @@ for full backward compatibility.
 
 import sqlite3
 import logging
+import ipaddress
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
@@ -36,6 +37,7 @@ from database.queries.network_filters import (
     _detect_all_local_macs,
     _detect_our_mac,
     _detect_subnet,
+    _detect_subnet_cidr,
     _build_mac_to_ipv4,
     _get_gateway_ip,
     _active_mode_for_mac,
@@ -73,17 +75,202 @@ from database.queries import network_filters as _nf
 # ---------------------------------------------------------------------------
 # Import from packet_store (extracted module)
 # ---------------------------------------------------------------------------
-from database.queries.packet_store import (
-    save_packet,
-    save_packets_batch,
-    update_daily_usage,
-    _update_daily_usage_cursor,
-)
+from database.queries import packet_store as _packet_store
+
+_MIRRORED_PACKET_STORE_VALIDATOR = _packet_store._is_valid_device_for_insert
+
+
+def _bind_packet_store_validation_hook() -> None:
+    """Keep packet_store validation hook in sync with this module.
+
+    Backward compatibility: tests and legacy callers often monkeypatch
+    ``database.queries.device_queries._is_valid_device_for_insert``.
+    Since write paths now live in ``packet_store``, mirror this symbol
+    before each call so those patches still apply.
+    """
+    global _MIRRORED_PACKET_STORE_VALIDATOR
+
+    # Respect explicit monkeypatches applied directly to packet_store.
+    # We only synchronize when packet_store still points at the validator
+    # last mirrored by this module.
+    if _packet_store._is_valid_device_for_insert is _MIRRORED_PACKET_STORE_VALIDATOR:
+        _packet_store._is_valid_device_for_insert = _is_valid_device_for_insert
+        _MIRRORED_PACKET_STORE_VALIDATOR = _is_valid_device_for_insert
+
+
+def save_packet(packet_data: dict):
+    _bind_packet_store_validation_hook()
+    return _packet_store.save_packet(packet_data)
+
+
+def save_packets_batch(packets: list) -> int:
+    _bind_packet_store_validation_hook()
+    return _packet_store.save_packets_batch(packets)
+
+
+def update_daily_usage(
+    mac_address: str,
+    ip_address: str,
+    device_name: Optional[str],
+    bytes_sent: int,
+    bytes_received: int,
+    packet_count: int = 1,
+) -> bool:
+    return _packet_store.update_daily_usage(
+        mac_address,
+        ip_address,
+        device_name,
+        bytes_sent,
+        bytes_received,
+        packet_count,
+    )
+
+
+def _update_daily_usage_cursor(
+    cursor,
+    mac_address,
+    ip_address,
+    device_name,
+    bytes_sent,
+    bytes_received,
+    packet_count,
+):
+    return _packet_store._update_daily_usage_cursor(
+        cursor,
+        mac_address,
+        ip_address,
+        device_name,
+        bytes_sent,
+        bytes_received,
+        packet_count,
+    )
 
 logger = logging.getLogger(__name__)
 
 # Cache for expensive device queries (15s TTL)
 _device_cache = TTLCache(ttl_seconds=15)
+
+
+def _normalize_mac(mac: str) -> str:
+    if not mac:
+        return ""
+    return mac.lower().replace("-", ":")
+
+
+def _to_int(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _fetch_control_bytes_by_mac(cursor, mac_addresses: list, since: Optional[str] = None) -> dict:
+    """Return control-byte totals by MAC from traffic_summary.
+
+    Result shape:
+        {"aa:bb:...": {"sent": 123, "received": 456}, ...}
+    """
+    normalized = sorted({_normalize_mac(m) for m in (mac_addresses or []) if m})
+    if not normalized:
+        return {}
+
+    placeholders = ",".join("?" for _ in normalized)
+    result = {m: {"sent": 0, "received": 0} for m in normalized}
+
+    src_params = []
+    dst_params = []
+    time_clause = ""
+    if since:
+        time_clause = "AND timestamp >= ?"
+        src_params.append(since)
+        dst_params.append(since)
+    src_params.extend(normalized)
+    dst_params.extend(normalized)
+
+    cursor.execute(f"""
+        SELECT LOWER(REPLACE(source_mac, '-', ':')) AS mac_address,
+               SUM(bytes_transferred) AS bytes_sent
+        FROM traffic_summary
+        WHERE COALESCE(is_control, 0) = 1
+          {time_clause}
+          AND source_mac IS NOT NULL
+          AND LOWER(REPLACE(source_mac, '-', ':')) IN ({placeholders})
+        GROUP BY LOWER(REPLACE(source_mac, '-', ':'))
+    """, src_params)
+    for row in cursor.fetchall():
+        mac = _normalize_mac(row["mac_address"])
+        if mac in result:
+            result[mac]["sent"] = _to_int(row["bytes_sent"])
+
+    cursor.execute(f"""
+        SELECT LOWER(REPLACE(dest_mac, '-', ':')) AS mac_address,
+               SUM(bytes_transferred) AS bytes_received
+        FROM traffic_summary
+        WHERE COALESCE(is_control, 0) = 1
+          {time_clause}
+          AND dest_mac IS NOT NULL
+          AND LOWER(REPLACE(dest_mac, '-', ':')) IN ({placeholders})
+        GROUP BY LOWER(REPLACE(dest_mac, '-', ':'))
+    """, dst_params)
+    for row in cursor.fetchall():
+        mac = _normalize_mac(row["mac_address"])
+        if mac in result:
+            result[mac]["received"] = _to_int(row["bytes_received"])
+
+    return result
+
+
+def _apply_device_metric_view(devices: list, include_control: bool, control_bytes_by_mac: Optional[dict] = None) -> list:
+    """Attach Phase 2 app/control/total byte fields to device rows."""
+    control_bytes_by_mac = control_bytes_by_mac or {}
+
+    for d in devices:
+        mac = _normalize_mac(d.get("mac_address", ""))
+        app_sent = _to_int(d.get("bytes_sent"))
+        app_received = _to_int(d.get("bytes_received"))
+        app_total = app_sent + app_received
+
+        control_sent = _to_int(d.get("bytes_sent_control") or d.get("control_bytes_sent"))
+        control_received = _to_int(d.get("bytes_received_control") or d.get("control_bytes_received"))
+        if (control_sent == 0 and control_received == 0) and mac:
+            control_lookup = control_bytes_by_mac.get(mac, {})
+            control_sent = _to_int(control_lookup.get("sent"))
+            control_received = _to_int(control_lookup.get("received"))
+
+        control_total = control_sent + control_received
+        total_sent = app_sent + control_sent
+        total_received = app_received + control_received
+        total_all = app_total + control_total
+
+        d["bytes_sent_app"] = app_sent
+        d["bytes_received_app"] = app_received
+        d["total_bytes_app"] = app_total
+
+        d["bytes_sent_control"] = control_sent
+        d["bytes_received_control"] = control_received
+        d["total_bytes_control"] = control_total
+
+        d["bytes_sent_total"] = total_sent
+        d["bytes_received_total"] = total_received
+        d["total_bytes_total"] = total_all
+
+        d["control_overhead_ratio"] = round((control_total / total_all), 4) if total_all else 0.0
+
+        if include_control:
+            d["bytes_sent"] = total_sent
+            d["bytes_received"] = total_received
+            d["total_bytes"] = total_all
+        else:
+            d["bytes_sent"] = app_sent
+            d["bytes_received"] = app_received
+            d["total_bytes"] = app_total
+
+        # Legacy aliases used by parts of the frontend.
+        d["total_bytes_sent"] = d["bytes_sent"]
+        d["total_bytes_received"] = d["bytes_received"]
+        d["total_bytes_formatted"] = _format_bytes(d.get("total_bytes", 0))
+
+    return devices
 
 
 def _strip_host_devices(devices: list) -> list:
@@ -119,6 +306,57 @@ def _strip_host_devices(devices: list) -> list:
         return False
 
     return [d for d in devices if not _is_host_device(d)]
+
+
+def _use_devices_table_only_mode(mode_name: Optional[str]) -> bool:
+    """Return True when device queries should read from ``devices`` only.
+
+    Hotspot mode needs real-time connected-client visibility and should not
+    aggregate long traffic history from ``traffic_summary`` for list views.
+    """
+    return mode_name in _RESTRICTIVE_MODES or mode_name == "hotspot"
+
+
+def _devices_table_ip_filter_clause(mode_name: Optional[str]) -> str:
+    """Return SQL predicate for devices-table IP visibility by mode.
+
+    In hotspot mode, connected clients can be discovered by MAC before IP
+    assignment/ARP resolution is complete. Keep those rows visible instead
+    of dropping them behind strict private-IP-only checks.
+    """
+    if mode_name == "hotspot":
+        return f"""
+            (
+                ({_PRIVATE_IP_FILTER_DEVICE})
+                OR COALESCE(ipv4_address, ip_address) IS NULL
+                OR TRIM(COALESCE(ipv4_address, ip_address)) = ''
+                OR LOWER(TRIM(COALESCE(ipv4_address, ip_address))) = 'unknown'
+            )
+        """
+
+    return f"({_PRIVATE_IP_FILTER_DEVICE})"
+
+
+def _hotspot_presence_window_seconds() -> int:
+    """Return hotspot recency window used by list-style device queries.
+
+    This is a fallback guard for lock-contention periods where DB updates
+    that clear ``active_mode`` can be delayed. In hotspot mode we only want
+    currently connected/recently-seen clients on the devices page.
+    """
+    try:
+        from config import HOTSPOT_STALE_DEVICE_SECONDS
+
+        return max(30, int(HOTSPOT_STALE_DEVICE_SECONDS))
+    except Exception:
+        return 60
+
+
+def _hotspot_since_timestamp() -> str:
+    """Return UTC cutoff timestamp for hotspot recency filtering."""
+    return (datetime.utcnow() - timedelta(seconds=_hotspot_presence_window_seconds())).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -178,19 +416,21 @@ def get_active_device_count(minutes: int = 5, conn=None) -> int:
     if cached is not None:
         return cached
     def _do_count(cursor):
-        since = (datetime.now() - timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+        # SQLite datetime('now') is UTC, so use UTC here to avoid
+        # timezone skew that can hide recently-seen devices.
+        since = (datetime.utcnow() - timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
 
         # Build optional subnet filter
-        current_subnet = _detect_subnet()
+        current_subnet_cidr = _detect_subnet_cidr()
         _current_mode_name = _nf._current_mode_name
         skip_subnet = _current_mode_name == "port_mirror"
         is_restrictive = _current_mode_name in _RESTRICTIVE_MODES
 
         subnet_filter_dev = ""
         params_dev = [since]
-        if current_subnet and not skip_subnet:
-            subnet_filter_dev = "AND ip_address LIKE ?"
-            params_dev.append(f"{current_subnet}.%")
+        if current_subnet_cidr and not skip_subnet:
+            subnet_filter_dev = "AND ip_in_subnet(COALESCE(ipv4_address, ip_address), ?) = 1"
+            params_dev.append(current_subnet_cidr)
 
         # Build exclusion list for gateway/own device
         try:
@@ -204,8 +444,13 @@ def get_active_device_count(minutes: int = 5, conn=None) -> int:
             gw = _get_gateway_ip()
             if gw:
                 excluded_ips.append(gw)
-            if not gw and current_subnet:
-                excluded_ips.append(f"{current_subnet}.1")
+            if not gw and current_subnet_cidr:
+                try:
+                    subnet = ipaddress.IPv4Network(current_subnet_cidr, strict=False)
+                    if subnet.num_addresses > 2:
+                        excluded_ips.append(str(subnet.network_address + 1))
+                except Exception:
+                    pass
         if not SHOW_OWN_DEVICE:
             our_ip = _detect_our_ip()
             if our_ip:
@@ -402,7 +647,7 @@ def _resolve_and_persist_hostname(d: dict, conn=None) -> dict:
     return d
 
 @time_query
-def get_active_devices(minutes: int = 5, limit: int = 100) -> list:
+def get_active_devices(minutes: int = 5, limit: int = 100, include_control: bool = False) -> list:
     """
     Return active devices using the **same filter** as
     ``get_active_device_count`` so that counts always match.
@@ -413,24 +658,38 @@ def get_active_devices(minutes: int = 5, limit: int = 100) -> list:
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
-            since = (datetime.now() - timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
-
-            current_subnet = _detect_subnet()
             _current_mode_name = _nf._current_mode_name
+            if _current_mode_name == "hotspot":
+                since = _hotspot_since_timestamp()
+            else:
+                since = (datetime.now() - timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+
+            current_subnet_cidr = _detect_subnet_cidr()
             skip_subnet = _current_mode_name == "port_mirror"
-            is_restrictive = _current_mode_name in _RESTRICTIVE_MODES
+            use_devices_table_only = _use_devices_table_only_mode(_current_mode_name)
+            devices_ip_filter = _devices_table_ip_filter_clause(_current_mode_name)
             subnet_filter_dev = ""
             params_dev = [since]
-            if current_subnet and not skip_subnet:
-                subnet_filter_dev = "AND ip_address LIKE ?"
-                params_dev.append(f"{current_subnet}.%")
+            if current_subnet_cidr and not skip_subnet:
+                if _current_mode_name == "hotspot":
+                    subnet_filter_dev = """
+                        AND (
+                            ip_in_subnet(COALESCE(ipv4_address, ip_address), ?) = 1
+                            OR COALESCE(ipv4_address, ip_address) IS NULL
+                            OR TRIM(COALESCE(ipv4_address, ip_address)) = ''
+                            OR LOWER(TRIM(COALESCE(ipv4_address, ip_address))) = 'unknown'
+                        )
+                    """
+                else:
+                    subnet_filter_dev = "AND ip_in_subnet(COALESCE(ipv4_address, ip_address), ?) = 1"
+                params_dev.append(current_subnet_cidr)
 
             mode_filter_dev = ""
             if _current_mode_name:
                 mode_filter_dev = "AND active_mode = ?"
                 params_dev.append(_current_mode_name)
 
-            if is_restrictive:
+            if use_devices_table_only:
                 cursor.execute(f"""
                     SELECT
                         mac_address,
@@ -441,6 +700,8 @@ def get_active_devices(minutes: int = 5, limit: int = 100) -> list:
                         total_packets AS packet_count,
                         total_bytes_sent AS bytes_sent,
                         total_bytes_received AS bytes_received,
+                        COALESCE(control_bytes_sent, 0) AS bytes_sent_control,
+                        COALESCE(control_bytes_received, 0) AS bytes_received_control,
                         COALESCE(total_bytes_sent, 0) + COALESCE(total_bytes_received, 0) AS total_bytes,
                         last_seen,
                         first_seen
@@ -449,8 +710,7 @@ def get_active_devices(minutes: int = 5, limit: int = 100) -> list:
                         AND mac_address IS NOT NULL AND mac_address != ''
                         AND mac_address != 'ff:ff:ff:ff:ff:ff'
                         AND mac_address != '00:00:00:00:00:00'
-                        AND {VALID_DEVICE_IP_FILTER}
-                        AND ({_PRIVATE_IP_FILTER_DEVICE})
+                        AND {devices_ip_filter}
                         {subnet_filter_dev}
                         {mode_filter_dev}
                     ORDER BY (COALESCE(total_bytes_sent, 0) + COALESCE(total_bytes_received, 0)) DESC
@@ -459,11 +719,11 @@ def get_active_devices(minutes: int = 5, limit: int = 100) -> list:
             else:
                 params_src = [since]
                 params_dst = [since]
-                if current_subnet and not skip_subnet:
-                    ip_filter_src = f"AND (({_PRIVATE_IP_FILTER_SOURCE}) AND source_ip LIKE ? OR source_ip LIKE '%:%')"
-                    ip_filter_dst = f"AND (({_PRIVATE_IP_FILTER_DEST}) AND dest_ip LIKE ? OR dest_ip LIKE '%:%')"
-                    params_src.append(f"{current_subnet}.%")
-                    params_dst.append(f"{current_subnet}.%")
+                if current_subnet_cidr and not skip_subnet:
+                    ip_filter_src = f"AND ((({_PRIVATE_IP_FILTER_SOURCE}) AND ip_in_subnet(source_ip, ?) = 1) OR source_ip LIKE '%:%')"
+                    ip_filter_dst = f"AND ((({_PRIVATE_IP_FILTER_DEST}) AND ip_in_subnet(dest_ip, ?) = 1) OR dest_ip LIKE '%:%')"
+                    params_src.append(current_subnet_cidr)
+                    params_dst.append(current_subnet_cidr)
                 else:
                     ip_filter_src = f"AND (({_PRIVATE_IP_FILTER_SOURCE}) OR source_ip LIKE '%:%')"
                     ip_filter_dst = f"AND (({_PRIVATE_IP_FILTER_DEST}) OR dest_ip LIKE '%:%')"
@@ -475,6 +735,7 @@ def get_active_devices(minutes: int = 5, limit: int = 100) -> list:
                                bytes_transferred AS bytes_sent, 0 AS bytes_received, timestamp
                         FROM traffic_summary
                         WHERE timestamp >= ?
+                            AND COALESCE(is_control, 0) = 0
                             AND {_VALID_MAC_FILTER_SOURCE}
                             {ip_filter_src}
                         UNION ALL
@@ -482,6 +743,7 @@ def get_active_devices(minutes: int = 5, limit: int = 100) -> list:
                                0, bytes_transferred, timestamp
                         FROM traffic_summary
                         WHERE timestamp >= ?
+                            AND COALESCE(is_control, 0) = 0
                             AND {_VALID_MAC_FILTER_DEST}
                             {ip_filter_dst}
                         UNION ALL
@@ -494,8 +756,7 @@ def get_active_devices(minutes: int = 5, limit: int = 100) -> list:
                             AND mac_address IS NOT NULL AND mac_address != ''
                             AND mac_address != 'ff:ff:ff:ff:ff:ff'
                             AND mac_address != '00:00:00:00:00:00'
-                            AND {VALID_DEVICE_IP_FILTER}
-                            AND ({_PRIVATE_IP_FILTER_DEVICE})
+                            AND {devices_ip_filter}
                             {subnet_filter_dev}
                             {mode_filter_dev}
                     )
@@ -529,8 +790,18 @@ def get_active_devices(minutes: int = 5, limit: int = 100) -> list:
                         d["hostname"] = existing_name
                     else:
                         d["hostname"] = ip_d
-                    d["total_bytes_formatted"] = _format_bytes(d.get("total_bytes", 0))
                     devices.append(d)
+
+            if devices:
+                macs = [d.get("mac_address", "") for d in devices]
+                control_map = {}
+                if not use_devices_table_only:
+                    control_map = _fetch_control_bytes_by_mac(cursor, macs, since=since)
+                devices = _apply_device_metric_view(
+                    devices,
+                    include_control=include_control,
+                    control_bytes_by_mac=control_map,
+                )
 
             return _strip_host_devices(devices)
 
@@ -540,7 +811,12 @@ def get_active_devices(minutes: int = 5, limit: int = 100) -> list:
 
 
 @time_query
-def get_all_devices(limit: int = 100, offset: int = 0, hours: int = 24) -> list:
+def get_all_devices(
+    limit: int = 100,
+    offset: int = 0,
+    hours: int = 24,
+    include_control: bool = False,
+) -> list:
     """
     Same logic as ``get_active_devices`` but with a wider time window
     (default 24 h) and pagination support.
@@ -548,24 +824,38 @@ def get_all_devices(limit: int = 100, offset: int = 0, hours: int = 24) -> list:
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
-            since = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
-
-            current_subnet = _detect_subnet()
             _current_mode_name = _nf._current_mode_name
+            if _current_mode_name == "hotspot":
+                since = _hotspot_since_timestamp()
+            else:
+                since = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+
+            current_subnet_cidr = _detect_subnet_cidr()
             skip_subnet = _current_mode_name == "port_mirror"
-            is_restrictive = _current_mode_name in _RESTRICTIVE_MODES
+            use_devices_table_only = _use_devices_table_only_mode(_current_mode_name)
+            devices_ip_filter = _devices_table_ip_filter_clause(_current_mode_name)
             subnet_filter_dev = ""
             params_dev = [since]
-            if current_subnet and not skip_subnet:
-                subnet_filter_dev = "AND ip_address LIKE ?"
-                params_dev.append(f"{current_subnet}.%")
+            if current_subnet_cidr and not skip_subnet:
+                if _current_mode_name == "hotspot":
+                    subnet_filter_dev = """
+                        AND (
+                            ip_in_subnet(COALESCE(ipv4_address, ip_address), ?) = 1
+                            OR COALESCE(ipv4_address, ip_address) IS NULL
+                            OR TRIM(COALESCE(ipv4_address, ip_address)) = ''
+                            OR LOWER(TRIM(COALESCE(ipv4_address, ip_address))) = 'unknown'
+                        )
+                    """
+                else:
+                    subnet_filter_dev = "AND ip_in_subnet(COALESCE(ipv4_address, ip_address), ?) = 1"
+                params_dev.append(current_subnet_cidr)
 
             mode_filter_dev = ""
             if _current_mode_name:
                 mode_filter_dev = "AND active_mode = ?"
                 params_dev.append(_current_mode_name)
 
-            if is_restrictive:
+            if use_devices_table_only:
                 cursor.execute(f"""
                     SELECT
                         mac_address,
@@ -575,6 +865,8 @@ def get_all_devices(limit: int = 100, offset: int = 0, hours: int = 24) -> list:
                         total_packets AS packet_count,
                         total_bytes_sent AS bytes_sent,
                         total_bytes_received AS bytes_received,
+                        COALESCE(control_bytes_sent, 0) AS bytes_sent_control,
+                        COALESCE(control_bytes_received, 0) AS bytes_received_control,
                         COALESCE(total_bytes_sent, 0) + COALESCE(total_bytes_received, 0) AS total_bytes,
                         last_seen,
                         first_seen
@@ -583,8 +875,7 @@ def get_all_devices(limit: int = 100, offset: int = 0, hours: int = 24) -> list:
                         AND mac_address IS NOT NULL AND mac_address != ''
                         AND mac_address != 'ff:ff:ff:ff:ff:ff'
                         AND mac_address != '00:00:00:00:00:00'
-                        AND {VALID_DEVICE_IP_FILTER}
-                        AND ({_PRIVATE_IP_FILTER_DEVICE})
+                        AND {devices_ip_filter}
                         {subnet_filter_dev}
                         {mode_filter_dev}
                     ORDER BY (COALESCE(total_bytes_sent, 0) + COALESCE(total_bytes_received, 0)) DESC
@@ -593,11 +884,11 @@ def get_all_devices(limit: int = 100, offset: int = 0, hours: int = 24) -> list:
             else:
                 params_src = [since]
                 params_dst = [since]
-                if current_subnet and not skip_subnet:
-                    ip_filter_src = f"AND (({_PRIVATE_IP_FILTER_SOURCE}) AND source_ip LIKE ? OR source_ip LIKE '%:%')"
-                    ip_filter_dst = f"AND (({_PRIVATE_IP_FILTER_DEST}) AND dest_ip LIKE ? OR dest_ip LIKE '%:%')"
-                    params_src.append(f"{current_subnet}.%")
-                    params_dst.append(f"{current_subnet}.%")
+                if current_subnet_cidr and not skip_subnet:
+                    ip_filter_src = f"AND ((({_PRIVATE_IP_FILTER_SOURCE}) AND ip_in_subnet(source_ip, ?) = 1) OR source_ip LIKE '%:%')"
+                    ip_filter_dst = f"AND ((({_PRIVATE_IP_FILTER_DEST}) AND ip_in_subnet(dest_ip, ?) = 1) OR dest_ip LIKE '%:%')"
+                    params_src.append(current_subnet_cidr)
+                    params_dst.append(current_subnet_cidr)
                 else:
                     ip_filter_src = f"AND (({_PRIVATE_IP_FILTER_SOURCE}) OR source_ip LIKE '%:%')"
                     ip_filter_dst = f"AND (({_PRIVATE_IP_FILTER_DEST}) OR dest_ip LIKE '%:%')"
@@ -609,6 +900,7 @@ def get_all_devices(limit: int = 100, offset: int = 0, hours: int = 24) -> list:
                                bytes_transferred AS bytes_sent, 0 AS bytes_received, timestamp
                         FROM traffic_summary
                         WHERE timestamp > ?
+                            AND COALESCE(is_control, 0) = 0
                             AND {_VALID_MAC_FILTER_SOURCE}
                             {ip_filter_src}
                         UNION ALL
@@ -616,6 +908,7 @@ def get_all_devices(limit: int = 100, offset: int = 0, hours: int = 24) -> list:
                                0, bytes_transferred, timestamp
                         FROM traffic_summary
                         WHERE timestamp > ?
+                            AND COALESCE(is_control, 0) = 0
                             AND {_VALID_MAC_FILTER_DEST}
                             {ip_filter_dst}
                         UNION ALL
@@ -628,8 +921,7 @@ def get_all_devices(limit: int = 100, offset: int = 0, hours: int = 24) -> list:
                             AND mac_address IS NOT NULL AND mac_address != ''
                             AND mac_address != 'ff:ff:ff:ff:ff:ff'
                             AND mac_address != '00:00:00:00:00:00'
-                            AND {VALID_DEVICE_IP_FILTER}
-                            AND ({_PRIVATE_IP_FILTER_DEVICE})
+                            AND {devices_ip_filter}
                             {subnet_filter_dev}
                             {mode_filter_dev}
                     )
@@ -663,8 +955,18 @@ def get_all_devices(limit: int = 100, offset: int = 0, hours: int = 24) -> list:
                         d["hostname"] = existing_name
                     else:
                         d["hostname"] = ip_d
-                    d["total_bytes_formatted"] = _format_bytes(d.get("total_bytes", 0))
                     devices.append(d)
+
+            if devices:
+                macs = [d.get("mac_address", "") for d in devices]
+                control_map = {}
+                if not use_devices_table_only:
+                    control_map = _fetch_control_bytes_by_mac(cursor, macs, since=since)
+                devices = _apply_device_metric_view(
+                    devices,
+                    include_control=include_control,
+                    control_bytes_by_mac=control_map,
+                )
 
             # Strip out the host machine's own entries (by MAC + IP).
             devices = _strip_host_devices(devices)
@@ -676,35 +978,52 @@ def get_all_devices(limit: int = 100, offset: int = 0, hours: int = 24) -> list:
 
 
 @time_query
-def get_top_devices(limit: int = 10, hours: int = 1) -> list:
+def get_top_devices(limit: int = 10, hours: int = 1, include_control: bool = False) -> list:
     """Top devices by traffic volume -- same filter as ``get_all_devices``.
     Optimised to batch hostname + today_usage lookups instead of
     issuing N+1 queries per device row."""
-    cache_key = f"top_devices_{limit}_{hours}"
-    cached = _device_cache.get(cache_key)
-    if cached is not None:
-        return cached
+    mode_for_cache = _nf._current_mode_name or "unknown"
+    use_hotspot_realtime = mode_for_cache == "hotspot"
+    cache_key = f"top_devices_{mode_for_cache}_{limit}_{hours}_{int(include_control)}"
+    if not use_hotspot_realtime:
+        cached = _device_cache.get(cache_key)
+        if cached is not None:
+            return cached
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
-            since = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+            _current_mode_name = mode_for_cache
+            if _current_mode_name == "hotspot":
+                since = _hotspot_since_timestamp()
+            else:
+                since = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
 
-            current_subnet = _detect_subnet()
-            _current_mode_name = _nf._current_mode_name
+            current_subnet_cidr = _detect_subnet_cidr()
             skip_subnet = _current_mode_name == "port_mirror"
-            is_restrictive = _current_mode_name in _RESTRICTIVE_MODES
+            use_devices_table_only = _use_devices_table_only_mode(_current_mode_name)
+            devices_ip_filter = _devices_table_ip_filter_clause(_current_mode_name)
             subnet_filter_dev = ""
             params_dev = [since]
-            if current_subnet and not skip_subnet:
-                subnet_filter_dev = "AND ip_address LIKE ?"
-                params_dev.append(f"{current_subnet}.%")
+            if current_subnet_cidr and not skip_subnet:
+                if _current_mode_name == "hotspot":
+                    subnet_filter_dev = """
+                        AND (
+                            ip_in_subnet(COALESCE(ipv4_address, ip_address), ?) = 1
+                            OR COALESCE(ipv4_address, ip_address) IS NULL
+                            OR TRIM(COALESCE(ipv4_address, ip_address)) = ''
+                            OR LOWER(TRIM(COALESCE(ipv4_address, ip_address))) = 'unknown'
+                        )
+                    """
+                else:
+                    subnet_filter_dev = "AND ip_in_subnet(COALESCE(ipv4_address, ip_address), ?) = 1"
+                params_dev.append(current_subnet_cidr)
 
             mode_filter_dev = ""
             if _current_mode_name:
                 mode_filter_dev = "AND active_mode = ?"
                 params_dev.append(_current_mode_name)
 
-            if is_restrictive:
+            if use_devices_table_only:
                 cursor.execute(f"""
                     SELECT
                         mac_address,
@@ -714,6 +1033,8 @@ def get_top_devices(limit: int = 10, hours: int = 1) -> list:
                         total_packets AS packet_count,
                         total_bytes_sent AS bytes_sent,
                         total_bytes_received AS bytes_received,
+                        COALESCE(control_bytes_sent, 0) AS bytes_sent_control,
+                        COALESCE(control_bytes_received, 0) AS bytes_received_control,
                         COALESCE(total_bytes_sent, 0) + COALESCE(total_bytes_received, 0) AS total_bytes,
                         last_seen,
                         first_seen
@@ -722,8 +1043,7 @@ def get_top_devices(limit: int = 10, hours: int = 1) -> list:
                         AND mac_address IS NOT NULL AND mac_address != ''
                         AND mac_address != 'ff:ff:ff:ff:ff:ff'
                         AND mac_address != '00:00:00:00:00:00'
-                        AND {VALID_DEVICE_IP_FILTER}
-                        AND ({_PRIVATE_IP_FILTER_DEVICE})
+                        AND {devices_ip_filter}
                         {subnet_filter_dev}
                         {mode_filter_dev}
                         AND (COALESCE(total_bytes_sent, 0) + COALESCE(total_bytes_received, 0)) > 512
@@ -733,11 +1053,11 @@ def get_top_devices(limit: int = 10, hours: int = 1) -> list:
             else:
                 params_src = [since]
                 params_dst = [since]
-                if current_subnet and not skip_subnet:
-                    ip_filter_src = f"AND (({_PRIVATE_IP_FILTER_SOURCE}) AND source_ip LIKE ? OR source_ip LIKE '%:%')"
-                    ip_filter_dst = f"AND (({_PRIVATE_IP_FILTER_DEST}) AND dest_ip LIKE ? OR dest_ip LIKE '%:%')"
-                    params_src.append(f"{current_subnet}.%")
-                    params_dst.append(f"{current_subnet}.%")
+                if current_subnet_cidr and not skip_subnet:
+                    ip_filter_src = f"AND ((({_PRIVATE_IP_FILTER_SOURCE}) AND ip_in_subnet(source_ip, ?) = 1) OR source_ip LIKE '%:%')"
+                    ip_filter_dst = f"AND ((({_PRIVATE_IP_FILTER_DEST}) AND ip_in_subnet(dest_ip, ?) = 1) OR dest_ip LIKE '%:%')"
+                    params_src.append(current_subnet_cidr)
+                    params_dst.append(current_subnet_cidr)
                 else:
                     ip_filter_src = f"AND (({_PRIVATE_IP_FILTER_SOURCE}) OR source_ip LIKE '%:%')"
                     ip_filter_dst = f"AND (({_PRIVATE_IP_FILTER_DEST}) OR dest_ip LIKE '%:%')"
@@ -749,6 +1069,7 @@ def get_top_devices(limit: int = 10, hours: int = 1) -> list:
                                bytes_transferred AS bytes_sent, 0 AS bytes_received, timestamp
                         FROM traffic_summary
                         WHERE timestamp > ?
+                            AND COALESCE(is_control, 0) = 0
                             AND {_VALID_MAC_FILTER_SOURCE}
                             {ip_filter_src}
                         UNION ALL
@@ -756,6 +1077,7 @@ def get_top_devices(limit: int = 10, hours: int = 1) -> list:
                                0, bytes_transferred, timestamp
                         FROM traffic_summary
                         WHERE timestamp > ?
+                            AND COALESCE(is_control, 0) = 0
                             AND {_VALID_MAC_FILTER_DEST}
                             {ip_filter_dst}
                         UNION ALL
@@ -768,8 +1090,7 @@ def get_top_devices(limit: int = 10, hours: int = 1) -> list:
                             AND mac_address IS NOT NULL AND mac_address != ''
                             AND mac_address != 'ff:ff:ff:ff:ff:ff'
                             AND mac_address != '00:00:00:00:00:00'
-                            AND {VALID_DEVICE_IP_FILTER}
-                            AND ({_PRIVATE_IP_FILTER_DEVICE})
+                            AND {devices_ip_filter}
                             {subnet_filter_dev}
                             {mode_filter_dev}
                     )
@@ -872,10 +1193,22 @@ def get_top_devices(limit: int = 10, hours: int = 1) -> list:
                 d["today_sent"] = tu.get("today_sent", 0)
                 d["today_received"] = tu.get("today_received", 0)
 
+            # Attach Phase 2 app/control/total metrics.
+            macs = [d.get("mac_address", "") for d in results]
+            control_map = {}
+            if not use_devices_table_only:
+                control_map = _fetch_control_bytes_by_mac(cursor, macs, since=since)
+            results = _apply_device_metric_view(
+                results,
+                include_control=include_control,
+                control_bytes_by_mac=control_map,
+            )
+
             # Strip out the host machine's own entries (by MAC + IP).
             results = _strip_host_devices(results)
 
-            _device_cache.set(cache_key, results)
+            if not use_hotspot_realtime:
+                _device_cache.set(cache_key, results)
             return results
 
     except sqlite3.Error as e:
@@ -956,13 +1289,13 @@ def update_device_name(ip_address: str, new_name: str) -> bool:
 
 
 @time_query
-def get_device_details(ip_address: str) -> Optional[dict]:
+def get_device_details(ip_address: str, include_control: bool = False) -> Optional[dict]:
     """Detailed view of a single device including 24 h traffic and recent alerts.
 
     Falls back to building device info from traffic_summary if the device
     isn't in the devices table (e.g. own device when SHOW_OWN_DEVICE=False).
     """
-    cache_key = f"device_detail_{ip_address}"
+    cache_key = f"device_detail_{ip_address}_{int(include_control)}"
     cached = _device_cache.get(cache_key)
     if cached is not None:
         return cached
@@ -983,13 +1316,25 @@ def get_device_details(ip_address: str) -> Optional[dict]:
                     WITH dev AS (
                         SELECT source_mac AS mac_address, source_ip AS ip_address,
                                device_name, vendor,
-                               bytes_transferred AS bytes_sent, 0 AS bytes_received, timestamp
+                               CASE WHEN COALESCE(is_control, 0) = 0 THEN bytes_transferred ELSE 0 END AS bytes_sent,
+                               0 AS bytes_received,
+                               CASE WHEN COALESCE(is_control, 0) = 1 THEN bytes_transferred ELSE 0 END AS control_bytes_sent,
+                               0 AS control_bytes_received,
+                               CASE WHEN COALESCE(is_control, 0) = 0 THEN 1 ELSE 0 END AS packet_count,
+                               CASE WHEN COALESCE(is_control, 0) = 1 THEN 1 ELSE 0 END AS control_packet_count,
+                               timestamp
                         FROM traffic_summary
                         WHERE source_ip = ? AND timestamp >= ?
                             AND {_VALID_MAC_FILTER_SOURCE}
                         UNION ALL
                         SELECT dest_mac, dest_ip, NULL, NULL,
-                               0, bytes_transferred, timestamp
+                               0,
+                               CASE WHEN COALESCE(is_control, 0) = 0 THEN bytes_transferred ELSE 0 END,
+                               0,
+                               CASE WHEN COALESCE(is_control, 0) = 1 THEN bytes_transferred ELSE 0 END,
+                               CASE WHEN COALESCE(is_control, 0) = 0 THEN 1 ELSE 0 END,
+                               CASE WHEN COALESCE(is_control, 0) = 1 THEN 1 ELSE 0 END,
+                               timestamp
                         FROM traffic_summary
                         WHERE dest_ip = ? AND timestamp >= ?
                             AND {_VALID_MAC_FILTER_DEST}
@@ -1003,7 +1348,10 @@ def get_device_details(ip_address: str) -> Optional[dict]:
                         MAX(timestamp) AS last_seen,
                         SUM(bytes_sent) AS total_bytes_sent,
                         SUM(bytes_received) AS total_bytes_received,
-                        COUNT(*) AS total_packets
+                        SUM(control_bytes_sent) AS control_bytes_sent,
+                        SUM(control_bytes_received) AS control_bytes_received,
+                        SUM(packet_count) AS total_packets,
+                        SUM(control_packet_count) AS control_packets
                     FROM dev
                 """, (ip_address, since_fb, ip_address, since_fb, ip_address))
                 fallback_row = cursor.fetchone()
@@ -1011,7 +1359,6 @@ def get_device_details(ip_address: str) -> Optional[dict]:
                     return None
                 device = dict_from_row(fallback_row)
                 device['hostname'] = device.get('device_name') or ip_address
-                device['total_bytes'] = (device.get('total_bytes_sent') or 0) + (device.get('total_bytes_received') or 0)
 
                 mac_for_fs = device.get('mac_address', '')
                 if mac_for_fs:
@@ -1023,34 +1370,103 @@ def get_device_details(ip_address: str) -> Optional[dict]:
                     if fs_row and fs_row["first_seen"]:
                         device['first_seen'] = fs_row["first_seen"]
 
+            # Phase 2 metric split (app/control/total) with backward-compatible
+            # legacy fields defaulting to app-only unless include_control=true.
+            app_sent = _to_int(device.get("total_bytes_sent"))
+            app_received = _to_int(device.get("total_bytes_received"))
+            app_total = app_sent + app_received
+
+            control_sent = _to_int(device.get("control_bytes_sent"))
+            control_received = _to_int(device.get("control_bytes_received"))
+            control_total = control_sent + control_received
+
+            total_sent = app_sent + control_sent
+            total_received = app_received + control_received
+            total_all = app_total + control_total
+
+            device["total_bytes_sent_app"] = app_sent
+            device["total_bytes_received_app"] = app_received
+            device["total_bytes_app"] = app_total
+
+            device["total_bytes_sent_control"] = control_sent
+            device["total_bytes_received_control"] = control_received
+            device["total_bytes_control"] = control_total
+
+            device["total_bytes_sent_total"] = total_sent
+            device["total_bytes_received_total"] = total_received
+            device["total_bytes_total"] = total_all
+
+            device["bytes_sent_app"] = app_sent
+            device["bytes_received_app"] = app_received
+            device["bytes_sent_control"] = control_sent
+            device["bytes_received_control"] = control_received
+            device["bytes_sent_total"] = total_sent
+            device["bytes_received_total"] = total_received
+            device["control_overhead_ratio"] = round((control_total / total_all), 4) if total_all else 0.0
+
+            if include_control:
+                device["total_bytes_sent"] = total_sent
+                device["total_bytes_received"] = total_received
+                device["total_bytes"] = total_all
+                device["total_packets"] = _to_int(device.get("total_packets")) + _to_int(device.get("control_packets"))
+            else:
+                device["total_bytes_sent"] = app_sent
+                device["total_bytes_received"] = app_received
+                device["total_bytes"] = app_total
+                device["total_packets"] = _to_int(device.get("total_packets"))
+
             _resolve_and_persist_hostname(device, conn=conn)
 
             since = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
 
             cursor.execute("""
                 SELECT
-                    SUM(bytes_transferred) AS total_bytes_24h,
-                    COUNT(*) AS packet_count_24h
+                    SUM(CASE WHEN COALESCE(is_control, 0) = 0 THEN bytes_transferred ELSE 0 END) AS total_bytes_24h_app,
+                    SUM(CASE WHEN COALESCE(is_control, 0) = 1 THEN bytes_transferred ELSE 0 END) AS total_bytes_24h_control,
+                    SUM(CASE WHEN COALESCE(is_control, 0) = 0 THEN 1 ELSE 0 END) AS packet_count_24h_app,
+                    SUM(CASE WHEN COALESCE(is_control, 0) = 1 THEN 1 ELSE 0 END) AS packet_count_24h_control
                 FROM (
-                    SELECT bytes_transferred FROM traffic_summary
+                    SELECT bytes_transferred, is_control FROM traffic_summary
                     WHERE source_ip = ? AND timestamp >= ?
                     UNION ALL
-                    SELECT bytes_transferred FROM traffic_summary
+                    SELECT bytes_transferred, is_control FROM traffic_summary
                     WHERE dest_ip = ? AND timestamp >= ?
                 )
             """, (ip_address, since, ip_address, since))
             traffic = cursor.fetchone()
-            device["total_bytes_24h"] = (traffic["total_bytes_24h"] or 0) if traffic else 0
-            device["packet_count_24h"] = (traffic["packet_count_24h"] or 0) if traffic else 0
 
-            cursor.execute("""
+            bytes_24h_app = (traffic["total_bytes_24h_app"] or 0) if traffic else 0
+            bytes_24h_control = (traffic["total_bytes_24h_control"] or 0) if traffic else 0
+            packets_24h_app = (traffic["packet_count_24h_app"] or 0) if traffic else 0
+            packets_24h_control = (traffic["packet_count_24h_control"] or 0) if traffic else 0
+
+            device["total_bytes_24h_app"] = bytes_24h_app
+            device["total_bytes_24h_control"] = bytes_24h_control
+            device["total_bytes_24h_total"] = bytes_24h_app + bytes_24h_control
+
+            device["packet_count_24h_app"] = packets_24h_app
+            device["packet_count_24h_control"] = packets_24h_control
+            device["packet_count_24h_total"] = packets_24h_app + packets_24h_control
+
+            if include_control:
+                device["total_bytes_24h"] = bytes_24h_app + bytes_24h_control
+                device["packet_count_24h"] = packets_24h_app + packets_24h_control
+            else:
+                device["total_bytes_24h"] = bytes_24h_app
+                device["packet_count_24h"] = packets_24h_app
+
+            protocol_filter = "" if include_control else "AND COALESCE(is_control, 0) = 0"
+
+            cursor.execute(f"""
                 SELECT protocol, COUNT(*) AS count, SUM(bytes_transferred) AS bytes
                 FROM (
                     SELECT protocol, bytes_transferred FROM traffic_summary
                     WHERE source_ip = ? AND timestamp >= ?
+                        {protocol_filter}
                     UNION ALL
                     SELECT protocol, bytes_transferred FROM traffic_summary
                     WHERE dest_ip = ? AND timestamp >= ?
+                        {protocol_filter}
                 )
                 GROUP BY protocol ORDER BY bytes DESC
                 LIMIT 20
@@ -1064,15 +1480,96 @@ def get_device_details(ip_address: str) -> Optional[dict]:
             """, (ip_address,))
             device["recent_alerts"] = [dict_from_row(r) for r in cursor.fetchall()]
 
-            if 'total_bytes' not in device:
-                device['total_bytes'] = (device.get('total_bytes_sent') or 0) + (device.get('total_bytes_received') or 0)
-
             _device_cache.set(cache_key, device)
             return device
 
     except sqlite3.Error as e:
         logger.error("get_device_details error: %s", e)
         return None
+
+
+@time_query
+def get_device_control_overhead(hours: int = 1, limit: int = 50) -> list:
+    """Return per-device app/control byte split for the recent window."""
+    hours = min(max(hours, 1), 168)
+    limit = min(max(limit, 1), 500)
+    since = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                WITH device_bytes AS (
+                    SELECT
+                        source_mac AS mac_address,
+                        source_ip AS ip_address,
+                        SUM(CASE WHEN COALESCE(is_control, 0) = 0 THEN bytes_transferred ELSE 0 END) AS app_bytes,
+                        SUM(CASE WHEN COALESCE(is_control, 0) = 1 THEN bytes_transferred ELSE 0 END) AS control_bytes
+                    FROM traffic_summary
+                    WHERE timestamp >= ?
+                        AND {_VALID_MAC_FILTER_SOURCE}
+                        AND (({_PRIVATE_IP_FILTER_SOURCE}) OR source_ip LIKE '%:%')
+                    GROUP BY source_mac, source_ip
+
+                    UNION ALL
+
+                    SELECT
+                        dest_mac AS mac_address,
+                        dest_ip AS ip_address,
+                        SUM(CASE WHEN COALESCE(is_control, 0) = 0 THEN bytes_transferred ELSE 0 END) AS app_bytes,
+                        SUM(CASE WHEN COALESCE(is_control, 0) = 1 THEN bytes_transferred ELSE 0 END) AS control_bytes
+                    FROM traffic_summary
+                    WHERE timestamp >= ?
+                        AND {_VALID_MAC_FILTER_DEST}
+                        AND (({_PRIVATE_IP_FILTER_DEST}) OR dest_ip LIKE '%:%')
+                    GROUP BY dest_mac, dest_ip
+                )
+                SELECT
+                    mac_address,
+                    COALESCE(
+                        MAX(CASE WHEN ip_address NOT LIKE '%:%' THEN ip_address END),
+                        MAX(ip_address)
+                    ) AS ip_address,
+                    SUM(app_bytes) AS app_bytes,
+                    SUM(control_bytes) AS control_bytes,
+                    SUM(app_bytes) + SUM(control_bytes) AS total_bytes
+                FROM device_bytes
+                GROUP BY mac_address
+                HAVING total_bytes > 0
+                ORDER BY control_bytes DESC, total_bytes DESC
+                LIMIT ?
+            """, (since, since, limit))
+
+            rows = [dict_from_row(r) for r in cursor.fetchall()]
+            if not rows:
+                return []
+
+            macs = [r.get("mac_address", "") for r in rows if r.get("mac_address")]
+            hostnames = {}
+            if macs:
+                ph = ",".join("?" for _ in macs)
+                cursor.execute(
+                    f"SELECT mac_address, hostname, device_name FROM devices WHERE mac_address IN ({ph})",
+                    tuple(macs),
+                )
+                for r in cursor.fetchall():
+                    hostnames[r["mac_address"]] = r["hostname"] or r["device_name"] or ""
+
+            for d in rows:
+                app_bytes = _to_int(d.get("app_bytes"))
+                control_bytes = _to_int(d.get("control_bytes"))
+                total_bytes = _to_int(d.get("total_bytes"))
+                d["hostname"] = hostnames.get(d.get("mac_address", ""), d.get("ip_address", ""))
+                d["control_overhead_ratio"] = round((control_bytes / total_bytes), 4) if total_bytes else 0.0
+                d["app_bytes_formatted"] = _format_bytes(app_bytes)
+                d["control_bytes_formatted"] = _format_bytes(control_bytes)
+                d["total_bytes_formatted"] = _format_bytes(total_bytes)
+
+            rows = _strip_host_devices(rows)
+            return rows
+    except sqlite3.Error as e:
+        logger.error("get_device_control_overhead error: %s", e)
+        return []
 
 
 # ---------------------------------------------------------------------------

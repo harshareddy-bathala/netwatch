@@ -32,7 +32,16 @@ def _make_mock_engine():
         'upload_mbps': 4.0,
         'download_bps': 750_000,
         'download_mbps': 6.0,
+        'control_total_bps': 62_500,
+        'control_total_mbps': 0.5,
+        'control_upload_bps': 25_000,
+        'control_upload_mbps': 0.2,
+        'control_download_bps': 37_500,
+        'control_download_mbps': 0.3,
+        'combined_total_bps': 1_312_500,
+        'combined_total_mbps': 10.5,
         'packets_per_second': 850,
+        'control_packets_per_second': 12,
     }
     engine.bandwidth.get_recent_rate.return_value = {
         'total_bps': 1_250_000,
@@ -41,6 +50,14 @@ def _make_mock_engine():
         'upload_mbps': 4.0,
         'download_bps': 750_000,
         'download_mbps': 6.0,
+        'control_total_bps': 62_500,
+        'control_total_mbps': 0.5,
+        'control_upload_bps': 25_000,
+        'control_upload_mbps': 0.2,
+        'control_download_bps': 37_500,
+        'control_download_mbps': 0.3,
+        'combined_total_bps': 1_312_500,
+        'combined_total_mbps': 10.5,
     }
     engine.bandwidth.get_current_bps.return_value = 1_250_000
     return engine
@@ -154,6 +171,18 @@ class TestDashboardBandwidthLive:
         data = resp.get_json()
         stats = data.get('stats', {})
         assert stats.get('packets_per_second') == 850
+
+    def test_live_stats_include_control_breakdown(self, app, client):
+        app.config['CAPTURE_ENGINE'] = _make_mock_engine()
+        resp = client.get('/api/dashboard')
+        data = resp.get_json()
+        stats = data.get('stats', {})
+
+        assert stats.get('control_bandwidth_mbps') == 0.5
+        assert stats.get('combined_bandwidth_mbps') == 10.5
+        assert stats.get('control_upload_mbps') == 0.2
+        assert stats.get('control_download_mbps') == 0.3
+        assert stats.get('control_packets_per_second') == 12
 
 
 # =================================================================

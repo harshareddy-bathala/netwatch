@@ -37,12 +37,23 @@ function _deepEqual(a, b) {
   return true;
 }
 
+function _loadBooleanPreference(key, fallback = false) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw == null) return fallback;
+    return String(raw).toLowerCase() === 'true';
+  } catch (_) {
+    return fallback;
+  }
+}
+
 class Store {
   constructor() {
     this.state = {
       stats: null,
       bandwidth: null,
       devices: null,
+      topDevices: null,
       alerts: null,
       protocols: null,
       mode: null,
@@ -51,6 +62,7 @@ class Store {
       loading: false,
       connected: true,
       lastUpdated: null,
+      includeControlTraffic: _loadBooleanPreference('netwatch-include-control-traffic', false),
     };
     this._listeners = {};
   }
@@ -66,6 +78,15 @@ class Store {
     if (this.state[key] === value) return;
     if (typeof value === 'object' && value !== null && _deepEqual(this.state[key], value)) return;
     this.state[key] = value;
+
+    if (key === 'includeControlTraffic') {
+      try {
+        localStorage.setItem('netwatch-include-control-traffic', String(!!value));
+      } catch (_) {
+        // Ignore storage failures (private mode / blocked storage).
+      }
+    }
+
     this._notify(key, value);
   }
 
@@ -93,7 +114,7 @@ class Store {
    *  stale data from the previous route.
    */
   clearViewData() {
-    const keys = ['stats', 'bandwidth', 'devices', 'protocols', 'alerts', 'alertStats'];
+    const keys = ['stats', 'bandwidth', 'devices', 'topDevices', 'protocols', 'alerts', 'alertStats'];
     for (const k of keys) {
       this.state[k] = null;
     }

@@ -18,6 +18,7 @@
 - [Interface Management](#interface-management)
 - [Network Discovery](#network-discovery)
 - [GeoIP](#geoip)
+- [Digital Twin & Intelligence](#digital-twin--intelligence)
 - [Export](#export)
 - [System & Metrics](#system--metrics)
 - [Server-Sent Events (SSE)](#server-sent-events-sse)
@@ -989,6 +990,94 @@ Batch GeoIP lookup for up to 100 IP addresses.
   }
 }
 ```
+
+---
+
+## Digital Twin & Intelligence
+
+Phase 1 (AI-first) read-only endpoints over the intelligence layer. All of
+them degrade to empty payloads when the intelligence services are not
+running (e.g. `--no-capture`).
+
+### `GET /api/twin`
+
+Live digital-twin graph snapshot.
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `max_edges` | int | 500 | Cap on returned edges (1-2000), highest-traffic first |
+
+**Response:**
+
+```json
+{
+  "data": {
+    "generated_at": 1783468800.0,
+    "mode": "hotspot",
+    "stats": {"node_count": 12, "edge_count": 48, "device_count": 5,
+               "external_count": 7, "events_consumed": 1042},
+    "mode_timeline": [{"timestamp": 1783468000.0, "old_mode": "none", "new_mode": "hotspot"}],
+    "nodes": [{"id": "mac:aa:bb:cc:00:00:01", "type": "device",
+               "mac": "aa:bb:cc:00:00:01", "ip": "192.168.137.42",
+               "hostname": "pixel-7", "vendor": "Google",
+               "bytes_in": 1048576, "bytes_out": 65536, "packets": 900,
+               "protocols": ["HTTPS", "DNS"], "recent_dns": ["example.com"],
+               "first_seen": 1783460000.0, "last_seen": 1783468790.0}],
+    "edges": [{"source": "mac:aa:bb:cc:00:00:01", "target": "ip:93.184.216.34",
+               "bytes": 1048576, "packets": 800, "protocols": ["HTTPS"],
+               "first_seen": 1783460000.0, "last_seen": 1783468790.0}]
+  }
+}
+```
+
+Node `type` is one of `self`, `gateway`, `device`, `external`.
+
+### `GET /api/twin/stats`
+
+Diagnostics for the intelligence layer: twin size, behavior-analyzer counters,
+and event-bus subscription stats (pending/delivered/dropped per consumer).
+
+### `GET /api/flows/recent`
+
+Recent flow records from the `flows` table.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `limit` | int | 100 | Max rows (1-1000) |
+| `mac` | string | — | Filter by source or dest MAC |
+| `since` | string | — | Lower bound `YYYY-MM-DD HH:MM:SS` |
+
+### `GET /api/dns/recent`
+
+Recent DNS query events from the `dns_queries` table. Same parameters as
+`/api/flows/recent` (`mac` filters the querying device).
+
+### `GET /api/behavior/profiles/<mac>`
+
+Learned hour-of-week baselines for one device.
+
+**Response:**
+
+```json
+{
+  "data": {
+    "mac": "aa:bb:cc:00:00:01",
+    "metrics": {
+      "bytes":        [{"hour_of_week": 34, "samples": 18, "mean": 1048576.0, "std": 20480.5}],
+      "flows":        [{"hour_of_week": 34, "samples": 18, "mean": 42.1, "std": 6.3}],
+      "unique_dests": [{"hour_of_week": 34, "samples": 18, "mean": 9.5, "std": 2.1}],
+      "dns_queries":  [{"hour_of_week": 34, "samples": 18, "mean": 12.0, "std": 4.4}]
+    }
+  }
+}
+```
+
+Behavior anomalies surface as regular alerts (`alert_type: "anomaly"`) whose
+`details` JSON carries `detector: "behavior_baseline"`, `device_mac`,
+`confidence` (0-1), and an `evidence[]` array of
+`{metric, observed, baseline_mean, baseline_std, baseline_samples, z_score, hour_of_week}`.
 
 ---
 

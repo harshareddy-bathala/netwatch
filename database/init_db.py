@@ -98,6 +98,45 @@ def get_database_info() -> dict:
     return info
 
 
+def _wipe_database_in_place() -> bool:
+    """Best-effort fallback reset when DB file deletion is blocked by locks."""
+    try:
+        conn = sqlite3.connect(DATABASE_PATH, timeout=DATABASE_TIMEOUT)
+        cursor = conn.cursor()
+
+        cursor.execute("PRAGMA foreign_keys = OFF")
+        cursor.execute(
+            """
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name NOT LIKE 'sqlite_%'
+            """
+        )
+        tables = [row[0] for row in cursor.fetchall()]
+
+        for table in tables:
+            cursor.execute(f'DELETE FROM "{table}"')
+
+        # Reset AUTOINCREMENT counters when present.
+        try:
+            cursor.execute("DELETE FROM sqlite_sequence")
+        except sqlite3.Error:
+            pass
+
+        conn.commit()
+        conn.close()
+
+        # VACUUM requires a fresh connection and no open transaction.
+        conn = sqlite3.connect(DATABASE_PATH, timeout=DATABASE_TIMEOUT)
+        conn.execute("VACUUM")
+        conn.close()
+
+        logger.info("Database content wiped in-place: %s", DATABASE_PATH)
+        return True
+    except Exception as e:
+        logger.error("In-place database wipe failed: %s", e)
+        return False
+
+
 def initialize_database(force_reset: bool = False) -> bool:
     """
     Initialize the database with the schema.
@@ -121,8 +160,13 @@ def initialize_database(force_reset: bool = False) -> bool:
         # FORCE RESET: Delete old corrupted database
         if force_reset and check_database_exists():
             logger.warning("Forcing database reset - deleting old database")
-            os.remove(DATABASE_PATH)
-            logger.info(f"Deleted old database: {DATABASE_PATH}")
+            try:
+                os.remove(DATABASE_PATH)
+                logger.info(f"Deleted old database: {DATABASE_PATH}")
+            except OSError as e:
+                logger.warning("Could not delete database file (%s); trying in-place wipe", e)
+                if not _wipe_database_in_place():
+                    raise
         
         # Read the schema SQL
         with open(schema_path, 'r', encoding='utf-8') as f:

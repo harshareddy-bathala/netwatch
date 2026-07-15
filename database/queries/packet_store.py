@@ -27,6 +27,19 @@ from database.queries import network_filters as _nf
 logger = logging.getLogger(__name__)
 
 
+def _is_control_packet(packet_data: dict) -> bool:
+    """Normalize control-traffic flag from packet dictionaries."""
+    if not packet_data:
+        return False
+    transition_phase = str(packet_data.get("transition_phase") or "").strip().upper()
+    return bool(
+        packet_data.get("is_control")
+        or packet_data.get("is_control_traffic")
+        or packet_data.get("is_transition_packet")
+        or (transition_phase not in ("", "STABLE"))
+    )
+
+
 # ---------------------------------------------------------------------------
 # Packet / device save
 # ---------------------------------------------------------------------------
@@ -63,17 +76,23 @@ def save_packet(packet_data: dict) -> Optional[int]:
             vendor = packet_data.get("vendor")
             dest_vendor = packet_data.get("dest_vendor")
             direction = packet_data.get("direction", "unknown")
+            is_control = _is_control_packet(packet_data)
+
+            source_app_bytes = 0 if is_control else bytes_transferred
+            source_control_bytes = bytes_transferred if is_control else 0
+            dest_app_bytes = 0 if is_control else bytes_transferred
+            dest_control_bytes = bytes_transferred if is_control else 0
 
             # 1. Insert traffic record (always)
             cursor.execute("""
                 INSERT INTO traffic_summary
                 (timestamp, source_ip, dest_ip, source_mac, dest_mac,
                  source_port, dest_port, protocol, raw_protocol,
-                 bytes_transferred, device_name, vendor, direction)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 bytes_transferred, device_name, vendor, direction, is_control)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (timestamp, source_ip, dest_ip, source_mac, dest_mac,
                   source_port, dest_port, protocol, raw_protocol,
-                  bytes_transferred, device_name, vendor, direction))
+                                    bytes_transferred, device_name, vendor, direction, int(is_control)))
 
             record_id = cursor.lastrowid
 
@@ -87,9 +106,9 @@ def save_packet(packet_data: dict) -> Optional[int]:
                          ipv4_address, ipv6_address,
                          device_name, vendor,
                          first_seen, last_seen,
-                         total_bytes_sent, total_packets,
+                         total_bytes_sent, control_bytes_sent, total_packets,
                          active_mode, detected_mode)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                     ON CONFLICT(mac_address) DO UPDATE SET
                         ipv4_address = CASE
                             WHEN excluded.ipv4_address IS NOT NULL
@@ -113,13 +132,14 @@ def save_packet(packet_data: dict) -> Optional[int]:
                         vendor       = COALESCE(excluded.vendor, vendor),
                         last_seen    = excluded.last_seen,
                         total_bytes_sent = total_bytes_sent + excluded.total_bytes_sent,
+                                                control_bytes_sent = control_bytes_sent + excluded.control_bytes_sent,
                         total_packets    = total_packets + 1,
                         active_mode  = COALESCE(excluded.active_mode, active_mode)
                 """, (source_mac, source_ip,
                       None if _is_ipv6_src else source_ip,
                       source_ip if _is_ipv6_src else None,
                       device_name, vendor,
-                      timestamp, timestamp, bytes_transferred,
+                                            timestamp, timestamp, source_app_bytes, source_control_bytes,
                       _src_active_mode, _nf._current_mode_name))
 
             # 3. Upsert dest device — ONLY if valid local device
@@ -132,9 +152,9 @@ def save_packet(packet_data: dict) -> Optional[int]:
                          ipv4_address, ipv6_address,
                          device_name, vendor,
                          first_seen, last_seen,
-                         total_bytes_received, total_packets,
+                         total_bytes_received, control_bytes_received, total_packets,
                          active_mode, detected_mode)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                     ON CONFLICT(mac_address) DO UPDATE SET
                         ipv4_address = CASE
                             WHEN excluded.ipv4_address IS NOT NULL
@@ -158,19 +178,20 @@ def save_packet(packet_data: dict) -> Optional[int]:
                         vendor      = COALESCE(excluded.vendor, vendor),
                         last_seen   = excluded.last_seen,
                         total_bytes_received = total_bytes_received + excluded.total_bytes_received,
+                                                control_bytes_received = control_bytes_received + excluded.control_bytes_received,
                         total_packets        = total_packets + 1,
                         active_mode  = COALESCE(excluded.active_mode, active_mode)
                 """, (dest_mac, dest_ip,
                       None if _is_ipv6_dst else dest_ip,
                       dest_ip if _is_ipv6_dst else None,
                       device_name, dest_vendor,
-                      timestamp, timestamp, bytes_transferred,
+                                            timestamp, timestamp, dest_app_bytes, dest_control_bytes,
                       _dst_active_mode, _nf._current_mode_name))
 
             # 4. Update daily usage (inside the same transaction)
-            if _is_valid_device_for_insert(source_ip, source_mac):
+            if not is_control and _is_valid_device_for_insert(source_ip, source_mac):
                 _update_daily_usage_cursor(cursor, source_mac, source_ip, device_name, bytes_transferred, 0, 1)
-            if _is_valid_device_for_insert(dest_ip, dest_mac):
+            if not is_control and _is_valid_device_for_insert(dest_ip, dest_mac):
                 _update_daily_usage_cursor(cursor, dest_mac, dest_ip, None, 0, bytes_transferred, 0)
 
             # 5. IPv6 traffic attribution (same logic as save_packets_batch)
@@ -181,34 +202,54 @@ def save_packet(packet_data: dict) -> Optional[int]:
                 mac_to_ipv4 = _build_mac_to_ipv4(cursor)
                 mapped_ip = mac_to_ipv4.get(source_mac.lower())
                 if mapped_ip and _is_valid_device_for_insert(mapped_ip, source_mac):
-                    cursor.execute("""
-                        UPDATE devices SET
-                            total_bytes_sent = total_bytes_sent + ?,
-                            total_packets = total_packets + 1,
-                            last_seen = ?,
-                            ipv6_address = COALESCE(ipv6_address, ?)
-                        WHERE mac_address = ?
-                    """, (bytes_transferred, timestamp, source_ip, source_mac))
-                    _update_daily_usage_cursor(
-                        cursor, source_mac, mapped_ip,
-                        device_name, bytes_transferred, 0, 1)
+                    if is_control:
+                        cursor.execute("""
+                            UPDATE devices SET
+                                control_bytes_sent = control_bytes_sent + ?,
+                                total_packets = total_packets + 1,
+                                last_seen = ?,
+                                ipv6_address = COALESCE(ipv6_address, ?)
+                            WHERE mac_address = ?
+                        """, (bytes_transferred, timestamp, source_ip, source_mac))
+                    else:
+                        cursor.execute("""
+                            UPDATE devices SET
+                                total_bytes_sent = total_bytes_sent + ?,
+                                total_packets = total_packets + 1,
+                                last_seen = ?,
+                                ipv6_address = COALESCE(ipv6_address, ?)
+                            WHERE mac_address = ?
+                        """, (bytes_transferred, timestamp, source_ip, source_mac))
+                        _update_daily_usage_cursor(
+                            cursor, source_mac, mapped_ip,
+                            device_name, bytes_transferred, 0, 1)
 
             if dst_is_ipv6 and dest_mac:
                 if not src_is_ipv6:
                     mac_to_ipv4 = _build_mac_to_ipv4(cursor)
                 mapped_ip = mac_to_ipv4.get(dest_mac.lower())
                 if mapped_ip and _is_valid_device_for_insert(mapped_ip, dest_mac):
-                    cursor.execute("""
-                        UPDATE devices SET
-                            total_bytes_received = total_bytes_received + ?,
-                            total_packets = total_packets + 1,
-                            last_seen = ?,
-                            ipv6_address = COALESCE(ipv6_address, ?)
-                        WHERE mac_address = ?
-                    """, (bytes_transferred, timestamp, dest_ip, dest_mac))
-                    _update_daily_usage_cursor(
-                        cursor, dest_mac, mapped_ip,
-                        None, 0, bytes_transferred, 0)
+                    if is_control:
+                        cursor.execute("""
+                            UPDATE devices SET
+                                control_bytes_received = control_bytes_received + ?,
+                                total_packets = total_packets + 1,
+                                last_seen = ?,
+                                ipv6_address = COALESCE(ipv6_address, ?)
+                            WHERE mac_address = ?
+                        """, (bytes_transferred, timestamp, dest_ip, dest_mac))
+                    else:
+                        cursor.execute("""
+                            UPDATE devices SET
+                                total_bytes_received = total_bytes_received + ?,
+                                total_packets = total_packets + 1,
+                                last_seen = ?,
+                                ipv6_address = COALESCE(ipv6_address, ?)
+                            WHERE mac_address = ?
+                        """, (bytes_transferred, timestamp, dest_ip, dest_mac))
+                        _update_daily_usage_cursor(
+                            cursor, dest_mac, mapped_ip,
+                            None, 0, bytes_transferred, 0)
 
             conn.commit()
 
@@ -222,7 +263,7 @@ def save_packet(packet_data: dict) -> Optional[int]:
         return None
 
 
-def save_packets_batch(packets: list) -> int:
+def save_packets_batch(packets: list, _lock_retry: int = 0) -> int:
     """
     Save multiple packets in a **single transaction** for performance.
 
@@ -286,11 +327,12 @@ def save_packets_batch(packets: list) -> int:
                     vendor = pkt.get("vendor")
                     dest_vendor = pkt.get("dest_vendor")
                     direction = pkt.get("direction", "unknown")
+                    is_control = _is_control_packet(pkt)
 
                     traffic_rows.append((
                         timestamp, source_ip, dest_ip, source_mac, dest_mac,
                         source_port, dest_port, protocol, raw_protocol,
-                        bytes_transferred, device_name, vendor, direction,
+                        bytes_transferred, device_name, vendor, direction, int(is_control),
                     ))
                     normalized_packets.append({
                         "timestamp": timestamp,
@@ -307,6 +349,7 @@ def save_packets_batch(packets: list) -> int:
                         "vendor": vendor,
                         "dest_vendor": dest_vendor,
                         "direction": direction,
+                        "is_control": is_control,
                     })
                 except Exception as e:
                     logger.warning("Error normalizing packet for batch: %s", e)
@@ -317,8 +360,8 @@ def save_packets_batch(packets: list) -> int:
                     INSERT INTO traffic_summary
                     (timestamp, source_ip, dest_ip, source_mac, dest_mac,
                      source_port, dest_port, protocol, raw_protocol,
-                     bytes_transferred, device_name, vendor, direction)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     bytes_transferred, device_name, vendor, direction, is_control)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, traffic_rows)
                 saved = len(traffic_rows)
 
@@ -327,11 +370,11 @@ def save_packets_batch(packets: list) -> int:
             # ---------------------------------------------------------------
             # Collect per-MAC aggregations to reduce N individual UPSERTs
             # to at most 2 × (unique MACs) executemany calls.
-            src_agg: dict = {}   # mac -> {bytes, packets, ip, ipv4, ipv6, name, vendor, ts}
-            dst_agg: dict = {}   # mac -> {bytes, packets, ip, ipv4, ipv6, vendor, ts}
+            src_agg: dict = {}   # mac -> {bytes, control_bytes, packets, ip, ipv4, ipv6, name, vendor, ts}
+            dst_agg: dict = {}   # mac -> {bytes, control_bytes, packets, ip, ipv4, ipv6, vendor, ts}
             daily_agg: dict = {} # (mac, ip, role) -> {sent, recv, pkts, name}
-            ipv6_src_agg: dict = {}  # mac -> {bytes, ts, ipv6}
-            ipv6_dst_agg: dict = {}  # mac -> {bytes, ts, ipv6}
+            ipv6_src_agg: dict = {}  # mac -> {bytes, control_bytes, ts, ipv6}
+            ipv6_dst_agg: dict = {}  # mac -> {bytes, control_bytes, ts, ipv6}
 
             for npkt in normalized_packets:
                 try:
@@ -341,6 +384,7 @@ def save_packets_batch(packets: list) -> int:
                     source_mac = npkt["source_mac"]
                     dest_mac = npkt["dest_mac"]
                     bytes_transferred = npkt["bytes"]
+                    is_control = bool(npkt.get("is_control"))
                     device_name = npkt["device_name"]
                     vendor = npkt["vendor"]
                     dest_vendor = npkt["dest_vendor"]
@@ -350,12 +394,15 @@ def save_packets_batch(packets: list) -> int:
                         is_ipv6 = source_ip and ":" in source_ip
                         agg = src_agg.get(source_mac)
                         if agg is None:
-                            agg = {"bytes": 0, "packets": 0, "ip": source_ip,
+                            agg = {"bytes": 0, "control_bytes": 0, "packets": 0, "ip": source_ip,
                                    "ipv4": None if is_ipv6 else source_ip,
                                    "ipv6": source_ip if is_ipv6 else None,
                                    "name": device_name, "vendor": vendor, "ts": timestamp}
                             src_agg[source_mac] = agg
-                        agg["bytes"] += bytes_transferred
+                        if is_control:
+                            agg["control_bytes"] += bytes_transferred
+                        else:
+                            agg["bytes"] += bytes_transferred
                         agg["packets"] += 1
                         agg["ts"] = timestamp  # keep latest
                         if not is_ipv6:
@@ -369,26 +416,30 @@ def save_packets_batch(packets: list) -> int:
                             agg["vendor"] = vendor
 
                         # Daily usage aggregation (source)
-                        dk = (source_mac, source_ip, "src")
-                        du = daily_agg.get(dk)
-                        if du is None:
-                            du = {"sent": 0, "recv": 0, "pkts": 0, "name": device_name}
-                            daily_agg[dk] = du
-                        du["sent"] += bytes_transferred
-                        du["pkts"] += 1
+                        if not is_control:
+                            dk = (source_mac, source_ip, "src")
+                            du = daily_agg.get(dk)
+                            if du is None:
+                                du = {"sent": 0, "recv": 0, "pkts": 0, "name": device_name}
+                                daily_agg[dk] = du
+                            du["sent"] += bytes_transferred
+                            du["pkts"] += 1
 
                     # Dest device — only valid local devices
                     if _is_valid_device_for_insert(dest_ip, dest_mac):
                         is_ipv6 = dest_ip and ":" in dest_ip
                         agg = dst_agg.get(dest_mac)
                         if agg is None:
-                            agg = {"bytes": 0, "packets": 0, "ip": dest_ip,
+                            agg = {"bytes": 0, "control_bytes": 0, "packets": 0, "ip": dest_ip,
                                    "ipv4": None if is_ipv6 else dest_ip,
                                    "ipv6": dest_ip if is_ipv6 else None,
                                    "name": device_name, "vendor": dest_vendor,
                                    "ts": timestamp}
                             dst_agg[dest_mac] = agg
-                        agg["bytes"] += bytes_transferred
+                        if is_control:
+                            agg["control_bytes"] += bytes_transferred
+                        else:
+                            agg["bytes"] += bytes_transferred
                         agg["packets"] += 1
                         agg["ts"] = timestamp
                         if not is_ipv6:
@@ -402,12 +453,13 @@ def save_packets_batch(packets: list) -> int:
                             agg["name"] = device_name
 
                         # Daily usage aggregation (dest)
-                        dk = (dest_mac, dest_ip, "dst")
-                        du = daily_agg.get(dk)
-                        if du is None:
-                            du = {"sent": 0, "recv": 0, "pkts": 0, "name": None}
-                            daily_agg[dk] = du
-                        du["recv"] += bytes_transferred
+                        if not is_control:
+                            dk = (dest_mac, dest_ip, "dst")
+                            du = daily_agg.get(dk)
+                            if du is None:
+                                du = {"sent": 0, "recv": 0, "pkts": 0, "name": None}
+                                daily_agg[dk] = du
+                            du["recv"] += bytes_transferred
 
                     # IPv6 traffic attribution aggregation
                     src_is_ipv6 = source_ip and ":" in source_ip
@@ -418,35 +470,56 @@ def save_packets_batch(packets: list) -> int:
                         if mapped_ip and _is_valid_device_for_insert(mapped_ip, source_mac):
                             agg = ipv6_src_agg.get(source_mac)
                             if agg is None:
-                                agg = {"bytes": 0, "ts": timestamp, "ipv6": source_ip, "mapped_ip": mapped_ip, "name": device_name}
+                                agg = {
+                                    "bytes": 0,
+                                    "control_bytes": 0,
+                                    "ts": timestamp,
+                                    "ipv6": source_ip,
+                                    "mapped_ip": mapped_ip,
+                                    "name": device_name,
+                                }
                                 ipv6_src_agg[source_mac] = agg
-                            agg["bytes"] += bytes_transferred
+                            if is_control:
+                                agg["control_bytes"] += bytes_transferred
+                            else:
+                                agg["bytes"] += bytes_transferred
                             agg["ts"] = timestamp
 
-                            dk = (source_mac, mapped_ip, "src")
-                            du = daily_agg.get(dk)
-                            if du is None:
-                                du = {"sent": 0, "recv": 0, "pkts": 0, "name": device_name}
-                                daily_agg[dk] = du
-                            du["sent"] += bytes_transferred
-                            du["pkts"] += 1
+                            if not is_control:
+                                dk = (source_mac, mapped_ip, "src")
+                                du = daily_agg.get(dk)
+                                if du is None:
+                                    du = {"sent": 0, "recv": 0, "pkts": 0, "name": device_name}
+                                    daily_agg[dk] = du
+                                du["sent"] += bytes_transferred
+                                du["pkts"] += 1
 
                     if dst_is_ipv6 and dest_mac:
                         mapped_ip = mac_to_ipv4.get(dest_mac.lower())
                         if mapped_ip and _is_valid_device_for_insert(mapped_ip, dest_mac):
                             agg = ipv6_dst_agg.get(dest_mac)
                             if agg is None:
-                                agg = {"bytes": 0, "ts": timestamp, "ipv6": dest_ip, "mapped_ip": mapped_ip}
+                                agg = {
+                                    "bytes": 0,
+                                    "control_bytes": 0,
+                                    "ts": timestamp,
+                                    "ipv6": dest_ip,
+                                    "mapped_ip": mapped_ip,
+                                }
                                 ipv6_dst_agg[dest_mac] = agg
-                            agg["bytes"] += bytes_transferred
+                            if is_control:
+                                agg["control_bytes"] += bytes_transferred
+                            else:
+                                agg["bytes"] += bytes_transferred
                             agg["ts"] = timestamp
 
-                            dk = (dest_mac, mapped_ip, "dst")
-                            du = daily_agg.get(dk)
-                            if du is None:
-                                du = {"sent": 0, "recv": 0, "pkts": 0, "name": None}
-                                daily_agg[dk] = du
-                            du["recv"] += bytes_transferred
+                            if not is_control:
+                                dk = (dest_mac, mapped_ip, "dst")
+                                du = daily_agg.get(dk)
+                                if du is None:
+                                    du = {"sent": 0, "recv": 0, "pkts": 0, "name": None}
+                                    daily_agg[dk] = du
+                                du["recv"] += bytes_transferred
 
                 except Exception as e:
                     logger.warning("Error aggregating packet in batch: %s", e)
@@ -459,7 +532,7 @@ def save_packets_batch(packets: list) -> int:
                     _src_am = _active_mode_for_mac(mac)
                     src_rows.append((mac, a["ip"], a["ipv4"], a["ipv6"],
                                      a["name"], a["vendor"],
-                                     a["ts"], a["ts"], a["bytes"],
+                                     a["ts"], a["ts"], a["bytes"], a["control_bytes"],
                                      a["packets"],
                                      _src_am, _nf._current_mode_name))
                 cursor.executemany("""
@@ -468,9 +541,9 @@ def save_packets_batch(packets: list) -> int:
                          ipv4_address, ipv6_address,
                          device_name, vendor,
                          first_seen, last_seen,
-                         total_bytes_sent, total_packets,
+                         total_bytes_sent, control_bytes_sent, total_packets,
                          active_mode, detected_mode)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(mac_address) DO UPDATE SET
                         ipv4_address = CASE
                             WHEN excluded.ipv4_address IS NOT NULL
@@ -494,6 +567,7 @@ def save_packets_batch(packets: list) -> int:
                         vendor       = COALESCE(excluded.vendor, vendor),
                         last_seen    = excluded.last_seen,
                         total_bytes_sent = total_bytes_sent + excluded.total_bytes_sent,
+                        control_bytes_sent = control_bytes_sent + excluded.control_bytes_sent,
                         total_packets    = total_packets + excluded.total_packets,
                         active_mode  = COALESCE(excluded.active_mode, active_mode)
                 """, src_rows)
@@ -505,7 +579,7 @@ def save_packets_batch(packets: list) -> int:
                     _dst_am = _active_mode_for_mac(mac)
                     dst_rows.append((mac, a["ip"], a["ipv4"], a["ipv6"],
                                      a.get("name"), a["vendor"],
-                                     a["ts"], a["ts"], a["bytes"],
+                                     a["ts"], a["ts"], a["bytes"], a["control_bytes"],
                                      a["packets"],
                                      _dst_am, _nf._current_mode_name))
                 cursor.executemany("""
@@ -514,9 +588,9 @@ def save_packets_batch(packets: list) -> int:
                          ipv4_address, ipv6_address,
                          device_name, vendor,
                          first_seen, last_seen,
-                         total_bytes_received, total_packets,
+                         total_bytes_received, control_bytes_received, total_packets,
                          active_mode, detected_mode)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(mac_address) DO UPDATE SET
                         ipv4_address = CASE
                             WHEN excluded.ipv4_address IS NOT NULL
@@ -540,17 +614,19 @@ def save_packets_batch(packets: list) -> int:
                         vendor      = COALESCE(excluded.vendor, vendor),
                         last_seen   = excluded.last_seen,
                         total_bytes_received = total_bytes_received + excluded.total_bytes_received,
+                        control_bytes_received = control_bytes_received + excluded.control_bytes_received,
                         total_packets        = total_packets + excluded.total_packets,
                         active_mode  = COALESCE(excluded.active_mode, active_mode)
                 """, dst_rows)
 
             # Batch IPv6 source attribution
             if ipv6_src_agg:
-                ipv6_src_rows = [(a["bytes"], a["ts"], a["ipv6"], mac)
+                ipv6_src_rows = [(a["bytes"], a["control_bytes"], a["ts"], a["ipv6"], mac)
                                  for mac, a in ipv6_src_agg.items()]
                 cursor.executemany("""
                     UPDATE devices SET
                         total_bytes_sent = total_bytes_sent + ?,
+                        control_bytes_sent = control_bytes_sent + ?,
                         total_packets = total_packets + 1,
                         last_seen = ?,
                         ipv6_address = COALESCE(ipv6_address, ?)
@@ -559,11 +635,12 @@ def save_packets_batch(packets: list) -> int:
 
             # Batch IPv6 dest attribution
             if ipv6_dst_agg:
-                ipv6_dst_rows = [(a["bytes"], a["ts"], a["ipv6"], mac)
+                ipv6_dst_rows = [(a["bytes"], a["control_bytes"], a["ts"], a["ipv6"], mac)
                                  for mac, a in ipv6_dst_agg.items()]
                 cursor.executemany("""
                     UPDATE devices SET
                         total_bytes_received = total_bytes_received + ?,
+                        control_bytes_received = control_bytes_received + ?,
                         total_packets = total_packets + 1,
                         last_seen = ?,
                         ipv6_address = COALESCE(ipv6_address, ?)
@@ -612,41 +689,29 @@ def save_packets_batch(packets: list) -> int:
 
     except sqlite3.OperationalError as e:
         if "locked" in str(e).lower():
-            # Retry with exponential backoff (up to 3 attempts)
-            for attempt in range(1, 4):
-                delay = 0.2 * (2 ** (attempt - 1))   # 0.2, 0.4, 0.8s
+            max_retries = 5
+            if _lock_retry < max_retries:
+                attempt = _lock_retry + 1
+                delay = 0.2 * (2 ** _lock_retry)   # 0.2, 0.4, 0.8s
                 logger.warning(
-                    "save_packets_batch: DB locked (attempt %d/3), "
-                    "retrying in %.2fs", attempt, delay,
+                    "save_packets_batch: DB locked (attempt %d/%d), retrying in %.2fs",
+                    attempt,
+                    max_retries,
+                    delay,
                 )
                 import time as _time
                 _time.sleep(delay)
-                try:
-                    with get_connection() as conn2:
-                        cursor2 = conn2.cursor()
-                        if traffic_rows:
-                            cursor2.executemany("""
-                                INSERT INTO traffic_summary
-                                (timestamp, source_ip, dest_ip, source_mac,
-                                 dest_mac, source_port, dest_port, protocol,
-                                 raw_protocol, bytes_transferred, device_name,
-                                 vendor, direction)
-                                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-                            """, traffic_rows)
-                            saved = len(traffic_rows)
-                        conn2.commit()
-                    logger.info(
-                        "save_packets_batch: retry %d succeeded (%d rows)",
-                        attempt, saved,
-                    )
-                    break
-                except sqlite3.OperationalError:
-                    if attempt == 3:
-                        logger.error("save_packets_batch: all retries exhausted: %s", e)
+                # Re-run the full transaction so device counters, control
+                # bytes, and daily usage remain consistent with traffic rows.
+                return save_packets_batch(packets, _lock_retry=_lock_retry + 1)
+            logger.error("save_packets_batch: all retries exhausted: %s", e)
+            return -1
         else:
             logger.error("Batch save error: %s", e)
+            return -1
     except sqlite3.Error as e:
         logger.error("Batch save error: %s", e)
+        return -1
 
     return saved
 

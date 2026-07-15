@@ -176,3 +176,33 @@ class TestModeChangeRestart:
             on_mode_change(old_mode, new_mode)
 
             mock_reset.assert_called_once()
+
+    def test_transition_lock_not_held_during_engine_stop_and_start(self):
+        """Expensive stop/start work should run outside mode_transition_lock."""
+        old_engine = MagicMock()
+        old_engine.is_running = True
+
+        def _stop_side_effect():
+            assert not state.mode_transition_lock.locked()
+
+        old_engine.stop.side_effect = _stop_side_effect
+
+        old_mode = _make_mode("ethernet", ip="192.168.1.100")
+        new_mode = _make_mode("public_network", ip="192.168.1.50", iface="wlan0")
+
+        def _create_side_effect(_mode):
+            assert not state.mode_transition_lock.locked()
+            eng = MagicMock()
+
+            def _start_side_effect():
+                assert not state.mode_transition_lock.locked()
+
+            eng.start.side_effect = _start_side_effect
+            return eng
+
+        with patch.object(state, 'capture_engine', old_engine), \
+             patch.object(mode_handler, '_create_capture_engine', side_effect=_create_side_effect), \
+             patch.object(mode_handler, 'expose_engine_to_routes'), \
+             patch('orchestration.mode_handler.time'), \
+             patch.dict('sys.modules', {'psutil': MagicMock()}):
+            on_mode_change(old_mode, new_mode)

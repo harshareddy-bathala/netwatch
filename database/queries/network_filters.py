@@ -9,6 +9,7 @@ to separate network-detection concerns from database CRUD logic.
 
 import sqlite3
 import logging
+import ipaddress
 from typing import Optional
 
 from database.connection import get_connection
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _cached_subnet: Optional[str] = None
+_cached_subnet_cidr: Optional[str] = None
 _cached_our_ip: Optional[str] = None
 
 
@@ -149,6 +151,16 @@ def _detect_all_local_macs() -> set:
         pass
     except Exception:
         pass
+
+    # Fallback: always include capture-interface MAC when available.
+    # On some Windows hotspot adapters, psutil can miss AF_LINK entries.
+    try:
+        our_mac = _detect_our_mac()
+        if our_mac:
+            macs.add(our_mac.upper().replace('-', ':'))
+    except Exception:
+        pass
+
     _cached_all_local_macs = macs
     return macs
 
@@ -222,10 +234,29 @@ def _build_mac_to_ipv4(cursor) -> dict:
 
 
 def _detect_subnet() -> str:
-    """Get current subnet prefix (e.g. '10.234.255')."""
+    """Get current subnet prefix for backward-compatible LIKE filters."""
     global _cached_subnet
     if _cached_subnet:
         return _cached_subnet
+
+    cidr = _detect_subnet_cidr()
+    if cidr:
+        try:
+            network = ipaddress.IPv4Network(cidr, strict=False)
+            parts = str(network.network_address).split('.')
+            if len(parts) == 4:
+                if network.prefixlen <= 8:
+                    _cached_subnet = parts[0]
+                elif network.prefixlen <= 16:
+                    _cached_subnet = f"{parts[0]}.{parts[1]}"
+                elif network.prefixlen <= 24:
+                    _cached_subnet = f"{parts[0]}.{parts[1]}.{parts[2]}"
+                else:
+                    _cached_subnet = str(network.network_address)
+                return _cached_subnet
+        except Exception:
+            pass
+
     ip = _detect_our_ip()
     if ip:
         parts = ip.split('.')
@@ -235,10 +266,44 @@ def _detect_subnet() -> str:
     return ""
 
 
+def _detect_subnet_cidr() -> str:
+    """Get current subnet CIDR (e.g. ``10.234.255.0/24``)."""
+    global _cached_subnet_cidr
+    if _cached_subnet_cidr:
+        return _cached_subnet_cidr
+
+    try:
+        import netifaces
+        iface = _capture_interface_name
+        if iface:
+            addrs = netifaces.ifaddresses(iface)
+            ipv4_list = addrs.get(netifaces.AF_INET, [])
+            for entry in ipv4_list:
+                ip = entry.get('addr', '')
+                netmask = entry.get('netmask', '')
+                if ip and netmask:
+                    network = ipaddress.IPv4Network(f"{ip}/{netmask}", strict=False)
+                    _cached_subnet_cidr = str(network)
+                    return _cached_subnet_cidr
+    except Exception:
+        pass
+
+    ip = _detect_our_ip()
+    if ip:
+        try:
+            network = ipaddress.IPv4Network(f"{ip}/24", strict=False)
+            _cached_subnet_cidr = str(network)
+            return _cached_subnet_cidr
+        except Exception:
+            pass
+    return ""
+
+
 def reset_subnet_cache():
     """Reset cached subnet (call when interface changes)."""
-    global _cached_subnet, _cached_our_ip, _cached_our_mac, _cached_gateway_ip, _cached_gateway_mac, _gateway_cache_time, _cached_all_local_ips, _cached_all_local_macs
+    global _cached_subnet, _cached_subnet_cidr, _cached_our_ip, _cached_our_mac, _cached_gateway_ip, _cached_gateway_mac, _gateway_cache_time, _cached_all_local_ips, _cached_all_local_macs
     _cached_subnet = None
+    _cached_subnet_cidr = None
     _cached_our_ip = None
     _cached_our_mac = None
     _cached_gateway_ip = None
@@ -355,7 +420,7 @@ def _get_gateway_ip() -> str:
     return ""
 
 
-def set_subnet_from_ip(ip: str):
+def set_subnet_from_ip(ip: str, netmask: Optional[str] = None):
     """
     Explicitly set the subnet cache from a known-good IP.
 
@@ -365,16 +430,37 @@ def set_subnet_from_ip(ip: str):
     Args:
         ip: IP address like "10.234.255.114"
     """
-    global _cached_subnet, _cached_our_ip
+    global _cached_subnet, _cached_subnet_cidr, _cached_our_ip
     if ip:
-        parts = ip.split('.')
-        if len(parts) == 4:
-            _cached_subnet = f"{parts[0]}.{parts[1]}.{parts[2]}"
+        try:
+            if netmask:
+                network = ipaddress.IPv4Network(f"{ip}/{netmask}", strict=False)
+            else:
+                network = ipaddress.IPv4Network(f"{ip}/24", strict=False)
+            _cached_subnet_cidr = str(network)
+            parts = str(network.network_address).split('.')
+            if len(parts) == 4:
+                if network.prefixlen <= 8:
+                    _cached_subnet = parts[0]
+                elif network.prefixlen <= 16:
+                    _cached_subnet = f"{parts[0]}.{parts[1]}"
+                elif network.prefixlen <= 24:
+                    _cached_subnet = f"{parts[0]}.{parts[1]}.{parts[2]}"
+                else:
+                    _cached_subnet = str(network.network_address)
+            else:
+                _cached_subnet = ""
             _cached_our_ip = ip
             logger.info(
-                "Subnet frozen to capture interface: %s -> %s",
-                ip, _cached_subnet
+                "Subnet frozen to capture interface: %s -> %s (%s)",
+                ip, _cached_subnet, _cached_subnet_cidr,
             )
+        except ValueError:
+            parts = ip.split('.')
+            if len(parts) == 4:
+                _cached_subnet = f"{parts[0]}.{parts[1]}.{parts[2]}"
+                _cached_subnet_cidr = f"{parts[0]}.{parts[1]}.{parts[2]}.0/24"
+                _cached_our_ip = ip
 
 
 def set_current_mode(mode_name: str):
@@ -391,6 +477,22 @@ def set_current_mode(mode_name: str):
     global _current_mode_name
     _current_mode_name = mode_name
     logger.info("Device queries: mode set to '%s'", mode_name)
+
+
+def get_current_subnet_cidr() -> Optional[str]:
+    """Return current subnet as CIDR string (or ``None``)."""
+    cidr = _detect_subnet_cidr()
+    return cidr or None
+
+
+def _ip_in_subnet(ip: str, subnet_cidr: str) -> bool:
+    """Return True when *ip* belongs to *subnet_cidr*."""
+    if not ip or not subnet_cidr or ":" in ip:
+        return False
+    try:
+        return ipaddress.IPv4Address(ip) in ipaddress.IPv4Network(subnet_cidr, strict=False)
+    except ValueError:
+        return False
 
 
 def deactivate_stale_devices(new_subnet_prefix: str) -> int:
@@ -432,6 +534,21 @@ def scope_devices_to_mode(
         Number of devices whose ``active_mode`` was cleared.
     """
     if not new_subnet_prefix:
+        return 0
+
+    # Accept either CIDR input or legacy dotted-prefix input.
+    subnet_cidr = new_subnet_prefix
+    if "/" not in subnet_cidr:
+        parts = [p for p in new_subnet_prefix.split('.') if p]
+        if len(parts) == 1:
+            subnet_cidr = f"{parts[0]}.0.0.0/8"
+        elif len(parts) == 2:
+            subnet_cidr = f"{parts[0]}.{parts[1]}.0.0/16"
+        elif len(parts) == 3:
+            subnet_cidr = f"{parts[0]}.{parts[1]}.{parts[2]}.0/24"
+        else:
+            subnet_cidr = ""
+    if not subnet_cidr:
         return 0
 
     try:
@@ -481,11 +598,11 @@ def scope_devices_to_mode(
                     """
                     UPDATE devices
                     SET active_mode = ?
-                    WHERE (ipv4_address LIKE ? OR ip_address LIKE ?)
+                                        WHERE ip_in_subnet(COALESCE(ipv4_address, ip_address), ?) = 1
                       AND mac_address IS NOT NULL
                       AND mac_address != ''
                     """,
-                    (new_mode_name, f"{new_subnet_prefix}.%", f"{new_subnet_prefix}.%"),
+                                        (new_mode_name, subnet_cidr),
                 )
                 tagged = cursor.rowcount
 
@@ -495,17 +612,17 @@ def scope_devices_to_mode(
                     UPDATE devices
                     SET active_mode = NULL
                     WHERE (active_mode IS NOT NULL AND active_mode != '')
-                      AND (ipv4_address NOT LIKE ? AND ip_address NOT LIKE ?)
+                                            AND ip_in_subnet(COALESCE(ipv4_address, ip_address), ?) = 0
                     """,
-                    (f"{new_subnet_prefix}.%", f"{new_subnet_prefix}.%"),
+                                        (subnet_cidr,),
                 )
                 cleared = cursor.rowcount
 
             conn.commit()
             if tagged or cleared:
                 logger.info(
-                    "scope_devices_to_mode('%s', '%s.*'): tagged=%d, cleared=%d",
-                    new_mode_name, new_subnet_prefix, tagged, cleared,
+                    "scope_devices_to_mode('%s', '%s'): tagged=%d, cleared=%d",
+                    new_mode_name, subnet_cidr, tagged, cleared,
                 )
             return cleared
     except sqlite3.Error as e:
@@ -577,8 +694,12 @@ def is_valid_device(ip: str, mac: str, current_subnet: str) -> bool:
         return False
 
     # Rule 3: Must be in current subnet
-    if current_subnet and not ip.startswith(current_subnet + '.'):
-        return False
+    if current_subnet:
+        if "/" in current_subnet:
+            if not _ip_in_subnet(ip, current_subnet):
+                return False
+        elif not ip.startswith(current_subnet + '.'):
+            return False
 
     # Rule 4: Reject broadcast IP
     if ip.endswith('.255'):
@@ -651,8 +772,8 @@ def _is_valid_device_for_insert(ip: str, mac: Optional[str]) -> bool:
     # (port_mirror sees ALL traffic across subnets).
     # Hotspot mode now enforces its own subnet set by main.py.
     if _current_mode_name != "port_mirror":
-        subnet = _detect_subnet()
-        if subnet and not ip.startswith(subnet + "."):
+        subnet_cidr = _detect_subnet_cidr()
+        if subnet_cidr and not _ip_in_subnet(ip, subnet_cidr):
             return False
 
     # Reject broadcast / network addresses

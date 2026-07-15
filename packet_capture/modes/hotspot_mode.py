@@ -141,6 +141,32 @@ class HotspotMode(BaseMode):
         """Convenience: return just the MAC addresses of connected clients."""
         return {c["mac"] for c in self.get_connected_clients() if c.get("mac")}
 
+    def _collect_local_macs(self) -> Set[str]:
+        """Return normalized MAC addresses that belong to this host.
+
+        Hotspot virtual adapters are not always exposed consistently across
+        APIs on Windows, so combine the mode-interface MAC with psutil data.
+        """
+        local_macs: Set[str] = set()
+
+        iface_mac = (getattr(self._interface, "mac_address", "") or "").strip()
+        if iface_mac:
+            local_macs.add(iface_mac.lower().replace("-", ":"))
+
+        try:
+            import psutil
+
+            for _name, addrs in psutil.net_if_addrs().items():
+                for addr in addrs:
+                    if addr.family.name in ("AF_LINK", "AF_PACKET"):
+                        mac = (addr.address or "").strip()
+                        if mac and mac not in ("00:00:00:00:00:00", "00-00-00-00-00-00"):
+                            local_macs.add(mac.lower().replace("-", ":"))
+        except (ImportError, Exception):
+            pass
+
+        return local_macs
+
     # ------------------------------------------------------------------ #
     # Subnet detection (private)
     # ------------------------------------------------------------------ #
@@ -219,28 +245,70 @@ class HotspotMode(BaseMode):
         """
         clients: List[Dict[str, str]] = []
         seen_macs: Set[str] = set()
+        local_macs = self._collect_local_macs()
 
         # Method 1: Hosted-network peer list
         out = run_command(["netsh", "wlan", "show", "hostednetwork"])
         if out:
-            # Matches lines like "  aa:bb:cc:dd:ee:ff   Connected"
-            for match in re.finditer(
-                r"([0-9a-fA-F]{2}(?:[:-][0-9a-fA-F]{2}){5})\s+(\w+)", out
-            ):
-                mac = match.group(1).lower()
-                status = match.group(2)
+            # Parse per-line to avoid cross-line regex matches that can
+            # incorrectly capture adapter BSSID metadata as a "client".
+            valid_status = {"connected", "authenticated", "associated"}
+            for raw_line in out.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+
+                # Typical lines:
+                #   1  aa:bb:cc:dd:ee:ff  Authenticated
+                #   aa-bb-cc-dd-ee-ff     Connected
+                match = re.match(
+                    r"^(?:\d+\s+)?([0-9a-fA-F]{2}(?:[:-][0-9a-fA-F]{2}){5})\s+([A-Za-z]+)$",
+                    line,
+                )
+                if not match:
+                    continue
+
+                mac = match.group(1).lower().replace("-", ":")
+                status_raw = (match.group(2) or "").strip()
+                status = status_raw.lower()
+
+                if status not in valid_status:
+                    continue
+
+                # Never treat our own adapter MAC as a connected client.
+                if mac in local_macs:
+                    continue
+
                 if mac not in seen_macs:
                     seen_macs.add(mac)
-                    clients.append({"mac": mac, "ip": "", "status": status})
+                    clients.append({
+                        "mac": mac,
+                        "ip": "",
+                        "status": status_raw,
+                        "source": "hostednetwork",
+                    })
 
         # Method 2: ARP table for the hotspot subnet
         arp_clients = self._parse_arp_table()
-        for c in arp_clients:
-            if c["mac"] not in seen_macs:
-                seen_macs.add(c["mac"])
-                clients.append(c)
 
-        return clients
+        # When hostednetwork reports clients, treat it as authoritative for
+        # membership and use ARP only to fill missing IPs. This avoids ARP
+        # cache-only stale peers inflating connected-client counts.
+        if clients:
+            arp_by_mac = {
+                (c.get("mac") or "").lower().replace("-", ":"): c
+                for c in arp_clients
+            }
+            for c in clients:
+                mac = (c.get("mac") or "").lower().replace("-", ":")
+                arp_hit = arp_by_mac.get(mac)
+                if arp_hit and arp_hit.get("ip") and not c.get("ip"):
+                    c["ip"] = arp_hit["ip"]
+            return clients
+
+        # If hostednetwork yielded nothing (platform/driver variance), fall
+        # back to ARP-derived clients.
+        return arp_clients
 
     def _get_linux_clients(self) -> List[Dict[str, str]]:
         """
@@ -305,6 +373,7 @@ class HotspotMode(BaseMode):
         own_ips: set = set()
         if self._interface.ip_address:
             own_ips.add(self._interface.ip_address)
+        own_macs: Set[str] = self._collect_local_macs()
         try:
             import psutil
             for _name, addrs in psutil.net_if_addrs().items():
@@ -339,10 +408,15 @@ class HotspotMode(BaseMode):
                         if ip_addr in own_ips:
                             continue
                         mac = mac_match.group(1).lower().replace("-", ":")
+                        # Some Windows adapters can appear in ARP under
+                        # non-hotspot IPs; always exclude host MACs too.
+                        if mac in own_macs:
+                            continue
                         clients.append({
                             "mac": mac,
                             "ip": ip_addr,
                             "status": "arp",
+                            "source": "arp",
                         })
                 except ValueError:
                     continue

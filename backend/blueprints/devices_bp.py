@@ -11,11 +11,116 @@ from flask import Blueprint, jsonify, request
 from database.db_handler import (
     get_top_devices, get_all_devices, get_device_details, update_device_name,
 )
-from backend.helpers import handle_errors, cached_response, clear_response_cache, is_valid_ip
+from database.queries import network_filters as _nf
+from backend.helpers import handle_errors, clear_response_cache, is_valid_ip
 
 logger = logging.getLogger(__name__)
 
 devices_bp = Blueprint('devices', __name__)
+
+
+def _parse_include_control(default: bool = False) -> bool:
+    """Parse include_control query flag from request args."""
+    raw = request.args.get('include_control')
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _device_identity(device: dict) -> str:
+    """Stable identity for API-side device merging."""
+    mac = str(device.get('mac_address') or '').strip().lower().replace('-', ':')
+    if mac:
+        return f"mac:{mac}"
+    ip = str(device.get('ip_address') or '').strip()
+    if ip:
+        return f"ip:{ip}"
+    return ''
+
+
+def _to_int(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _merge_hotspot_realtime_devices(
+    db_rows: list,
+    include_control: bool,
+    limit: int,
+    offset: int,
+) -> list:
+    """Merge hotspot in-memory rows into DB rows for realtime parity."""
+    if _nf._current_mode_name != 'hotspot':
+        return db_rows
+
+    try:
+        from utils.realtime_state import dashboard_state
+
+        mem_limit = max(limit + offset + 50, 100)
+        mem_rows = dashboard_state.get_top_devices_memory(
+            limit=mem_limit,
+            include_control=include_control,
+        )
+    except Exception as exc:
+        logger.debug("hotspot device merge skipped: %s", exc)
+        return db_rows
+
+    if not mem_rows:
+        return db_rows
+
+    merged = [dict(row) for row in (db_rows or [])]
+    by_key = {}
+    for row in merged:
+        key = _device_identity(row)
+        if key:
+            by_key[key] = row
+
+    metric_fields = (
+        'bytes_sent', 'bytes_received', 'total_bytes',
+        'bytes_sent_app', 'bytes_received_app', 'total_bytes_app',
+        'bytes_sent_control', 'bytes_received_control', 'total_bytes_control',
+        'bytes_sent_total', 'bytes_received_total', 'total_bytes_total',
+        'packet_count', 'packet_count_app', 'packet_count_control', 'packet_count_total',
+        'today_bytes', 'today_sent', 'today_received',
+        'today_bytes_app', 'today_control_bytes', 'today_control_sent',
+        'today_control_received', 'today_bytes_total',
+        'control_overhead_ratio',
+    )
+
+    for mem in mem_rows:
+        key = _device_identity(mem)
+        if not key:
+            continue
+
+        existing = by_key.get(key)
+        if existing is None:
+            new_row = dict(mem)
+            merged.append(new_row)
+            by_key[key] = new_row
+            continue
+
+        mem_seen = str(mem.get('last_seen') or '')
+        cur_seen = str(existing.get('last_seen') or '')
+        if mem_seen and mem_seen > cur_seen:
+            existing['last_seen'] = mem_seen
+
+        if mem.get('ip_address') and not existing.get('ip_address'):
+            existing['ip_address'] = mem.get('ip_address')
+        if mem.get('hostname') and not existing.get('hostname'):
+            existing['hostname'] = mem.get('hostname')
+        if mem.get('device_name') and not existing.get('device_name'):
+            existing['device_name'] = mem.get('device_name')
+        if mem.get('vendor') and not existing.get('vendor'):
+            existing['vendor'] = mem.get('vendor')
+
+        for field in metric_fields:
+            if field in mem and mem[field] is not None:
+                existing[field] = mem[field]
+
+    merged.sort(key=lambda d: _to_int(d.get('total_bytes')), reverse=True)
+    return merged
 
 
 @devices_bp.route('/api/devices/top')
@@ -24,26 +129,51 @@ def get_top_devices_endpoint():
     """Get top devices by bandwidth usage."""
     limit = request.args.get('limit', 10, type=int)
     hours = request.args.get('hours', 1, type=int)
+    include_control = _parse_include_control(default=False)
     limit = min(max(limit, 1), 100)
     hours = min(max(hours, 1), 168)
-    devices = get_top_devices(limit=limit, hours=hours)
+    devices = get_top_devices(limit=limit, hours=hours, include_control=include_control)
     return jsonify({
+        'devices': devices,
         'data': devices,
-        'meta': {'count': len(devices), 'limit': limit, 'hours': hours},
+        'meta': {
+            'count': len(devices),
+            'limit': limit,
+            'hours': hours,
+            'include_control': include_control,
+        },
     })
 
 
 @devices_bp.route('/api/devices')
-@cached_response('devices')
 @handle_errors
 def get_devices():
     """Get all devices."""
     limit = request.args.get('limit', 50, type=int)
     offset = request.args.get('offset', 0, type=int)
-    devices = get_all_devices(limit=limit, offset=offset)
+    include_control = _parse_include_control(default=False)
+    limit = min(max(limit, 1), 500)
+    offset = max(offset, 0)
+
+    fetch_limit = min(max(limit + offset, limit), 500)
+    devices = get_all_devices(limit=fetch_limit, offset=0, include_control=include_control)
+    devices = _merge_hotspot_realtime_devices(
+        devices,
+        include_control=include_control,
+        limit=limit,
+        offset=offset,
+    )
+    devices = devices[offset:offset + limit]
+
     return jsonify({
+        'devices': devices,
         'data': devices,
-        'meta': {'count': len(devices), 'limit': limit, 'offset': offset},
+        'meta': {
+            'count': len(devices),
+            'limit': limit,
+            'offset': offset,
+            'include_control': include_control,
+        },
     })
 
 
@@ -53,14 +183,15 @@ def get_device(ip_address):
     """Get details for a specific device."""
     if not is_valid_ip(ip_address):
         return jsonify({'error': 'Invalid IP address format', 'code': 'INVALID_IP'}), 400
-    device = get_device_details(ip_address)
+    include_control = _parse_include_control(default=False)
+    device = get_device_details(ip_address, include_control=include_control)
     if device:
         # Merge in-memory last_seen when it's more recent than the DB value.
         # The device list uses real-time in-memory state, but device detail
         # queries the DB — this closes the gap so both views agree.
         try:
             from utils.realtime_state import dashboard_state
-            mem_dev = dashboard_state.get_device_by_ip(ip_address)
+            mem_dev = dashboard_state.get_device_by_ip(ip_address, include_control=include_control)
             if mem_dev and mem_dev.get("last_seen"):
                 db_last_seen = device.get("last_seen", "")
                 mem_last_seen = mem_dev["last_seen"]

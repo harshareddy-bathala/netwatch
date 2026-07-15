@@ -37,6 +37,11 @@ try:
     SCAPY_AVAILABLE = True
 except ImportError:
     SCAPY_AVAILABLE = False
+    ARP = Ether = IP = ICMP = UDP = TCP = None
+    srp = sr1 = send = sniff = None
+    conf = get_if_addr = get_if_hwaddr = None
+    DNSRR = DNSQR = DNS = Raw = None
+    NBNSQueryRequest = NBNSQueryResponse = None
     print("WARNING: Scapy not available. Network discovery limited.")
 
 # Setup logging

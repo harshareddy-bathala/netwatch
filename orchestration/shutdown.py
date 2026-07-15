@@ -80,6 +80,27 @@ def shutdown():
         except Exception:
             pass
 
+    if state.flow_normalizer:
+        try:
+            state.flow_normalizer.stop()
+            logger.info("Flow normalizer stopped")
+        except Exception as e:
+            logger.error("Error stopping flow normalizer: %s", e)
+
+    if state.behavior_analyzer:
+        try:
+            state.behavior_analyzer.stop()
+            logger.info("Behavior analyzer stopped")
+        except Exception as e:
+            logger.error("Error stopping behavior analyzer: %s", e)
+
+    if state.twin_builder:
+        try:
+            state.twin_builder.stop()
+            logger.info("Twin builder stopped")
+        except Exception as e:
+            logger.error("Error stopping twin builder: %s", e)
+
     if state.detector:
         try:
             state.detector.stop()

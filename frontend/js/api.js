@@ -70,9 +70,21 @@ const api = {
   getRealtimeStats: ()                   => request('/stats/realtime'),
   getHealthScore:   ()                   => request('/health'),
 
+  // Digital twin & intelligence (Phase 1)
+  getTwin:            (maxEdges=500)     => request(`/twin?max_edges=${maxEdges}`),
+  getTwinStats:       ()                 => request('/twin/stats'),
+  getRecentFlows:     (limit=100, mac='') =>
+    request(`/flows/recent?limit=${limit}${mac ? `&mac=${encodeURIComponent(mac)}` : ''}`),
+  getRecentDns:       (limit=100, mac='') =>
+    request(`/dns/recent?limit=${limit}${mac ? `&mac=${encodeURIComponent(mac)}` : ''}`),
+  getBehaviorProfile: (mac)              =>
+    request(`/behavior/profiles/${encodeURIComponent(mac)}`),
+
   // Devices
-  getAllDevices:     (limit=50, offset=0) => request(`/devices?limit=${limit}&offset=${offset}`),
-  getDeviceDetails: (ip)                 => request(`/devices/${encodeURIComponent(ip)}`),
+  getAllDevices:     (limit=50, offset=0, includeControl=false) =>
+    request(`/devices?limit=${limit}&offset=${offset}&include_control=${includeControl ? 'true' : 'false'}`),
+  getDeviceDetails: (ip, includeControl=false) =>
+    request(`/devices/${encodeURIComponent(ip)}?include_control=${includeControl ? 'true' : 'false'}`),
   updateDeviceName: (ip, hostname, mac)   => request('/devices/update-name', {
       method: 'POST', body: JSON.stringify({ ip_address: ip, hostname, mac }),
   }),
@@ -111,7 +123,10 @@ const api = {
 
   // SSE — returns an EventSource (caller must close)
   streamUpdates: (interval=3) => {
-    const url = `${BASE}/stream?interval=${interval}`;
+    const params = new URLSearchParams({ interval: String(interval) });
+    // EventSource cannot send custom headers, so API-key auth must use query params.
+    if (_apiKey) params.set('api_key', _apiKey);
+    const url = `${BASE}/stream?${params.toString()}`;
     return new EventSource(url);
   },
 };

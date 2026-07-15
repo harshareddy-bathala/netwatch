@@ -130,6 +130,44 @@ class TestDeviceTracking:
         assert state.device_count <= 3
 
 
+class TestDiscoveredIdleDevices:
+    """Discovery-only devices should be visible with deterministic expiry."""
+
+    def test_discovered_device_visible_without_traffic(self):
+        state = InMemoryDashboardState()
+        state.set_mode_context(own_traffic_only=False)
+
+        state.upsert_discovered_device(
+            mac_address="aa:bb:cc:dd:ee:55",
+            ip_address="192.168.137.55",
+            hostname="Client-55",
+            vendor="TestVendor",
+        )
+
+        top = state.get_top_devices_memory(limit=10)
+        dev = next((d for d in top if d["mac_address"] == "aa:bb:cc:dd:ee:55"), None)
+
+        assert dev is not None
+        assert dev["ip_address"] == "192.168.137.55"
+        assert dev["total_bytes"] == 0
+
+    def test_top_devices_respects_active_window(self):
+        state = InMemoryDashboardState()
+        state.set_mode_context(own_traffic_only=False)
+        state.set_device_active_window(1)
+
+        state.upsert_discovered_device(
+            mac_address="aa:bb:cc:dd:ee:66",
+            ip_address="192.168.137.66",
+            hostname="Client-66",
+        )
+
+        with state._lock:
+            state._devices["aa:bb:cc:dd:ee:66"].last_seen = time.time() - 15
+
+        assert state.get_top_devices_memory(limit=10) == []
+
+
 class TestTopDevices:
     """get_top_devices_memory returns sorted results."""
 

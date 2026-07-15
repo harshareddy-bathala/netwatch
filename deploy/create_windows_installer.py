@@ -256,7 +256,8 @@ def create_readme():
     print("[6/6] Creating README...")
 
     readme = os.path.join(INSTALLER_DIR, "README.txt")
-    with open(readme, 'w') as f:
+    # Use UTF-8 so Windows codepages do not fail on symbols like "→".
+    with open(readme, 'w', encoding='utf-8') as f:
         f.write(f"""{APP_NAME} v{APP_VERSION} - Windows Installation
 ====================================================
 

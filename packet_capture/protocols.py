@@ -8,6 +8,7 @@ Provides comprehensive protocol identification for network traffic analysis.
 
 import os
 import sys
+from enum import Enum
 
 # Get config
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -52,8 +53,11 @@ EXTENDED_PORTS = {
     
     # DNS & Network Services
     53: "DNS",
+    853: "DNS-over-TLS",
     67: "DHCP",
     68: "DHCP",
+    546: "DHCPv6",
+    547: "DHCPv6",
     123: "NTP",
     161: "SNMP",
     162: "SNMP-TRAP",
@@ -141,6 +145,90 @@ ALL_PROTOCOL_PORTS = {**EXTENDED_PORTS, **PROTOCOL_PORTS}
 
 
 # =============================================================================
+# CONTROL-PROTOCOL CLASSIFICATION (PHASE 1)
+# =============================================================================
+
+class ControlProtocol(str, Enum):
+    """Control/background protocols excluded from app-usage metrics."""
+
+    ARP = "ARP"
+    DHCP = "DHCP"
+    DHCPV6 = "DHCPV6"
+    IGMP = "IGMP"
+    MDNS = "MDNS"
+    IPV6_ND = "IPV6-ND"
+    IPV6_SLAAC = "IPV6-SLAAC"
+    LLMNR = "LLMNR"
+    SSDP = "SSDP"
+
+
+_CONTROL_PROTOCOL_ALIASES = {
+    "ARP": ControlProtocol.ARP.value,
+    "DHCP": ControlProtocol.DHCP.value,
+    "DHCPV6": ControlProtocol.DHCPV6.value,
+    "IGMP": ControlProtocol.IGMP.value,
+    "MDNS": ControlProtocol.MDNS.value,
+    "M-DNS": ControlProtocol.MDNS.value,
+    "LLMNR": ControlProtocol.LLMNR.value,
+    "SSDP": ControlProtocol.SSDP.value,
+    "UPNP-SSDP": ControlProtocol.SSDP.value,
+    "IPV6-ND": ControlProtocol.IPV6_ND.value,
+    "IPV6ND": ControlProtocol.IPV6_ND.value,
+    "NDP": ControlProtocol.IPV6_ND.value,
+    "ICMPV6-ND": ControlProtocol.IPV6_ND.value,
+    "ICMPV6-NS": ControlProtocol.IPV6_ND.value,
+    "ICMPV6-NA": ControlProtocol.IPV6_ND.value,
+    "ICMPV6-RS": ControlProtocol.IPV6_ND.value,
+    "ICMPV6-RA": ControlProtocol.IPV6_SLAAC.value,
+    "IPV6-SLAAC": ControlProtocol.IPV6_SLAAC.value,
+    "SLAAC": ControlProtocol.IPV6_SLAAC.value,
+}
+
+_CONTROL_PROTOCOL_SET = {
+    ControlProtocol.ARP.value,
+    ControlProtocol.DHCP.value,
+    ControlProtocol.DHCPV6.value,
+    ControlProtocol.IGMP.value,
+    ControlProtocol.MDNS.value,
+    ControlProtocol.IPV6_ND.value,
+    ControlProtocol.IPV6_SLAAC.value,
+    ControlProtocol.LLMNR.value,
+    ControlProtocol.SSDP.value,
+}
+
+_ESSENTIAL_CONTROL_SET = {
+    ControlProtocol.ARP.value,
+    ControlProtocol.DHCP.value,
+    ControlProtocol.DHCPV6.value,
+}
+
+
+def _normalize_protocol_name(protocol_name: str) -> str:
+    """Normalize protocol names for resilient control-traffic checks."""
+    if not protocol_name:
+        return ""
+
+    normalized = (
+        str(protocol_name)
+        .strip()
+        .upper()
+        .replace(" ", "")
+        .replace("_", "-")
+    )
+    return _CONTROL_PROTOCOL_ALIASES.get(normalized, normalized)
+
+
+def is_control_protocol(protocol_name: str) -> bool:
+    """Return True when *protocol_name* is classified as control traffic."""
+    return _normalize_protocol_name(protocol_name) in _CONTROL_PROTOCOL_SET
+
+
+def is_essential_control(protocol_name: str) -> bool:
+    """Return True for essential connectivity protocols (ARP/DHCP family)."""
+    return _normalize_protocol_name(protocol_name) in _ESSENTIAL_CONTROL_SET
+
+
+# =============================================================================
 # PROTOCOL CATEGORIES
 # =============================================================================
 
@@ -150,7 +238,7 @@ PROTOCOL_CATEGORIES = {
     'file_transfer': ['FTP', 'FTP-DATA', 'FTPS', 'FTPS-DATA', 'SFTP', 'TFTP', 'SMB'],
     'remote_access': ['SSH', 'TELNET', 'RDP', 'VNC'],
     'database': ['MySQL', 'PostgreSQL', 'MSSQL', 'ORACLE', 'Redis', 'MongoDB', 'Elasticsearch'],
-    'network_services': ['DNS', 'DHCP', 'NTP', 'SNMP', 'SNMP-TRAP', 'SYSLOG', 'LDAP', 'LDAPS', 'STUN'],
+    'network_services': ['DNS', 'DNS-over-TLS', 'DHCP', 'NTP', 'SNMP', 'SNMP-TRAP', 'SYSLOG', 'LDAP', 'LDAPS', 'STUN'],
     'messaging': ['XMPP', 'IRC', 'MQTT', 'AMQP'],
     'streaming': ['RTSP', 'RTMP'],
     'security': ['Kerberos', 'ISAKMP'],
@@ -161,15 +249,15 @@ PROTOCOL_CATEGORIES = {
 PROTOCOL_TO_CATEGORY = {}
 for category, protocols in PROTOCOL_CATEGORIES.items():
     for protocol in protocols:
-        PROTOCOL_TO_CATEGORY[protocol] = category
+        PROTOCOL_TO_CATEGORY[protocol.upper()] = category
 
 
 # =============================================================================
 # MAIN PROTOCOL DETECTION FUNCTIONS
 # =============================================================================
 
-def detect_protocol(src_port: int = None, dst_port: int = None, 
-                    raw_protocol: str = 'TCP') -> str:
+def detect_protocol(src_port: int = None, dst_port: int = None,
+                    raw_protocol: str = 'TCP', tunnel_signature: bool = False) -> str:
     """
     Detect application-layer protocol from port numbers.
     
@@ -186,6 +274,8 @@ def detect_protocol(src_port: int = None, dst_port: int = None,
         src_port: Source port number (can be None)
         dst_port: Destination port number (can be None)
         raw_protocol: Transport protocol ('TCP', 'UDP', 'ICMP')
+        tunnel_signature: Optional deep-packet hint that confirms
+            VPN/IKE-like payload structure.
     
     Returns:
         Protocol name string (e.g., 'HTTP', 'HTTPS', 'QUIC', 'DNS', 'TCP')
@@ -219,7 +309,20 @@ def detect_protocol(src_port: int = None, dst_port: int = None,
     ports_to_check = [p for p in (dst_port, src_port) if p is not None]
     ports_to_check.sort()  # lower port first = more likely server port
 
+    # UDP/500 (ISAKMP) is noisy on shared/public networks and can dominate
+    # charts when attributed purely by low-port precedence. Be conservative
+    # unless we have strong VPN context.
+    allow_isakmp_port_lookup = True
+    if is_udp and 500 in ports_to_check:
+        peer_ports = [p for p in ports_to_check if p != 500]
+        peer = peer_ports[0] if peer_ports else None
+        if tunnel_signature or peer in {500, 4500}:
+            return "ISAKMP"
+        allow_isakmp_port_lookup = False
+
     for port in ports_to_check:
+        if port == 500 and not allow_isakmp_port_lookup:
+            continue
         if port in ALL_PROTOCOL_PORTS:
             return ALL_PROTOCOL_PORTS[port]
 
@@ -423,7 +526,7 @@ def get_protocol_category(protocol_name: str) -> str:
     if protocol_upper in ('TCP', 'UDP', 'ICMP'):
         return 'transport'
     
-    return PROTOCOL_TO_CATEGORY.get(protocol_name, 'other')
+    return PROTOCOL_TO_CATEGORY.get(protocol_upper, 'other')
 
 
 def get_protocols_by_category(category: str) -> list:

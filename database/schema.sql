@@ -25,7 +25,9 @@ CREATE TABLE IF NOT EXISTS devices (
     first_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     total_bytes_sent INTEGER DEFAULT 0,
+    control_bytes_sent INTEGER DEFAULT 0,
     total_bytes_received INTEGER DEFAULT 0,
+    control_bytes_received INTEGER DEFAULT 0,
     total_packets INTEGER DEFAULT 0,
     is_local INTEGER DEFAULT 0,
     device_type TEXT DEFAULT 'unknown',
@@ -54,6 +56,7 @@ CREATE TABLE IF NOT EXISTS traffic_summary (
     bytes_transferred INTEGER NOT NULL DEFAULT 0,
     packets_count INTEGER DEFAULT 1,
     direction TEXT DEFAULT 'unknown',
+    is_control INTEGER DEFAULT 0,
     session_id TEXT DEFAULT NULL,
     device_name TEXT DEFAULT NULL,
     vendor TEXT DEFAULT NULL
@@ -159,6 +162,7 @@ CREATE TABLE IF NOT EXISTS system_config (
 -- Covering composite indexes for traffic_summary
 CREATE INDEX IF NOT EXISTS idx_traffic_timestamp_protocol ON traffic_summary(timestamp, protocol);
 CREATE INDEX IF NOT EXISTS idx_traffic_timestamp_direction ON traffic_summary(timestamp, direction);
+CREATE INDEX IF NOT EXISTS idx_traffic_control_timestamp ON traffic_summary(is_control, timestamp);
 CREATE INDEX IF NOT EXISTS idx_traffic_protocol_timestamp ON traffic_summary(protocol, timestamp);
 CREATE INDEX IF NOT EXISTS idx_traffic_ts_bytes_dir ON traffic_summary(timestamp, bytes_transferred, direction);
 CREATE INDEX IF NOT EXISTS idx_traffic_src_ip_ts_bytes ON traffic_summary(source_ip, timestamp, bytes_transferred);
@@ -212,6 +216,75 @@ CREATE TABLE IF NOT EXISTS traffic_rollup (
 
 CREATE INDEX IF NOT EXISTS idx_rollup_hour ON traffic_rollup(hour_bucket);
 CREATE INDEX IF NOT EXISTS idx_rollup_protocol ON traffic_rollup(protocol);
+
+-- =============================================================================
+-- FLOWS TABLE (Phase 0, AI-first: flow-level telemetry)
+-- =============================================================================
+-- One row per observed flow (5-tuple + direction), aggregated by the
+-- intelligence.flow_normalizer from packet batches.  This is the primary
+-- input for device-behavior learning, threat detection, and the digital
+-- twin.  Indexes are deliberately minimal (see traffic_summary history:
+-- excess indexes caused write amplification).
+
+CREATE TABLE IF NOT EXISTS flows (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    first_seen TIMESTAMP NOT NULL,
+    last_seen TIMESTAMP NOT NULL,
+    source_ip TEXT NOT NULL,
+    dest_ip TEXT NOT NULL,
+    source_port INTEGER DEFAULT NULL,
+    dest_port INTEGER DEFAULT NULL,
+    protocol TEXT NOT NULL DEFAULT 'UNKNOWN',
+    direction TEXT DEFAULT 'unknown',
+    source_mac TEXT DEFAULT NULL,
+    dest_mac TEXT DEFAULT NULL,
+    bytes_total INTEGER DEFAULT 0,
+    packets_total INTEGER DEFAULT 0,
+    is_control INTEGER DEFAULT 0,
+    duration_seconds REAL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_flows_last_seen ON flows(last_seen);
+CREATE INDEX IF NOT EXISTS idx_flows_src_mac_seen ON flows(source_mac, last_seen);
+
+-- =============================================================================
+-- DNS QUERIES TABLE (Phase 0, AI-first: DNS telemetry)
+-- =============================================================================
+-- Queried names per device — input for behavior profiles, DNS-tunneling
+-- detection, and investigation retrieval.
+
+CREATE TABLE IF NOT EXISTS dns_queries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TIMESTAMP NOT NULL,
+    source_ip TEXT DEFAULT NULL,
+    source_mac TEXT DEFAULT NULL,
+    qname TEXT NOT NULL,
+    qtype INTEGER DEFAULT NULL,
+    protocol TEXT DEFAULT 'DNS'
+);
+
+CREATE INDEX IF NOT EXISTS idx_dns_queries_timestamp ON dns_queries(timestamp);
+CREATE INDEX IF NOT EXISTS idx_dns_queries_qname ON dns_queries(qname);
+
+-- =============================================================================
+-- BEHAVIOR PROFILES TABLE (Phase 1, AI-first: per-device learned baselines)
+-- =============================================================================
+-- Welford running statistics per (device, hour-of-week, metric) — lets the
+-- BehaviorAnalyzer learn "normal" per device without storing raw history.
+
+CREATE TABLE IF NOT EXISTS behavior_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mac_address TEXT NOT NULL,
+    hour_of_week INTEGER NOT NULL,   -- 0-167 (weekday*24 + hour)
+    metric TEXT NOT NULL,            -- bytes / flows / unique_dests / dns_queries
+    count INTEGER NOT NULL DEFAULT 0,
+    mean REAL NOT NULL DEFAULT 0,
+    m2 REAL NOT NULL DEFAULT 0,      -- Welford sum of squared deltas
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(mac_address, hour_of_week, metric)
+);
+
+CREATE INDEX IF NOT EXISTS idx_behavior_profiles_mac ON behavior_profiles(mac_address);
 
 -- =============================================================================
 -- ALERT RULES TABLE (user-defined custom alert rules)

@@ -127,6 +127,11 @@ class InterfaceManager:
         # Phase 4: Mode transition cooldown — prevents rapid mode flaps
         # (e.g. cable briefly disconnected and reconnected).
         self._transition_cooldown = 60  # seconds between allowed transitions
+        # Hotspot/public transitions are user-visible and must converge fast.
+        self._hotspot_fast_interval = 5
+        self._hotspot_entry_threshold = 1
+        self._hotspot_exit_threshold = 3
+        self._hotspot_exit_cooldown = 15
         self._last_transition_time = 0.0
 
     # ================================================================== #
@@ -451,27 +456,41 @@ class InterfaceManager:
                     # Same mode as current — reset any pending transition
                     self._pending_mode = None
                     self._pending_count = 0
-                    self._consecutive_stable += 1
 
-                    # Progressive backoff: as mode stays stable for longer,
-                    # increase the detection interval to reduce overhead.
-                    if not self._is_stable:
-                        self._is_stable = True
+                    if self._is_hotspot_sensitive_mode(old_mode):
+                        # Keep hotspot/public detection tight so hotspot
+                        # on/off actions are observed within a few seconds.
+                        self._is_stable = False
                         self._stable_index = 0
                         self._consecutive_stable = 0
-                    elif self._consecutive_stable >= 10 and self._stable_index < len(self._stable_intervals) - 1:
-                        # After 10 consecutive stable detections at current
-                        # interval, move to next slower interval
-                        self._stable_index += 1
-                        self._consecutive_stable = 0
+                        if self._refresh_interval != self._hotspot_fast_interval:
+                            self._refresh_interval = self._hotspot_fast_interval
+                            logger.debug(
+                                "Hotspot-sensitive mode stable — detection interval: %ds",
+                                self._hotspot_fast_interval,
+                            )
+                    else:
+                        self._consecutive_stable += 1
 
-                    new_interval = self._stable_intervals[min(self._stable_index, len(self._stable_intervals) - 1)]
-                    if self._refresh_interval != new_interval:
-                        self._refresh_interval = new_interval
-                        logger.debug(
-                            "Mode stable — detection interval: %ds",
-                            new_interval,
-                        )
+                        # Progressive backoff: as mode stays stable for longer,
+                        # increase the detection interval to reduce overhead.
+                        if not self._is_stable:
+                            self._is_stable = True
+                            self._stable_index = 0
+                            self._consecutive_stable = 0
+                        elif self._consecutive_stable >= 10 and self._stable_index < len(self._stable_intervals) - 1:
+                            # After 10 consecutive stable detections at current
+                            # interval, move to next slower interval
+                            self._stable_index += 1
+                            self._consecutive_stable = 0
+
+                        new_interval = self._stable_intervals[min(self._stable_index, len(self._stable_intervals) - 1)]
+                        if self._refresh_interval != new_interval:
+                            self._refresh_interval = new_interval
+                            logger.debug(
+                                "Mode stable — detection interval: %ds",
+                                new_interval,
+                            )
                 else:
                     # Different from current mode — count as pending
                     if (self._pending_mode is not None
@@ -483,14 +502,20 @@ class InterfaceManager:
                         self._pending_mode = new_mode
                         self._pending_count = 1
 
-                    if self._pending_count >= self._stability_threshold:
+                    required_threshold = self._required_transition_threshold(old_mode, new_mode)
+
+                    if self._pending_count >= required_threshold:
                         # Phase 4: transition cooldown check
                         now_ts = time.time()
-                        cooldown_remaining = self._transition_cooldown - (now_ts - self._last_transition_time)
+                        cooldown_seconds = self._transition_cooldown_for(old_mode, new_mode)
+                        cooldown_remaining = cooldown_seconds - (now_ts - self._last_transition_time)
                         if cooldown_remaining > 0 and self._last_transition_time > 0:
                             logger.debug(
-                                "Mode change suppressed by cooldown (%.0fs remaining)",
-                                cooldown_remaining,
+                                "Mode change %s -> %s suppressed by cooldown (%.0fs remaining, threshold=%d)",
+                                self._mode_name_value(old_mode),
+                                self._mode_name_value(new_mode),
+                                max(0.0, cooldown_remaining),
+                                required_threshold,
                             )
                         else:
                             # Stable: accept the new mode
@@ -515,7 +540,7 @@ class InterfaceManager:
                             "Pending mode %s (%d/%d)",
                             new_mode.get_mode_name().value,
                             self._pending_count,
-                            self._stability_threshold,
+                            required_threshold,
                         )
                         # Fast re-check: shorten interval to 3s so the
                         # confirmation detection happens quickly instead
@@ -551,6 +576,65 @@ class InterfaceManager:
         if old.interface.gateway != new.interface.gateway:
             return True
         return False
+
+    @staticmethod
+    def _mode_name_value(mode: Optional[BaseMode]) -> str:
+        """Safely extract a mode name value string for comparisons."""
+        if mode is None:
+            return ""
+        try:
+            mode_name = mode.get_mode_name()
+            return mode_name.value if hasattr(mode_name, 'value') else str(mode_name)
+        except Exception:
+            return ""
+
+    @classmethod
+    def _is_hotspot_transition(cls, old: Optional[BaseMode], new: BaseMode) -> bool:
+        """True when either side of transition is hotspot mode."""
+        return (
+            cls._mode_name_value(old) == ModeName.HOTSPOT.value
+            or cls._mode_name_value(new) == ModeName.HOTSPOT.value
+        )
+
+    @classmethod
+    def _is_entering_hotspot(cls, old: Optional[BaseMode], new: BaseMode) -> bool:
+        """True when transitioning into hotspot mode."""
+        return (
+            cls._mode_name_value(new) == ModeName.HOTSPOT.value
+            and cls._mode_name_value(old) != ModeName.HOTSPOT.value
+        )
+
+    @classmethod
+    def _is_leaving_hotspot(cls, old: Optional[BaseMode], new: BaseMode) -> bool:
+        """True when transitioning out of hotspot mode."""
+        return (
+            cls._mode_name_value(old) == ModeName.HOTSPOT.value
+            and cls._mode_name_value(new) != ModeName.HOTSPOT.value
+        )
+
+    def _required_transition_threshold(self, old: Optional[BaseMode], new: BaseMode) -> int:
+        """Return consecutive detections required for a mode transition."""
+        if self._is_entering_hotspot(old, new):
+            return self._hotspot_entry_threshold
+        if self._is_leaving_hotspot(old, new):
+            return max(self._hotspot_exit_threshold, self._stability_threshold)
+        return self._stability_threshold
+
+    def _transition_cooldown_for(self, old: Optional[BaseMode], new: BaseMode) -> int:
+        """Return cooldown seconds to apply for this transition."""
+        if self._is_entering_hotspot(old, new):
+            return 0
+        if self._is_leaving_hotspot(old, new):
+            return self._hotspot_exit_cooldown
+        return self._transition_cooldown
+
+    @classmethod
+    def _is_hotspot_sensitive_mode(cls, mode: Optional[BaseMode]) -> bool:
+        """Modes where we keep short polling for quick hotspot toggles."""
+        return cls._mode_name_value(mode) in {
+            ModeName.HOTSPOT.value,
+            ModeName.PUBLIC_NETWORK.value,
+        }
 
     def _make_safe_mode(self) -> PublicNetworkMode:
         """Create a PublicNetworkMode for FORCE_SAFE_MODE."""

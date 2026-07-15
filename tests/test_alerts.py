@@ -9,6 +9,7 @@ accurate thresholds, and badge count management.
 import sys
 import os
 import time
+import json
 from datetime import datetime
 from unittest.mock import patch
 
@@ -18,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from alerts.alert_engine import AlertEngine, SEVERITY_WARNING, SEVERITY_CRITICAL
 from alerts.deduplication import AlertDeduplicator
+from database.queries.alert_queries import create_alert_rule, list_alert_rules
 
 
 # ===================================================================
@@ -75,6 +77,88 @@ class TestAlertCreation:
         )
         # High-score anomaly (0.9) should always produce an alert
         assert isinstance(result, int), f"Expected alert_id for anomaly 0.9, got {result}"
+
+    def test_bandwidth_alert_includes_app_control_breakdown_metadata(self, alert_engine):
+        alert_id = alert_engine.check_bandwidth_threshold(
+            10_000_000,    # app bytes/s (~80 Mbps app)
+            control_bps=2_000_000,  # control bytes/s (~16 Mbps control)
+        )
+        assert isinstance(alert_id, int)
+
+        alerts = AlertEngine.get_alerts(limit=10)
+        row = next((a for a in alerts if a.get('id') == alert_id), None)
+        assert row is not None
+
+        details = json.loads(row.get('details') or '{}')
+        assert details.get('threshold_scope') == 'app_only'
+        assert details.get('app_mbps', 0) > 0
+        assert details.get('control_mbps', 0) > 0
+
+        msg = (row.get('message') or '').lower()
+        assert 'app' in msg
+        assert 'control' in msg
+
+
+class TestCustomRuleRuntime:
+    """Runtime evaluation of user-defined custom alert rules."""
+
+    def test_custom_rule_triggers_for_bandwidth(self, alert_engine):
+        rule_id = create_alert_rule(
+            name="BW Burst",
+            description="",
+            metric="bandwidth_bps",
+            operator=">",
+            threshold=1000,
+            severity="warning",
+            cooldown_seconds=300,
+        )
+        assert isinstance(rule_id, int)
+
+        fired = alert_engine.check_custom_rules({"bandwidth_bps": 5000})
+        assert fired == 1
+
+    def test_custom_rules_do_not_throttle_each_other(self, alert_engine):
+        # Both rules share severity/type but should fire independently.
+        create_alert_rule(
+            name="Rule A",
+            description="",
+            metric="bandwidth_bps",
+            operator=">",
+            threshold=100,
+            severity="warning",
+            cooldown_seconds=300,
+        )
+        create_alert_rule(
+            name="Rule B",
+            description="",
+            metric="bandwidth_bps",
+            operator=">",
+            threshold=200,
+            severity="warning",
+            cooldown_seconds=300,
+        )
+
+        fired = alert_engine.check_custom_rules({"bandwidth_bps": 5000})
+        assert fired == 2
+
+    def test_custom_rule_sets_last_triggered(self, alert_engine):
+        rule_id = create_alert_rule(
+            name="Packet Rate",
+            description="",
+            metric="packet_rate",
+            operator=">",
+            threshold=10,
+            severity="warning",
+            cooldown_seconds=300,
+        )
+        assert isinstance(rule_id, int)
+
+        fired = alert_engine.check_custom_rules({"packets_per_second": 99})
+        assert fired == 1
+
+        rules = list_alert_rules()
+        target = next(r for r in rules if r["id"] == rule_id)
+        assert target["last_triggered_at"]
 
 
 # ===================================================================

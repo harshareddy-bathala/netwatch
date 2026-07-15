@@ -32,6 +32,7 @@ class PacketData:
     raw_protocol: Optional[str] = None
     bytes_transferred: int = 0
     direction: str = "unknown"          # upload | download | unknown
+    is_control: bool = False
     device_name: Optional[str] = None
     vendor: Optional[str] = None
     dest_vendor: Optional[str] = None   # gateway / hotspot vendor
@@ -55,7 +56,9 @@ class Device:
     last_seen: Optional[str] = None
     total_bytes: int = 0
     bytes_sent: int = 0
+    control_bytes_sent: int = 0
     bytes_received: int = 0
+    control_bytes_received: int = 0
     packet_count: int = 0
     is_local: bool = True
 

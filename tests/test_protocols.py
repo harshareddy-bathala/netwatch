@@ -60,6 +60,9 @@ class TestDetectProtocol:
     def test_dns(self):
         assert detect_protocol(dst_port=53, raw_protocol="UDP") == "DNS"
 
+    def test_dns_over_tls(self):
+        assert detect_protocol(dst_port=853, raw_protocol="TCP") == "DNS-over-TLS"
+
     def test_ssh(self):
         assert detect_protocol(dst_port=22, raw_protocol="TCP") == "SSH"
 
@@ -97,6 +100,24 @@ class TestDetectProtocol:
 
     def test_smb(self):
         assert detect_protocol(dst_port=445, raw_protocol="TCP") == "SMB"
+
+    def test_isakmp_requires_stronger_udp_signal(self):
+        """UDP/500 with arbitrary peer port should not auto-dominate as ISAKMP."""
+        assert detect_protocol(src_port=55000, dst_port=500, raw_protocol="UDP") == "UDP"
+
+    def test_isakmp_detected_for_vpn_port_pair(self):
+        assert detect_protocol(src_port=4500, dst_port=500, raw_protocol="UDP") == "ISAKMP"
+
+    def test_isakmp_detected_with_tunnel_signature_hint(self):
+        assert (
+            detect_protocol(
+                src_port=55000,
+                dst_port=500,
+                raw_protocol="UDP",
+                tunnel_signature=True,
+            )
+            == "ISAKMP"
+        )
 
 
 # ===================================================================
@@ -190,6 +211,9 @@ class TestCategories:
 
     def test_get_category_ssh(self):
         assert get_protocol_category("SSH") == "remote_access"
+
+    def test_get_category_dns_over_tls_case_insensitive(self):
+        assert get_protocol_category("dns-over-tls") == "network_services"
 
     def test_get_category_tcp_transport(self):
         assert get_protocol_category("TCP") == "transport"

@@ -708,19 +708,67 @@ class ModeDetector:
         return None
 
     def _check_ethernet(self) -> Optional[EthernetMode]:
-        """Return EthernetMode if we have an active non-WiFi physical adapter with a valid IP and gateway."""
+        """Return EthernetMode for routable physical adapters only."""
         for iface in self._all_interfaces:
-            if (
-                iface.interface_type not in (
-                    "wifi", "virtual", "loopback", "bluetooth", "hotspot_virtual"
-                )
-                and iface.ip_address
-                and iface.ip_address not in ("0.0.0.0", "127.0.0.1")
-                and not iface.ip_address.startswith("169.254.")
-                and iface.gateway
+            if iface.interface_type in (
+                "wifi", "virtual", "loopback", "bluetooth", "hotspot_virtual"
             ):
-                return EthernetMode(iface)
+                continue
+
+            if (
+                not iface.ip_address
+                or iface.ip_address in ("0.0.0.0", "127.0.0.1")
+                or iface.ip_address.startswith("169.254.")
+            ):
+                continue
+
+            if not self._has_routable_gateway(iface.gateway):
+                continue
+
+            if self._is_likely_vpn_or_tunnel(iface):
+                logger.debug(
+                    "Skipping ethernet candidate '%s' (%s): likely VPN/tunnel",
+                    iface.name,
+                    iface.interface_type,
+                )
+                continue
+
+            return EthernetMode(iface)
         return None
+
+    @staticmethod
+    def _has_routable_gateway(gateway: Optional[str]) -> bool:
+        """Return True only for non-empty, non-zero default gateways."""
+        if not gateway:
+            return False
+        gw = gateway.strip()
+        return gw not in ("", "0.0.0.0", "::")
+
+    @staticmethod
+    def _is_likely_vpn_or_tunnel(iface: InterfaceInfo) -> bool:
+        """Heuristic guard against selecting VPN/tunnel adapters as Ethernet."""
+        haystack = " ".join(
+            [iface.name or "", iface.friendly_name or "", iface.interface_type or ""]
+        ).lower()
+        vpn_tokens = (
+            " vpn",
+            "vpn ",
+            "protonvpn",
+            "proton vpn",
+            "wireguard",
+            "openvpn",
+            "wintun",
+            "tunnel",
+            "anyconnect",
+            "globalprotect",
+            "forticlient",
+            "nordlynx",
+            "tailscale",
+            "zerotier",
+            "hamachi",
+            "pulse secure",
+        )
+        return any(token in haystack for token in vpn_tokens)
 
     def _check_public_network_wifi(self) -> Optional[BaseMode]:
         """

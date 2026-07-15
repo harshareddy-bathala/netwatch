@@ -91,7 +91,7 @@ NetWatch sets the following CSP header on every response:
 
 ```
 default-src 'self';
-script-src 'self' https://cdn.jsdelivr.net;
+script-src 'self';
 style-src 'self' https://fonts.googleapis.com;
 img-src 'self' data:;
 connect-src 'self';
@@ -99,8 +99,10 @@ font-src 'self' https://fonts.gstatic.com
 ```
 
 - **No `unsafe-inline`** — all scripts and styles are external files.
-- CDN access is restricted to `cdn.jsdelivr.net` (Chart.js) and
-  Google Fonts.
+- **No CDN scripts** — Chart.js is vendored locally at
+  `frontend/vendor/chart.umd.min.js`, so the dashboard runs fully
+  offline. The only external hosts permitted are the optional Google
+  Fonts endpoints.
 
 ---
 

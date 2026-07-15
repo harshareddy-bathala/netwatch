@@ -20,6 +20,7 @@ export default class Dashboard {
     this._prevStats = null;
     this._isArpCacheMode = false;
     this._currentMode = 'none';
+    this._showControlOverhead = !!store.get('includeControlTraffic');
   }
 
   render() {
@@ -53,10 +54,16 @@ export default class Dashboard {
                 <span class="chart-card__title">Bandwidth History</span>
                 <span class="speed-badge" id="bw-live-speed"></span>
               </div>
-              <div class="time-range-toggle">
-                <button class="time-range-toggle__btn active" data-hours="1">1H</button>
-                <button class="time-range-toggle__btn" data-hours="6">6H</button>
-                <button class="time-range-toggle__btn" data-hours="24">24H</button>
+              <div class="chart-card__header-actions">
+                <label class="control-toggle" title="Include ARP, DHCP, mDNS, IPv6 ND and other control traffic in charts and usage">
+                  <input type="checkbox" id="control-overhead-toggle" ${this._showControlOverhead ? 'checked' : ''}>
+                  <span>Show control overhead</span>
+                </label>
+                <div class="time-range-toggle">
+                  <button class="time-range-toggle__btn active" data-hours="1">1H</button>
+                  <button class="time-range-toggle__btn" data-hours="6">6H</button>
+                  <button class="time-range-toggle__btn" data-hours="24">24H</button>
+                </div>
               </div>
             </div>
             <div class="chart-card__canvas-wrap">
@@ -101,8 +108,9 @@ export default class Dashboard {
       this._unsubs.push(store.subscribe('stats', d => this._onStats(d)));
       this._unsubs.push(store.subscribe('health', d => this._onHealth(d)));
       this._unsubs.push(store.subscribe('alertStats', d => this._onAlertStats(d)));
-      this._unsubs.push(store.subscribe('devices', d => this._onDevices(d)));
+      this._unsubs.push(store.subscribe('topDevices', d => this._onDevices(d)));
       this._unsubs.push(store.subscribe('mode', d => this._onMode(d)));
+      this._unsubs.push(store.subscribe('includeControlTraffic', v => this._onControlPreference(v)));
 
       // Replay current store values so charts render immediately
       // if data arrived before subscription was set up
@@ -112,9 +120,16 @@ export default class Dashboard {
       if (currentHealth) this._onHealth(currentHealth);
       const currentAlertStats = store.get('alertStats');
       if (currentAlertStats) this._onAlertStats(currentAlertStats);
-      const currentDevices = store.get('devices');
+      const currentDevices = store.get('topDevices');
       if (currentDevices) this._onDevices(currentDevices);
     });
+
+    const controlToggle = this.container.querySelector('#control-overhead-toggle');
+    if (controlToggle) {
+      controlToggle.addEventListener('change', () => {
+        store.setState('includeControlTraffic', !!controlToggle.checked);
+      });
+    }
 
     // Time range pill toggle
     this.container.querySelectorAll('.time-range-toggle__btn').forEach(btn => {
@@ -132,11 +147,22 @@ export default class Dashboard {
   _onStats(stats) {
     if (!stats) return;
 
+    const appMbps = stats.bandwidth_mbps || 0;
+    const controlMbps =
+      stats.control_bandwidth_mbps ??
+      stats.control_total_mbps ??
+      0;
+    const combinedMbps =
+      stats.combined_bandwidth_mbps ??
+      stats.combined_total_mbps ??
+      (appMbps + controlMbps);
+
+    const mbps = this._showControlOverhead ? combinedMbps : appMbps;
+
     // Use pre-computed Mbps from the backend directly.
     // NOTE: bandwidth_bps is in *bits*/sec (backend already converts bytes→bits).
     // splitBandwidthRate() expects *bytes*/sec and would multiply by 8 again,
     // causing an 8× inflation (e.g. 4 Mbps displayed as 40 Mbps).
-    const mbps = stats.bandwidth_mbps || 0;
     let val, unit;
     if (mbps >= 1) {
       val = mbps.toFixed(1);
@@ -161,8 +187,11 @@ export default class Dashboard {
     let trend = '', dir = '';
     const dlMbps = stats.download_mbps || 0;
     const ulMbps = stats.upload_mbps || 0;
-    if (dlMbps > 0 || ulMbps > 0) {
-      trend = `↓ ${formatMbps(dlMbps)}  ↑ ${formatMbps(ulMbps)}`;
+    if (dlMbps > 0 || ulMbps > 0 || (this._showControlOverhead && controlMbps > 0)) {
+      const appTrend = `App ↓ ${formatMbps(dlMbps)}  ↑ ${formatMbps(ulMbps)}`;
+      trend = this._showControlOverhead
+        ? `${appTrend}  •  Ctrl ${formatMbps(controlMbps)}`
+        : appTrend;
       dir = dlMbps > ulMbps ? 'down' : 'up';
     } else {
       trend = '— idle';
@@ -175,6 +204,18 @@ export default class Dashboard {
     const devCount = stats.active_devices ?? '--';
     const devTrend = this._getDeviceTrend();
     this._cards.devices.update(devCount, 'devices', devTrend);
+  }
+
+  _onControlPreference(enabled) {
+    this._showControlOverhead = !!enabled;
+
+    const toggle = this.container.querySelector('#control-overhead-toggle');
+    if (toggle) toggle.checked = this._showControlOverhead;
+
+    if (this._prevStats) this._onStats(this._prevStats);
+
+    const devices = store.get('topDevices');
+    if (devices) this._onDevices(devices);
   }
 
   _onMode(data) {
@@ -212,9 +253,20 @@ export default class Dashboard {
   }
 
   _onDevices(data) {
-    const devices = data?.devices || data || [];
+    const devices = Array.isArray(data)
+      ? data
+      : (Array.isArray(data?.devices)
+          ? data.devices
+          : (Array.isArray(data?.data) ? data.data : []));
     const list = document.getElementById('top-devices-list');
     if (!list) return;
+
+    const title = this.container.querySelector('#top-devices-widget .top-devices__title');
+    if (title) {
+      title.textContent = this._showControlOverhead
+        ? 'Top Devices (App + Control)'
+        : 'Top Devices (App Only)';
+    }
 
     if (!Array.isArray(devices) || devices.length === 0) {
       list.className = 'empty-state';
@@ -231,10 +283,29 @@ export default class Dashboard {
         <div>
           <div class="top-devices__name">${escapeHtml(d.hostname || d.device_name || d.ip_address || 'Unknown')}</div>
           <div class="top-devices__ip">${escapeHtml(d.ip_address || '')}</div>
+          ${this._showControlOverhead ? this._renderControlOverhead(d) : ''}
         </div>
-        <div class="top-devices__bandwidth">${formatBytes(d.total_bytes || d.bytes || 0)}</div>
+        <div class="top-devices__bandwidth">${formatBytes(this._getDeviceDisplayBytes(d))}</div>
       </div>
     `).join('');
+  }
+
+  _getDeviceDisplayBytes(device) {
+    const appBytes = device?.total_bytes_app ?? device?.total_bytes ?? device?.bytes ?? 0;
+    const controlBytes = device?.total_bytes_control ?? 0;
+    const totalBytes = device?.total_bytes_total ?? (appBytes + controlBytes);
+    return this._showControlOverhead ? totalBytes : appBytes;
+  }
+
+  _renderControlOverhead(device) {
+    const appBytes = device?.total_bytes_app ?? device?.total_bytes ?? 0;
+    const controlBytes = device?.total_bytes_control ?? 0;
+    const totalBytes = device?.total_bytes_total ?? (appBytes + controlBytes);
+    if (!controlBytes || totalBytes <= 0) {
+      return '<div class="top-devices__overhead">Ctrl 0%</div>';
+    }
+    const pct = Math.round((controlBytes / totalBytes) * 100);
+    return `<div class="top-devices__overhead">Ctrl ${pct}% • ${formatBytes(controlBytes)}</div>`;
   }
 
   destroy() {

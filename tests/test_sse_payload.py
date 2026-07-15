@@ -34,6 +34,8 @@ def _reset_sse_cache():
         mod._sse_cached_payload = None
         mod._sse_cache_time = 0.0
         mod._sse_building = False
+        mod._bw_history_cache = []
+        mod._bw_history_cache_time = 0.0
     with mod._sse_active_lock:
         mod._sse_active = 0
 
@@ -193,6 +195,114 @@ class TestSSELivePath:
         payload = _first_sse_event(client)
         stats = payload.get('stats', {})
         assert 'packets_per_second' in stats
+
+    def test_idle_floor_clamps_tiny_app_bandwidth(self, app, client):
+        """Tiny app jitter should be shown as idle while keeping control stats."""
+        _reset_sse_cache()
+
+        engine = _make_mock_engine()
+        engine.bandwidth.get_recent_rate.return_value = {
+            'total_bps': 100.0,
+            'total_mbps': 0.0008,
+            'upload_bps': 40.0,
+            'upload_mbps': 0.0003,
+            'download_bps': 60.0,
+            'download_mbps': 0.0005,
+            'control_total_bps': 6000.0,
+            'control_total_mbps': 0.048,
+            'control_upload_bps': 3000.0,
+            'control_upload_mbps': 0.024,
+            'control_download_bps': 3000.0,
+            'control_download_mbps': 0.024,
+            'combined_total_bps': 6100.0,
+            'combined_total_mbps': 0.0488,
+        }
+        engine.bandwidth.get_stats.return_value = {
+            'packets_per_second': 0.2,
+            'control_packets_per_second': 3.0,
+        }
+        app.config['CAPTURE_ENGINE'] = engine
+
+        payload = _first_sse_event(client)
+        stats = payload.get('stats', {})
+
+        assert stats.get('is_idle_app') is True
+        assert stats.get('bandwidth_mbps') == 0.0
+        assert stats.get('upload_mbps') == 0.0
+        assert stats.get('download_mbps') == 0.0
+        assert stats.get('control_bandwidth_mbps') > 0
+
+    def test_live_history_overrides_db_duplicate_timestamp(self, app, client):
+        """When DB and live overlap on timestamp, live point should win."""
+        _reset_sse_cache()
+
+        engine = _make_mock_engine()
+        engine.bandwidth.get_recent_history.return_value = [
+            {
+                'timestamp': '2026-01-01 00:00:10',
+                'download_mbps': 8.5,
+                'upload_mbps': 2.5,
+                'total_mbps': 11.0,
+                'live': True,
+            }
+        ]
+        app.config['CAPTURE_ENGINE'] = engine
+
+        db_history = [
+            {'timestamp': '2026-01-01 00:00:00', 'download_mbps': 1.0, 'upload_mbps': 1.0},
+            {'timestamp': '2026-01-01 00:00:10', 'download_mbps': 3.0, 'upload_mbps': 3.0},
+        ]
+
+        with patch('backend.blueprints.bandwidth_bp.get_bandwidth_history_dual', return_value=db_history):
+            payload = _first_sse_event(client)
+
+        history = payload.get('bandwidth_history', [])
+        assert history, f"Expected non-empty bandwidth_history, got {history}"
+
+        overlapping = [p for p in history if p.get('timestamp') == '2026-01-01 00:00:10']
+        assert len(overlapping) == 1
+        assert overlapping[0].get('download_mbps') == 8.5
+        assert overlapping[0].get('upload_mbps') == 2.5
+
+    def test_live_history_only_overrides_latest_bucket(self, app, client):
+        """Closed DB buckets stay stable; only latest live bucket may override."""
+        _reset_sse_cache()
+
+        engine = _make_mock_engine()
+        engine.bandwidth.get_recent_history.return_value = [
+            {
+                'timestamp': '2026-01-01 00:00:10',
+                'download_mbps': 9.0,
+                'upload_mbps': 9.0,
+                'total_mbps': 18.0,
+                'live': True,
+            },
+            {
+                'timestamp': '2026-01-01 00:00:20',
+                'download_mbps': 7.0,
+                'upload_mbps': 2.0,
+                'total_mbps': 9.0,
+                'live': True,
+            },
+        ]
+        app.config['CAPTURE_ENGINE'] = engine
+
+        db_history = [
+            {'timestamp': '2026-01-01 00:00:00', 'download_mbps': 1.0, 'upload_mbps': 1.0},
+            {'timestamp': '2026-01-01 00:00:10', 'download_mbps': 3.0, 'upload_mbps': 3.0},
+            {'timestamp': '2026-01-01 00:00:20', 'download_mbps': 4.0, 'upload_mbps': 4.0},
+        ]
+
+        with patch('backend.blueprints.bandwidth_bp.get_bandwidth_history_dual', return_value=db_history):
+            payload = _first_sse_event(client)
+
+        history = payload.get('bandwidth_history', [])
+        by_ts = {p.get('timestamp'): p for p in history}
+
+        assert by_ts['2026-01-01 00:00:10']['download_mbps'] == 3.0
+        assert by_ts['2026-01-01 00:00:10']['upload_mbps'] == 3.0
+        assert by_ts['2026-01-01 00:00:20']['download_mbps'] == 7.0
+        assert by_ts['2026-01-01 00:00:20']['upload_mbps'] == 2.0
 
 
 # =================================================================

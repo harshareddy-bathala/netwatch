@@ -53,7 +53,8 @@ def get_bandwidth_history(hours: int = 1, interval: str = "minute") -> List[dict
                     SUM(CASE WHEN direction = 'download' THEN bytes_transferred ELSE 0 END) AS bytes_received,
                     SUM(CASE WHEN direction = 'upload'   THEN bytes_transferred ELSE 0 END) AS bytes_sent
                 FROM traffic_summary
-                WHERE timestamp >= ?
+                                WHERE timestamp >= ?
+                                    AND COALESCE(is_control, 0) = 0
                 GROUP BY time_bucket
                 ORDER BY time_bucket ASC
             """, (since,))
@@ -122,7 +123,8 @@ def get_bandwidth_history_dual(hours: int = 1, interval: str = "minute") -> List
                         SUM(CASE WHEN direction = 'download' THEN bytes_transferred ELSE 0 END) AS bytes_download,
                         SUM(CASE WHEN direction = 'upload'   THEN bytes_transferred ELSE 0 END) AS bytes_upload
                     FROM traffic_summary
-                    WHERE timestamp >= ?
+                                        WHERE timestamp >= ?
+                                            AND COALESCE(is_control, 0) = 0
                     GROUP BY time_bucket
                     ORDER BY time_bucket ASC
                 """, (since,))
@@ -148,7 +150,8 @@ def get_bandwidth_history_dual(hours: int = 1, interval: str = "minute") -> List
                         SUM(CASE WHEN direction = 'download' THEN bytes_transferred ELSE 0 END) AS bytes_download,
                         SUM(CASE WHEN direction = 'upload'   THEN bytes_transferred ELSE 0 END) AS bytes_upload
                     FROM traffic_summary
-                    WHERE timestamp >= ?
+                                        WHERE timestamp >= ?
+                                            AND COALESCE(is_control, 0) = 0
                     GROUP BY time_bucket
                     ORDER BY time_bucket ASC
                 """, (since,))
@@ -195,7 +198,8 @@ def get_bandwidth_timeseries(minutes: int = 60) -> List[dict]:
                     SUM(CASE WHEN direction = 'upload'   THEN bytes_transferred ELSE 0 END) AS upload_bytes,
                     SUM(CASE WHEN direction = 'download' THEN bytes_transferred ELSE 0 END) AS download_bytes
                 FROM traffic_summary
-                WHERE timestamp >= ?
+                                WHERE timestamp >= ?
+                                    AND COALESCE(is_control, 0) = 0
                 GROUP BY ts
                 ORDER BY ts ASC
             """, (since,))
@@ -246,7 +250,8 @@ def get_protocol_distribution(hours: int = 1) -> List[dict]:
                         MAX(1, SUM(SUM(bytes_transferred)) OVER()),
                     2) AS percentage
                 FROM traffic_summary
-                WHERE timestamp >= ?
+                                WHERE timestamp >= ?
+                                    AND COALESCE(is_control, 0) = 0
                 GROUP BY protocol
                 ORDER BY bytes DESC
             """, (since,))
@@ -281,7 +286,8 @@ def get_protocol_history(protocol: str, hours: int = 1) -> List[dict]:
                        SUM(bytes_transferred) AS total_bytes,
                        COUNT(*) AS packet_count
                 FROM traffic_summary
-                WHERE protocol = ? AND timestamp >= ?
+                                WHERE protocol = ? AND timestamp >= ?
+                                    AND COALESCE(is_control, 0) = 0
                 GROUP BY time_bucket ORDER BY time_bucket ASC
             """, (protocol, since))
 
@@ -315,10 +321,12 @@ def get_top_talkers(limit: int = 10, hours: int = 1) -> List[dict]:
                            bytes_transferred AS bw, timestamp
                     FROM traffic_summary
                     WHERE timestamp >= ? AND source_mac IS NOT NULL AND source_mac != ''
+                        AND COALESCE(is_control, 0) = 0
                     UNION ALL
                     SELECT dest_mac, dest_ip, NULL, NULL, bytes_transferred, timestamp
                     FROM traffic_summary
                     WHERE timestamp >= ? AND dest_mac IS NOT NULL AND dest_mac != ''
+                        AND COALESCE(is_control, 0) = 0
                 )
                 SELECT mac AS mac_address,
                        MAX(ip) AS ip_address,
@@ -389,10 +397,12 @@ def get_traffic_by_ip(ip_address: str, hours: int = 1) -> dict:
                     SELECT source_ip, dest_ip, bytes_transferred
                     FROM traffic_summary
                     WHERE source_ip = ? AND timestamp >= ?
+                        AND COALESCE(is_control, 0) = 0
                     UNION ALL
                     SELECT source_ip, dest_ip, bytes_transferred
                     FROM traffic_summary
                     WHERE dest_ip = ? AND timestamp >= ?
+                        AND COALESCE(is_control, 0) = 0
                 )
             """, (ip_address, ip_address, ip_address, ip_address,
                   ip_address, since, ip_address, since))
@@ -408,9 +418,11 @@ def get_traffic_by_ip(ip_address: str, hours: int = 1) -> dict:
                 FROM (
                     SELECT protocol, bytes_transferred FROM traffic_summary
                     WHERE source_ip = ? AND timestamp >= ?
+                        AND COALESCE(is_control, 0) = 0
                     UNION ALL
                     SELECT protocol, bytes_transferred FROM traffic_summary
                     WHERE dest_ip = ? AND timestamp >= ?
+                        AND COALESCE(is_control, 0) = 0
                 )
                 GROUP BY protocol ORDER BY bytes DESC
             """, (ip_address, since, ip_address, since))
@@ -425,9 +437,11 @@ def get_traffic_by_ip(ip_address: str, hours: int = 1) -> dict:
                 FROM (
                     SELECT source_ip, dest_ip, bytes_transferred FROM traffic_summary
                     WHERE source_ip = ? AND timestamp >= ?
+                        AND COALESCE(is_control, 0) = 0
                     UNION ALL
                     SELECT source_ip, dest_ip, bytes_transferred FROM traffic_summary
                     WHERE dest_ip = ? AND timestamp >= ?
+                        AND COALESCE(is_control, 0) = 0
                 )
                 GROUP BY connected_ip ORDER BY bytes DESC LIMIT 10
             """, (ip_address, ip_address, since, ip_address, since))

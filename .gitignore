@@ -51,6 +51,11 @@ htmlcov/
 
 # Runtime logs at project root
 log.txt
+logs.txt
+test_output.txt
+
+# Trained model artifacts (regenerated at runtime)
+models/
 
 # Deployment artifacts
 deploy/output/

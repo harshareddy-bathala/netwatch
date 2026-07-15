@@ -121,6 +121,18 @@ class TestBandwidthCalculator:
         stats = calc.get_stats()
         assert isinstance(stats, dict)
 
+    def test_recent_history_has_stable_bucket_timestamp(self):
+        """Consecutive reads should not shift the same bucket timestamp."""
+        calc = BandwidthCalculator(window_seconds=30)
+        calc.add_bytes(25_000, direction="download")
+
+        first = calc.get_recent_history(bucket_seconds=30, max_points=5)
+        time.sleep(0.1)
+        second = calc.get_recent_history(bucket_seconds=30, max_points=5)
+
+        assert first and second
+        assert first[-1]["timestamp"] == second[-1]["timestamp"]
+
 
 # ===================================================================
 # BPF Filter Application Tests

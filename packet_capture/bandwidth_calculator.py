@@ -42,8 +42,10 @@ _EXTENDED_FACTOR = 1.0
 class ByteRecord:
     """Single timestamped record of bytes transferred."""
     timestamp: float        # time.monotonic()
+    wall_timestamp: float   # time.time()
     byte_count: int
     direction: str          # 'upload', 'download', or 'other'
+    is_control_traffic: bool = False
 
 
 class BandwidthCalculator:
@@ -73,8 +75,11 @@ class BandwidthCalculator:
         self._running_total: int = 0
         self._running_upload: int = 0
         self._running_download: int = 0
+        self._running_control_total: int = 0
+        self._running_control_upload: int = 0
+        self._running_control_download: int = 0
 
-    def _count_in_window(self, now: float) -> int:
+    def _count_in_window(self, now: float, include_control: bool = False) -> int:
         """Count records within the actual window (not the extended prune window).
 
         Must be called while ``_lock`` is held.
@@ -83,6 +88,8 @@ class BandwidthCalculator:
         count = 0
         for rec in self._records:
             if rec.timestamp >= cutoff:
+                if not include_control and rec.is_control_traffic:
+                    continue
                 count += 1
         return count
 
@@ -90,7 +97,12 @@ class BandwidthCalculator:
     #  Public API — recording
     # ------------------------------------------------------------------ #
 
-    def add_bytes(self, byte_count: int, direction: str = "other") -> None:
+    def add_bytes(
+        self,
+        byte_count: int,
+        direction: str = "other",
+        is_control_traffic: bool = False,
+    ) -> None:
         """
         Record ``byte_count`` bytes transferred in the given ``direction``.
         """
@@ -98,16 +110,30 @@ class BandwidthCalculator:
             return
 
         now = time.monotonic()
-        record = ByteRecord(timestamp=now, byte_count=byte_count, direction=direction)
+        wall_now = time.time()
+        record = ByteRecord(
+            timestamp=now,
+            wall_timestamp=wall_now,
+            byte_count=byte_count,
+            direction=direction,
+            is_control_traffic=is_control_traffic,
+        )
 
         with self._lock:
             self._records.append(record)
-            # Update running sums
-            self._running_total += byte_count
-            if direction == "upload":
-                self._running_upload += byte_count
-            elif direction == "download":
-                self._running_download += byte_count
+            # Existing totals remain application-traffic only.
+            if is_control_traffic:
+                self._running_control_total += byte_count
+                if direction == "upload":
+                    self._running_control_upload += byte_count
+                elif direction == "download":
+                    self._running_control_download += byte_count
+            else:
+                self._running_total += byte_count
+                if direction == "upload":
+                    self._running_upload += byte_count
+                elif direction == "download":
+                    self._running_download += byte_count
             self._prune(now)
 
     # ------------------------------------------------------------------ #
@@ -122,6 +148,14 @@ class BandwidthCalculator:
         prune uses a 1.0x factor (no extended window).
         """
         return self._running_total, self._running_upload, self._running_download
+
+    def _raw_control_sums(self, now: float):
+        """Return control-traffic (total, upload, download) byte sums."""
+        return (
+            self._running_control_total,
+            self._running_control_upload,
+            self._running_control_download,
+        )
 
     def get_current_bps(self) -> float:
         """Return total bytes per second over the sliding window."""
@@ -168,7 +202,7 @@ class BandwidthCalculator:
         with self._lock:
             now = time.monotonic()
             self._prune(now)
-            return self._count_in_window(now) / self._window if self._window else 0.0
+            return self._count_in_window(now, include_control=False) / self._window if self._window else 0.0
 
     def get_recent_rate(self, seconds: int = 5) -> dict:
         """Return upload/download/total rates for only the last *seconds*.
@@ -186,18 +220,30 @@ class BandwidthCalculator:
             self._prune(now)
             cutoff = now - seconds
             total = upload = download = 0
+            control_total = control_upload = control_download = 0
             for rec in reversed(self._records):
                 if rec.timestamp < cutoff:
                     break
-                total += rec.byte_count
-                if rec.direction == "upload":
-                    upload += rec.byte_count
-                elif rec.direction == "download":
-                    download += rec.byte_count
+                if rec.is_control_traffic:
+                    control_total += rec.byte_count
+                    if rec.direction == "upload":
+                        control_upload += rec.byte_count
+                    elif rec.direction == "download":
+                        control_download += rec.byte_count
+                else:
+                    total += rec.byte_count
+                    if rec.direction == "upload":
+                        upload += rec.byte_count
+                    elif rec.direction == "download":
+                        download += rec.byte_count
             divisor = seconds if seconds else 1
             total_bps = total / divisor
             upload_bps = upload / divisor
             download_bps = download / divisor
+            control_total_bps = control_total / divisor
+            control_upload_bps = control_upload / divisor
+            control_download_bps = control_download / divisor
+            combined_total_bps = total_bps + control_total_bps
         return {
             "total_bps": round(total_bps, 2),
             "total_mbps": round((total_bps * 8) / 1_000_000, 4),
@@ -205,6 +251,14 @@ class BandwidthCalculator:
             "upload_mbps": round((upload_bps * 8) / 1_000_000, 4),
             "download_bps": round(download_bps, 2),
             "download_mbps": round((download_bps * 8) / 1_000_000, 4),
+            "control_total_bps": round(control_total_bps, 2),
+            "control_total_mbps": round((control_total_bps * 8) / 1_000_000, 4),
+            "control_upload_bps": round(control_upload_bps, 2),
+            "control_upload_mbps": round((control_upload_bps * 8) / 1_000_000, 4),
+            "control_download_bps": round(control_download_bps, 2),
+            "control_download_mbps": round((control_download_bps * 8) / 1_000_000, 4),
+            "combined_total_bps": round(combined_total_bps, 2),
+            "combined_total_mbps": round((combined_total_bps * 8) / 1_000_000, 4),
         }
 
     def get_stats(self) -> dict:
@@ -217,10 +271,17 @@ class BandwidthCalculator:
             now = time.monotonic()
             self._prune(now)
             total, upload, download = self._raw_sums(now)
+            control_total, control_upload, control_download = self._raw_control_sums(now)
             total_bps = total / self._window if self._window else 0.0
             upload_bps = upload / self._window if self._window else 0.0
             download_bps = download / self._window if self._window else 0.0
-            pps = self._count_in_window(now) / self._window if self._window else 0.0
+            control_total_bps = control_total / self._window if self._window else 0.0
+            control_upload_bps = control_upload / self._window if self._window else 0.0
+            control_download_bps = control_download / self._window if self._window else 0.0
+            combined_total_bps = total_bps + control_total_bps
+            pps = self._count_in_window(now, include_control=False) / self._window if self._window else 0.0
+            control_pps = self._count_in_window(now, include_control=True) - self._count_in_window(now, include_control=False)
+            control_pps = control_pps / self._window if self._window else 0.0
 
         return {
             "total_bps": round(total_bps, 2),
@@ -230,6 +291,15 @@ class BandwidthCalculator:
             "download_bps": round(download_bps, 2),
             "download_mbps": round((download_bps * 8) / 1_000_000, 4),
             "packets_per_second": round(pps, 2),
+            "control_total_bps": round(control_total_bps, 2),
+            "control_total_mbps": round((control_total_bps * 8) / 1_000_000, 4),
+            "control_upload_bps": round(control_upload_bps, 2),
+            "control_upload_mbps": round((control_upload_bps * 8) / 1_000_000, 4),
+            "control_download_bps": round(control_download_bps, 2),
+            "control_download_mbps": round((control_download_bps * 8) / 1_000_000, 4),
+            "control_packets_per_second": round(control_pps, 2),
+            "combined_total_bps": round(combined_total_bps, 2),
+            "combined_total_mbps": round((combined_total_bps * 8) / 1_000_000, 4),
             "window_seconds": self._window,
             "records_in_window": len(self._records),
         }
@@ -241,6 +311,9 @@ class BandwidthCalculator:
             self._running_total = 0
             self._running_upload = 0
             self._running_download = 0
+            self._running_control_total = 0
+            self._running_control_upload = 0
+            self._running_control_download = 0
 
     def get_recent_history(self, bucket_seconds: int = 2, max_points: int = 30) -> list:
         """
@@ -260,10 +333,10 @@ class BandwidthCalculator:
             ``upload_mbps``, ``total_mbps`` fields — same shape as
             ``get_bandwidth_history_dual()`` output.
         """
-        from datetime import datetime as _dt, timedelta
+        from datetime import datetime as _dt
 
         now = time.monotonic()
-        wall_now = _dt.now()
+        now_wall = time.time()
 
         with self._lock:
             self._prune(now)
@@ -283,36 +356,66 @@ class BandwidthCalculator:
                 age = now - rec.timestamp
                 if age > window_limit:
                     continue  # Skip records outside the measurement window
-                bucket_idx = int(age / bucket_seconds)
-                if bucket_idx not in buckets:
-                    buckets[bucket_idx] = {"dl": 0.0, "ul": 0.0, "total": 0.0}
-                buckets[bucket_idx]["total"] += rec.byte_count
-                if rec.direction == "download":
-                    buckets[bucket_idx]["dl"] += rec.byte_count
-                elif rec.direction == "upload":
-                    buckets[bucket_idx]["ul"] += rec.byte_count
+                bucket_epoch = int(rec.wall_timestamp // bucket_seconds) * bucket_seconds
+                if bucket_epoch not in buckets:
+                    buckets[bucket_epoch] = {
+                        "dl": 0.0,
+                        "ul": 0.0,
+                        "total": 0.0,
+                        "control_dl": 0.0,
+                        "control_ul": 0.0,
+                        "control_total": 0.0,
+                    }
+                if rec.is_control_traffic:
+                    buckets[bucket_epoch]["control_total"] += rec.byte_count
+                    if rec.direction == "download":
+                        buckets[bucket_epoch]["control_dl"] += rec.byte_count
+                    elif rec.direction == "upload":
+                        buckets[bucket_epoch]["control_ul"] += rec.byte_count
+                else:
+                    buckets[bucket_epoch]["total"] += rec.byte_count
+                    if rec.direction == "download":
+                        buckets[bucket_epoch]["dl"] += rec.byte_count
+                    elif rec.direction == "upload":
+                        buckets[bucket_epoch]["ul"] += rec.byte_count
 
         if not buckets:
             return []
 
-        # Convert to list, sorted newest-first then reversed
-        mbps_mult = 8 / bucket_seconds / 1_000_000
+        # Convert to list using stable wall-clock bucket boundaries.
+        # For the newest in-progress bucket, normalize by elapsed bucket
+        # age (bounded) instead of full bucket_seconds to avoid periodic
+        # low->high sawtooth artefacts under continuous traffic.
+        current_bucket_epoch = int(now_wall // bucket_seconds) * bucket_seconds
         result = []
-        for idx in sorted(buckets.keys()):
-            if len(result) >= max_points:
-                break
-            b = buckets[idx]
-            # Wall-clock time for this bucket
-            secs_ago = idx * bucket_seconds
-            ts = wall_now - timedelta(seconds=secs_ago)
+        bucket_epochs = sorted(buckets.keys())
+        if len(bucket_epochs) > max_points:
+            bucket_epochs = bucket_epochs[-max_points:]
+        for bucket_epoch in bucket_epochs:
+            b = buckets[bucket_epoch]
+            bucket_duration = float(bucket_seconds)
+            if bucket_epoch == current_bucket_epoch:
+                elapsed = now_wall - bucket_epoch
+                bucket_duration = min(float(bucket_seconds), max(1.0, elapsed))
+            mbps_mult = 8 / bucket_duration / 1_000_000
+            ts = _dt.fromtimestamp(bucket_epoch)
+            combined_total = b["total"] + b["control_total"]
             result.append({
                 "timestamp": ts.strftime("%Y-%m-%d %H:%M:%S"),
                 "download_mbps": round(b["dl"] * mbps_mult, 3),
                 "upload_mbps": round(b["ul"] * mbps_mult, 3),
                 "total_mbps": round(b["total"] * mbps_mult, 3),
+                "control_download_mbps": round(b["control_dl"] * mbps_mult, 3),
+                "control_upload_mbps": round(b["control_ul"] * mbps_mult, 3),
+                "control_total_mbps": round(b["control_total"] * mbps_mult, 3),
+                "combined_total_mbps": round(combined_total * mbps_mult, 3),
                 "bytes_download": round(b["dl"]),
                 "bytes_upload": round(b["ul"]),
                 "total_bytes": round(b["total"]),
+                "control_bytes_download": round(b["control_dl"]),
+                "control_bytes_upload": round(b["control_ul"]),
+                "control_total_bytes": round(b["control_total"]),
+                "combined_total_bytes": round(combined_total),
                 "live": True,  # marker so frontend knows this is live data
             })
 
@@ -333,8 +436,15 @@ class BandwidthCalculator:
         while self._records and self._records[0].timestamp < cutoff:
             old = self._records.popleft()
             # Decrement running sums
-            self._running_total -= old.byte_count
-            if old.direction == "upload":
-                self._running_upload -= old.byte_count
-            elif old.direction == "download":
-                self._running_download -= old.byte_count
+            if old.is_control_traffic:
+                self._running_control_total -= old.byte_count
+                if old.direction == "upload":
+                    self._running_control_upload -= old.byte_count
+                elif old.direction == "download":
+                    self._running_control_download -= old.byte_count
+            else:
+                self._running_total -= old.byte_count
+                if old.direction == "upload":
+                    self._running_upload -= old.byte_count
+                elif old.direction == "download":
+                    self._running_download -= old.byte_count

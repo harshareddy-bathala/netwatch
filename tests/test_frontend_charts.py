@@ -6,6 +6,7 @@ Verifies that ``BandwidthChart.update()`` and ``ProtocolChart.update()``
 handle every possible data format without errors:
 
 - Dual format: ``{history: [{timestamp, download_mbps, upload_mbps}, ...]}``
+- Dual+control format: ``{history: [{..., control_download_mbps, control_upload_mbps}, ...]}``
 - SSE live format: ``{stats: {upload_mbps, download_mbps}, history: [...]}``
 - Non-dual legacy: ``{data: [{timestamp, bytes_per_second}, ...]}``
 - Empty / null / missing data
@@ -59,6 +60,45 @@ def _bw_extract_data(raw):
         uploads.append(d.get('upload_mbps', 0) or 0)
         downloads.append(dl)
     return downloads, uploads
+
+
+def _bw_extract_control_data(raw):
+    """Extract app/control split series used by Phase 3 chart mode."""
+    if not raw:
+        return [], [], [], []
+
+    if isinstance(raw, dict):
+        history = raw.get('history') or raw.get('data') or []
+    elif isinstance(raw, list):
+        history = raw
+    else:
+        history = []
+
+    if not isinstance(history, list):
+        return [], [], [], []
+
+    app_dl, app_ul, ctrl_dl, ctrl_ul = [], [], [], []
+    for d in history:
+        app_dl.append(d.get('download_mbps', 0) or 0)
+        app_ul.append(d.get('upload_mbps', 0) or 0)
+        ctrl_dl.append(d.get('control_download_mbps', 0) or 0)
+        ctrl_ul.append(d.get('control_upload_mbps', 0) or 0)
+    return app_dl, app_ul, ctrl_dl, ctrl_ul
+
+
+def _causal_smooth(data):
+    """Mirror BandwidthChart causal trailing smoothing."""
+    if not data or len(data) < 3:
+        return data
+    out = []
+    for i in range(len(data)):
+        x0 = data[i] if data[i] is not None else 0
+        x1 = data[i - 1] if i - 1 >= 0 else x0
+        x2 = data[i - 2] if i - 2 >= 0 else x1
+        x3 = data[i - 3] if i - 3 >= 0 else x2
+        x4 = data[i - 4] if i - 4 >= 0 else x3
+        out.append(x0 * 0.40 + x1 * 0.30 + x2 * 0.15 + x3 * 0.10 + x4 * 0.05)
+    return out
 
 
 class TestBandwidthChartDataPaths:
@@ -149,6 +189,57 @@ class TestBandwidthChartDataPaths:
         dl, ul = _bw_extract_data(raw)
         assert dl == [5.0, 100000]
         assert ul == [2.0, 0]
+
+    def test_control_overlay_fields(self):
+        """Phase 3: chart can consume separate control-traffic series."""
+        raw = {
+            'history': [
+                {
+                    'timestamp': '12:00',
+                    'download_mbps': 4.0,
+                    'upload_mbps': 1.5,
+                    'control_download_mbps': 0.4,
+                    'control_upload_mbps': 0.1,
+                },
+                {
+                    'timestamp': '12:01',
+                    'download_mbps': 3.5,
+                    'upload_mbps': 1.2,
+                    'control_download_mbps': 0.3,
+                    'control_upload_mbps': 0.2,
+                },
+            ]
+        }
+
+        app_dl, app_ul, ctrl_dl, ctrl_ul = _bw_extract_control_data(raw)
+        assert app_dl == [4.0, 3.5]
+        assert app_ul == [1.5, 1.2]
+        assert ctrl_dl == [0.4, 0.3]
+        assert ctrl_ul == [0.1, 0.2]
+
+    def test_control_overlay_defaults_to_zero(self):
+        """Missing control fields should not break the app/control chart mode."""
+        raw = {
+            'history': [
+                {'timestamp': '12:00', 'download_mbps': 2.0, 'upload_mbps': 0.8},
+            ]
+        }
+
+        app_dl, app_ul, ctrl_dl, ctrl_ul = _bw_extract_control_data(raw)
+        assert app_dl == [2.0]
+        assert app_ul == [0.8]
+        assert ctrl_dl == [0]
+        assert ctrl_ul == [0]
+
+    def test_causal_smoothing_keeps_completed_points_stable(self):
+        """Appending new data should not rewrite already completed points."""
+        base = [0.1, 0.3, 2.0, 1.2, 0.4]
+        extended = base + [3.5]
+
+        first = _causal_smooth(base)
+        second = _causal_smooth(extended)
+
+        assert second[:len(first)] == first
 
 
 # =============================================================================

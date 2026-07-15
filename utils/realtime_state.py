@@ -42,15 +42,64 @@ class DeviceInfo:
     device_name: str = ""
     hostname: str = ""
     vendor: str = ""
+    # App-traffic counters (legacy bytes_* fields remain app-only)
     bytes_sent: int = 0
     bytes_received: int = 0
+    control_bytes_sent: int = 0
+    control_bytes_received: int = 0
     packet_count: int = 0
+    control_packet_count: int = 0
     last_seen: float = 0.0  # time.time()
     first_seen: float = 0.0
     today_bytes: int = 0
     today_sent: int = 0
     today_received: int = 0
+    today_control_bytes: int = 0
+    today_control_sent: int = 0
+    today_control_received: int = 0
     direction: str = ""
+
+    @property
+    def bytes_sent_app(self) -> int:
+        return self.bytes_sent
+
+    @property
+    def bytes_received_app(self) -> int:
+        return self.bytes_received
+
+    @property
+    def bytes_total_app(self) -> int:
+        return self.bytes_sent_app + self.bytes_received_app
+
+    @property
+    def bytes_sent_total(self) -> int:
+        return self.bytes_sent_app + self.control_bytes_sent
+
+    @property
+    def bytes_received_total(self) -> int:
+        return self.bytes_received_app + self.control_bytes_received
+
+    @property
+    def bytes_total_control(self) -> int:
+        return self.control_bytes_sent + self.control_bytes_received
+
+    @property
+    def bytes_total_all(self) -> int:
+        return self.bytes_total_app + self.bytes_total_control
+
+    @property
+    def packet_count_app(self) -> int:
+        return self.packet_count
+
+    @property
+    def packet_count_total(self) -> int:
+        return self.packet_count_app + self.control_packet_count
+
+    def get_display_bytes(self, include_control: bool = False) -> tuple:
+        """Return (sent, received) bytes for the selected display mode."""
+        if include_control:
+            return self.bytes_sent_total, self.bytes_received_total
+        return self.bytes_sent_app, self.bytes_received_app
 
 
 class InMemoryDashboardState:
@@ -79,6 +128,8 @@ class InMemoryDashboardState:
         # Today's running totals
         self._today_bytes: int = 0
         self._today_packets: int = 0
+        self._today_control_bytes: int = 0
+        self._today_control_packets: int = 0
         self._today_date: str = datetime.now().strftime("%Y-%m-%d")
 
         # Protocol distribution — rolling window
@@ -117,6 +168,10 @@ class InMemoryDashboardState:
         # from the hotspot DNS resolver (Windows hotspot resolves client
         # IPs back to the host machine's name).
         self._our_hostname: str = ""
+
+        # Per-mode device active window (seconds).  Hotspot mode uses a
+        # shorter window (60s) so disconnected clients disappear quickly.
+        self._device_active_window: int = 300  # default 5 min
 
         # ── Alert & health caches (Phase 4 zero-DB SSE) ──────────────
         # Updated by AlertEngine / HealthMonitor callbacks; read by
@@ -192,6 +247,35 @@ class InMemoryDashboardState:
             self._host_macs, self._gateway_macs,
         )
 
+    def set_device_active_window(self, seconds: int) -> None:
+        """Configure the time window for considering a device 'active'.
+
+        Hotspot mode should use a short window (e.g. 60s) so disconnected
+        clients disappear quickly.  Other modes use a longer window (300s).
+        """
+        with self._lock:
+            self._device_active_window = max(10, seconds)
+
+    def remove_stale_devices(self, max_age_seconds: int = 60) -> int:
+        """Remove devices not seen within *max_age_seconds*.
+
+        Called periodically by the discovery loop in hotspot mode so that
+        disconnected clients disappear from the dashboard within a minute.
+        Returns the number of devices removed.
+        """
+        now = time.time()
+        cutoff = now - max_age_seconds
+        evicted = 0
+        with self._lock:
+            stale = [mac for mac, dev in self._devices.items()
+                     if dev.last_seen < cutoff]
+            for mac in stale:
+                del self._devices[mac]
+                evicted += 1
+        if evicted:
+            logger.debug("Removed %d stale devices (cutoff=%ds)", evicted, max_age_seconds)
+        return evicted
+
     def set_own_device_info(self, mac: str, hostname: str, ip: str = "") -> None:
         """Pre-seed our own device in the registry with a known hostname.
 
@@ -238,6 +322,58 @@ class InMemoryDashboardState:
                     if not dev.device_name:
                         dev.device_name = hostname
                     break
+
+    def upsert_discovered_device(
+        self,
+        mac_address: str,
+        ip_address: str = "",
+        hostname: str = "",
+        vendor: str = "",
+    ) -> None:
+        """Insert/update a discovery-only device without traffic counters.
+
+        Used by hotspot discovery so connected-but-idle clients become
+        visible immediately on the dashboard before packet traffic arrives.
+        """
+        if not mac_address or not self._is_trackable_mac(mac_address):
+            return
+
+        mac_norm = mac_address.lower().replace('-', ':')
+        now = time.time()
+
+        with self._lock:
+            if mac_norm in self._host_macs or mac_norm in self._gateway_macs:
+                return
+            if self._own_traffic_only and mac_norm not in self._allowed_macs:
+                return
+            if (not self._own_traffic_only and self._our_ip
+                    and ip_address and ip_address == self._our_ip):
+                return
+
+            dev = self._devices.get(mac_norm)
+            if dev is None:
+                if len(self._devices) >= self.MAX_DEVICES:
+                    return
+                dev = DeviceInfo(
+                    mac_address=mac_norm,
+                    ip_address=ip_address or "",
+                    hostname=hostname or "",
+                    device_name=hostname or "",
+                    vendor=vendor or "",
+                    first_seen=now,
+                    last_seen=now,
+                )
+                self._devices[mac_norm] = dev
+            else:
+                dev.last_seen = now
+                if ip_address:
+                    dev.ip_address = ip_address
+                if hostname and not dev.hostname:
+                    dev.hostname = hostname
+                if hostname and not dev.device_name:
+                    dev.device_name = hostname
+                if vendor and not dev.vendor:
+                    dev.vendor = vendor
 
     # ------------------------------------------------------------------ #
     #  Alert / health callbacks (Phase 4 zero-DB SSE)
@@ -294,11 +430,23 @@ class InMemoryDashboardState:
             if today != self._today_date:
                 self._today_bytes = 0
                 self._today_packets = 0
+                self._today_control_bytes = 0
+                self._today_control_packets = 0
                 self._today_date = today
 
             for pkt in packets:
                 try:
                     byte_count = pkt.get("bytes", 0) or 0
+                    transition_phase = str(pkt.get("transition_phase") or "").strip().upper()
+                    is_transition_packet = bool(pkt.get("is_transition_packet")) or (
+                        transition_phase not in ("", "STABLE")
+                    )
+                    if is_transition_packet:
+                        continue
+
+                    is_control_traffic = bool(
+                        pkt.get("is_control") or pkt.get("is_control_traffic")
+                    )
                     protocol = pkt.get("protocol", "UNKNOWN")
                     direction = pkt.get("direction", "unknown")
                     source_mac = pkt.get("source_mac") or ""
@@ -316,11 +464,16 @@ class InMemoryDashboardState:
                         device_name = ""
 
                     # Running totals
-                    self._today_bytes += byte_count
-                    self._today_packets += 1
+                    if is_control_traffic:
+                        self._today_control_bytes += byte_count
+                        self._today_control_packets += 1
+                    else:
+                        self._today_bytes += byte_count
+                        self._today_packets += 1
 
                     # Protocol tracking
-                    self._protocol_records.append((now, protocol, byte_count))
+                    if not is_control_traffic:
+                        self._protocol_records.append((now, protocol, byte_count))
 
                     # Source device
                     _src_is_private_v4 = (
@@ -362,11 +515,19 @@ class InMemoryDashboardState:
                                 else:
                                     dev = None
                             if dev is not None:
-                                dev.bytes_sent += byte_count
-                                dev.packet_count += 1
+                                if is_control_traffic:
+                                    dev.control_bytes_sent += byte_count
+                                    dev.control_packet_count += 1
+                                else:
+                                    dev.bytes_sent += byte_count
+                                    dev.packet_count += 1
                                 dev.last_seen = now
-                                dev.today_sent += byte_count
-                                dev.today_bytes += byte_count
+                                if is_control_traffic:
+                                    dev.today_control_sent += byte_count
+                                    dev.today_control_bytes += byte_count
+                                else:
+                                    dev.today_sent += byte_count
+                                    dev.today_bytes += byte_count
                                 if (source_ip and source_ip != "0.0.0.0"
                                         and ":" not in source_ip
                                         and is_private_ip(source_ip)):
@@ -412,11 +573,19 @@ class InMemoryDashboardState:
                                 else:
                                     dev = None
                             if dev is not None:
-                                dev.bytes_received += byte_count
-                                dev.packet_count += 1
+                                if is_control_traffic:
+                                    dev.control_bytes_received += byte_count
+                                    dev.control_packet_count += 1
+                                else:
+                                    dev.bytes_received += byte_count
+                                    dev.packet_count += 1
                                 dev.last_seen = now
-                                dev.today_received += byte_count
-                                dev.today_bytes += byte_count
+                                if is_control_traffic:
+                                    dev.today_control_received += byte_count
+                                    dev.today_control_bytes += byte_count
+                                else:
+                                    dev.today_received += byte_count
+                                    dev.today_bytes += byte_count
                                 if (dest_ip and dest_ip != "0.0.0.0"
                                         and ":" not in dest_ip
                                         and is_private_ip(dest_ip)):
@@ -434,7 +603,53 @@ class InMemoryDashboardState:
     #  Reader-side: snapshot for SSE / API
     # ------------------------------------------------------------------ #
 
-    def snapshot(self) -> dict:
+    def _serialize_device(self, d: DeviceInfo, include_control: bool = False) -> dict:
+        """Serialize one DeviceInfo with both app and control metrics."""
+        bytes_sent, bytes_received = d.get_display_bytes(include_control=include_control)
+        total_bytes = bytes_sent + bytes_received
+        packet_count = d.packet_count_total if include_control else d.packet_count_app
+        control_total = d.bytes_total_control
+        total_all = d.bytes_total_all
+
+        return {
+            "mac_address": d.mac_address,
+            "ip_address": d.ip_address,
+            "hostname": d.hostname or d.device_name or d.ip_address,
+            "device_name": d.device_name,
+            "vendor": d.vendor,
+            # Legacy display fields: app-only by default, optionally app+control
+            "bytes_sent": bytes_sent,
+            "bytes_received": bytes_received,
+            "total_bytes": total_bytes,
+            "packet_count": packet_count,
+            # Explicit Phase 2 fields
+            "bytes_sent_app": d.bytes_sent_app,
+            "bytes_received_app": d.bytes_received_app,
+            "total_bytes_app": d.bytes_total_app,
+            "bytes_sent_control": d.control_bytes_sent,
+            "bytes_received_control": d.control_bytes_received,
+            "total_bytes_control": control_total,
+            "bytes_sent_total": d.bytes_sent_total,
+            "bytes_received_total": d.bytes_received_total,
+            "total_bytes_total": total_all,
+            "packet_count_app": d.packet_count_app,
+            "packet_count_control": d.control_packet_count,
+            "packet_count_total": d.packet_count_total,
+            "control_overhead_ratio": round((control_total / total_all), 4) if total_all else 0.0,
+            "last_seen": datetime.fromtimestamp(d.last_seen).strftime(
+                "%Y-%m-%d %H:%M:%S") if d.last_seen else "",
+            # Daily counters (app-only + explicit control)
+            "today_bytes": d.today_bytes,
+            "today_sent": d.today_sent,
+            "today_received": d.today_received,
+            "today_bytes_app": d.today_bytes,
+            "today_control_bytes": d.today_control_bytes,
+            "today_control_sent": d.today_control_sent,
+            "today_control_received": d.today_control_received,
+            "today_bytes_total": d.today_bytes + d.today_control_bytes,
+        }
+
+    def snapshot(self, include_control: bool = False) -> dict:
         """
         Return a read-only snapshot of dashboard state.
 
@@ -445,44 +660,27 @@ class InMemoryDashboardState:
         * ``top_devices`` — list of top 5 devices by total_bytes
         """
         now = time.time()
-        five_min_ago = now - 300
+        device_window = self._device_active_window  # mode-aware window
 
         with self._lock:
-            # Active device count
-            active_count = sum(
-                1 for d in self._devices.values()
-                if d.last_seen >= five_min_ago
-            )
-
-            # Top devices by total bytes (sent + received) in last hour
-            one_hour_ago = now - 3600
+            # Active devices — use the same window for BOTH count and list
+            # to prevent mismatches (bug: count=2 but list=3).
+            cutoff = now - device_window
             active_devices = [
                 d for d in self._devices.values()
-                if d.last_seen >= one_hour_ago
+                if d.last_seen >= cutoff
             ]
+            active_count = len(active_devices)
+
+            # Top devices by total bytes (sent + received)
             active_devices.sort(
-                key=lambda d: d.bytes_sent + d.bytes_received,
+                key=lambda d: d.bytes_total_app,
                 reverse=True,
             )
-            top_devices = []
-            for d in active_devices[:5]:
-                total = d.bytes_sent + d.bytes_received
-                top_devices.append({
-                    "mac_address": d.mac_address,
-                    "ip_address": d.ip_address,
-                    "hostname": d.hostname or d.device_name or d.ip_address,
-                    "device_name": d.device_name,
-                    "vendor": d.vendor,
-                    "bytes_sent": d.bytes_sent,
-                    "bytes_received": d.bytes_received,
-                    "total_bytes": total,
-                    "packet_count": d.packet_count,
-                    "last_seen": datetime.fromtimestamp(d.last_seen).strftime(
-                        "%Y-%m-%d %H:%M:%S") if d.last_seen else "",
-                    "today_bytes": d.today_bytes,
-                    "today_sent": d.today_sent,
-                    "today_received": d.today_received,
-                })
+            top_devices = [
+                self._serialize_device(d, include_control=include_control)
+                for d in active_devices[:10]
+            ]
 
             # Protocol distribution (last 1 hour)
             self._prune_protocols(now)
@@ -503,6 +701,12 @@ class InMemoryDashboardState:
             return {
                 "today_bytes": self._today_bytes,
                 "today_packets": self._today_packets,
+                "today_bytes_app": self._today_bytes,
+                "today_packets_app": self._today_packets,
+                "today_bytes_control": self._today_control_bytes,
+                "today_packets_control": self._today_control_packets,
+                "today_bytes_total": self._today_bytes + self._today_control_bytes,
+                "today_packets_total": self._today_packets + self._today_control_packets,
                 "active_devices": active_count,
                 "top_devices": top_devices,
                 "protocols": proto_list,
@@ -512,44 +716,28 @@ class InMemoryDashboardState:
                 "recent_alerts": list(self._recent_alerts),
             }
 
-    def get_top_devices_memory(self, limit: int = 5) -> list:
+    def get_top_devices_memory(self, limit: int = 5, include_control: bool = False) -> list:
         """
         Return top *limit* devices by total bytes from memory.
 
         Used by the SSE push loop instead of ``get_top_devices()``.
         """
         now = time.time()
-        one_hour_ago = now - 3600
+        cutoff = now - self._device_active_window
 
         with self._lock:
             active = [
                 d for d in self._devices.values()
-                if d.last_seen >= one_hour_ago
+                if d.last_seen >= cutoff
             ]
             active.sort(
-                key=lambda d: d.bytes_sent + d.bytes_received,
+                key=lambda d: d.bytes_total_app,
                 reverse=True,
             )
-            result = []
-            for d in active[:limit]:
-                total = d.bytes_sent + d.bytes_received
-                result.append({
-                    "mac_address": d.mac_address,
-                    "ip_address": d.ip_address,
-                    "hostname": d.hostname or d.device_name or d.ip_address,
-                    "device_name": d.device_name,
-                    "vendor": d.vendor,
-                    "bytes_sent": d.bytes_sent,
-                    "bytes_received": d.bytes_received,
-                    "total_bytes": total,
-                    "packet_count": d.packet_count,
-                    "last_seen": datetime.fromtimestamp(d.last_seen).strftime(
-                        "%Y-%m-%d %H:%M:%S") if d.last_seen else "",
-                    "today_bytes": d.today_bytes,
-                    "today_sent": d.today_sent,
-                    "today_received": d.today_received,
-                })
-            return result
+            return [
+                self._serialize_device(d, include_control=include_control)
+                for d in active[:limit]
+            ]
 
     def get_active_device_count(self, minutes: int = 5) -> int:
         """Return count of devices active within *minutes*."""
@@ -557,7 +745,7 @@ class InMemoryDashboardState:
         with self._lock:
             return sum(1 for d in self._devices.values() if d.last_seen >= cutoff)
 
-    def get_device_by_ip(self, ip: str) -> Optional[dict]:
+    def get_device_by_ip(self, ip: str, include_control: bool = False) -> Optional[dict]:
         """Look up a device by IP address and return a dict snapshot.
 
         Returns ``None`` if no device with the given IP is tracked.
@@ -569,23 +757,9 @@ class InMemoryDashboardState:
         with self._lock:
             for dev in self._devices.values():
                 if dev.ip_address == ip:
-                    return {
-                        "mac_address": dev.mac_address,
-                        "ip_address": dev.ip_address,
-                        "hostname": dev.hostname or dev.device_name or "",
-                        "device_name": dev.device_name,
-                        "vendor": dev.vendor,
-                        "bytes_sent": dev.bytes_sent,
-                        "bytes_received": dev.bytes_received,
-                        "total_bytes": dev.bytes_sent + dev.bytes_received,
-                        "packet_count": dev.packet_count,
-                        "last_seen": datetime.fromtimestamp(dev.last_seen).strftime(
-                            "%Y-%m-%d %H:%M:%S") if dev.last_seen else "",
-                        "last_seen_ts": dev.last_seen,
-                        "today_bytes": dev.today_bytes,
-                        "today_sent": dev.today_sent,
-                        "today_received": dev.today_received,
-                    }
+                    serialized = self._serialize_device(dev, include_control=include_control)
+                    serialized["last_seen_ts"] = dev.last_seen
+                    return serialized
         return None
 
     def get_today_totals(self) -> tuple:
@@ -625,6 +799,8 @@ class InMemoryDashboardState:
             self._devices.clear()
             self._today_bytes = 0
             self._today_packets = 0
+            self._today_control_bytes = 0
+            self._today_control_packets = 0
             self._today_date = datetime.now().strftime("%Y-%m-%d")
             self._protocol_records.clear()
             self._last_update = 0.0

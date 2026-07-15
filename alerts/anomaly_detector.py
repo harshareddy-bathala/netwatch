@@ -259,40 +259,104 @@ class AnomalyDetector:
         except Exception:
             return defaults
 
+    @staticmethod
+    def _query_traffic_features_bucketed(cursor, since_ts: str,
+                                         bucket_fmt: str = "%Y-%m-%d %H:%M:00") -> dict:
+        """Return per-bucket ML features from a single GROUP BY query.
+
+        The bucket format must match the ``timestamp`` strings produced by
+        ``get_bandwidth_history`` (minute buckets by default) so enrichment
+        can join features onto history rows.
+
+        Returns
+        -------
+        dict mapping bucket timestamp -> feature dict (same keys as
+        ``_query_traffic_features``).
+        """
+        out: dict = {}
+        try:
+            cursor.execute(f"""
+                SELECT
+                    strftime('{bucket_fmt}', timestamp) AS bucket,
+                    COUNT(DISTINCT source_ip || '-' || dest_ip) AS active_connections,
+                    COUNT(DISTINCT protocol)                     AS unique_protocols,
+                    SUM(CASE WHEN protocol = 'DNS' THEN 1 ELSE 0 END) AS dns,
+                    SUM(CASE WHEN protocol = 'HTTP' THEN 1 ELSE 0 END) AS http,
+                    SUM(CASE WHEN protocol IN ('HTTPS','TLS','SSL') THEN 1 ELSE 0 END) AS https,
+                    SUM(CASE WHEN protocol = 'TCP' THEN 1 ELSE 0 END) AS tcp_total,
+                    SUM(CASE WHEN protocol = 'TCP' AND raw_protocol LIKE '%retransmit%' THEN 1 ELSE 0 END) AS tcp_retransmit,
+                    SUM(CASE WHEN protocol = 'ICMP' AND (raw_protocol LIKE '%unreachable%' OR raw_protocol LIKE '%dest-unreach%') THEN 1 ELSE 0 END) AS icmp_unreachable,
+                    COUNT(*) AS total_packets
+                FROM traffic_summary
+                WHERE timestamp >= ?
+                GROUP BY bucket
+            """, (since_ts,))
+            for row in cursor.fetchall():
+                tcp_total = row["tcp_total"] or 0
+                tcp_retransmit = row["tcp_retransmit"] or 0
+                icmp_unreachable = row["icmp_unreachable"] or 0
+                total_packets = row["total_packets"] or 0
+                out[row["bucket"]] = {
+                    "active_connections": row["active_connections"] or 0,
+                    "unique_protocols": row["unique_protocols"] or 0,
+                    "dns_queries_count": row["dns"] or 0,
+                    "http_requests_count": row["http"] or 0,
+                    "https_requests_count": row["https"] or 0,
+                    "tcp_retransmit_ratio": (tcp_retransmit / tcp_total) if tcp_total > 0 else 0.0,
+                    "icmp_unreachable_rate": (icmp_unreachable / total_packets) if total_packets > 0 else 0.0,
+                }
+        except Exception:
+            return {}
+        return out
+
     def _enrich_with_features(self, history: list) -> list:
         """
-        Enrich bandwidth history entries with all 8 ML features
-        computed from a single batched SQL query covering the full
-        time range, instead of one query per entry.
+        Enrich bandwidth history entries with all 8 ML features.
+
+        Features are computed **per time bucket** (one GROUP BY query) and
+        joined onto each history row by timestamp, so the training matrix
+        has real per-sample variance.  A previous implementation computed a
+        single aggregate over the whole range and copied it onto every row,
+        which collapsed 7 of the 8 features to constants and degenerated
+        the Isolation Forest into a bandwidth-only detector.
         """
         if not history:
             return history
+
+        _feature_defaults = {
+            "active_connections": 0,
+            "unique_protocols": 0,
+            "dns_queries_count": 0,
+            "http_requests_count": 0,
+            "https_requests_count": 0,
+            "tcp_retransmit_ratio": 0.0,
+            "icmp_unreachable_rate": 0.0,
+        }
 
         try:
             from database.connection import get_connection
 
             # Determine the overall time range from history entries
-            timestamps = []
-            for entry in history:
-                ts = entry.get("timestamp", "")
-                if ts:
-                    timestamps.append(ts)
-
+            timestamps = [e.get("timestamp", "") for e in history if e.get("timestamp")]
             if not timestamps:
                 return history
 
             min_ts = min(timestamps)
-            max_ts = max(timestamps)
 
             with get_connection() as conn:
                 cursor = conn.cursor()
 
-                # Single query: compute features across the entire range
-                feats = self._query_traffic_features(cursor, since_ts=min_ts)
+                # Single query: per-minute features across the entire range
+                feats_by_bucket = self._query_traffic_features_bucketed(
+                    cursor, since_ts=min_ts,
+                )
 
                 enriched = []
                 for entry in history:
                     total_bw = entry.get("bytes_per_second", 0) or entry.get("total_bytes", 0)
+                    feats = feats_by_bucket.get(
+                        entry.get("timestamp", ""), _feature_defaults,
+                    )
                     enriched.append({
                         **entry,
                         "total_bandwidth": total_bw,
@@ -423,10 +487,24 @@ class AnomalyDetector:
 
     def check_thresholds(self, stats: Dict) -> None:
         """Run all threshold checks against the current stats snapshot."""
-        # Bandwidth
-        current_bps = stats.get("total_bandwidth", 0)
-        if current_bps:
-            self.alert_engine.check_bandwidth_threshold(current_bps)
+        # Bandwidth threshold checker expects BYTES/s. Realtime stats provide
+        # bandwidth_bps in bits/s, so convert when total_bandwidth is absent.
+        current_bps = stats.get("total_bandwidth")
+        if current_bps is None:
+            current_bps = (stats.get("bandwidth_bps", 0) or 0) / 8.0
+
+        # Optional control-traffic component (also bytes/s for thresholds).
+        control_bps = stats.get("control_total_bandwidth")
+        if control_bps is None:
+            control_bps = stats.get("control_bps")
+        if control_bps is None:
+            control_bps = (stats.get("control_bandwidth_bps", 0) or 0) / 8.0
+
+        if current_bps or control_bps:
+            self.alert_engine.check_bandwidth_threshold(
+                float(current_bps or 0),
+                control_bps=float(control_bps or 0),
+            )
 
         # Device count (Phase 3 accurate count)
         self.alert_engine.check_device_threshold()
@@ -435,6 +513,9 @@ class AnomalyDetector:
         health = stats.get("health_score")
         if health is not None:
             self.alert_engine.check_health_threshold(health)
+
+        # User-defined runtime rules (stored in alert_rules)
+        self.alert_engine.check_custom_rules(stats)
 
     def _enrich_current_stats(self, stats: Dict) -> Dict:
         """

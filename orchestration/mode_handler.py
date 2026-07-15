@@ -11,6 +11,7 @@ Handles mode change callbacks from InterfaceManager:
 """
 
 import logging
+import ipaddress
 import subprocess
 import re
 import sys
@@ -37,6 +38,31 @@ logger = logging.getLogger(__name__)
 # MAC carries a real IP address.
 _pending_mac_hostnames: dict = {}
 _pending_mac_lock = threading.Lock()
+
+
+def _set_transition_phase(phase: str) -> None:
+    """Update global transition phase used by packet/write paths."""
+    with state.mode_transition_phase_lock:
+        state.mode_transition_phase = phase
+
+
+def _record_transition_event(old_mode: str, new_mode: str) -> None:
+    """Append a mode transition event for runtime diagnostics."""
+    event = {
+        "timestamp": time.time(),
+        "old_mode": old_mode,
+        "new_mode": new_mode,
+    }
+    with state.mode_transition_events_lock:
+        state.mode_transition_events.append(event)
+
+    # Phase 0 (AI-first): mirror the transition onto the event bus so
+    # intelligence consumers (twin, RCA timeline) see topology context.
+    try:
+        from intelligence.event_bus import event_bus
+        event_bus.publish("mode.changed", dict(event))
+    except Exception:
+        pass
 
 
 # =========================================================================
@@ -311,11 +337,10 @@ def on_mode_change(old_mode, new_mode):
 def _on_mode_change_locked(old_mode, new_mode):
     """Inner implementation -- must be called while holding *engine_lock*.
 
-    Acquires ``mode_transition_lock`` during the critical window between
-    ``reset_subnet_cache()`` and the new engine being ready.  The
-    ``DatabaseWriter`` checks this lock and re-queues (skips) DB writes
-    while it is held, eliminating the race where packets are written
-    against the wrong subnet.
+    Holds ``mode_transition_lock`` only while mutating mode-scoped shared
+    state (subnet cache, filters, dashboard context).  Potentially slow
+    operations (stopping/starting capture engines and interface waits)
+    run outside this lock to minimize write suppression during transitions.
     """
     old_name = old_mode.get_mode_name().value if old_mode else 'None'
     new_name = new_mode.get_mode_name().value
@@ -329,6 +354,18 @@ def _on_mode_change_locked(old_mode, new_mode):
         return
 
     logger.info("Mode changed: %s -> %s -- restarting capture engine", old_name, new_name)
+    _record_transition_event(old_name, new_name)
+
+    # Mark transition exit phase early so any trailing packets from the old
+    # engine are explicitly tagged by the packet pipeline.
+    _set_transition_phase(f"EXITING_{old_name.upper() if old_name else 'UNKNOWN'}")
+
+    # Bump the global mode generation immediately so background workers
+    # can drop stale writes from the previous mode/subnet epoch.
+    with state.mode_generation_lock:
+        state.mode_generation += 1
+        _mode_generation = state.mode_generation
+    logger.debug("Mode transition generation advanced to %d", _mode_generation)
 
     # Detect if the network actually changed (different SSID or gateway)
     network_changed = (
@@ -358,26 +395,34 @@ def _on_mode_change_locked(old_mode, new_mode):
         state.capture_engine = None
         expose_engine_to_routes()
         _send_mode_changed_sse(new_name, is_disconnected=True)
+        _set_transition_phase("STABLE")
         return
+
+    # Stop old engine before entering the mode-transition critical section.
+    # This avoids prolonged DatabaseWriter suppression while waiting for
+    # thread joins and prevents old-mode packets from being produced during
+    # shared-state mutation.
+    if state.capture_engine and state.capture_engine.is_running:
+        try:
+            state.capture_engine.stop()
+        except Exception as e:
+            logger.error("Error stopping old capture engine: %s", e)
+    state.capture_engine = None
+
+    own_traffic = (new_mode.get_scope().name == "OWN_TRAFFIC_ONLY")
+    is_hotspot = (new_name == "hotspot")
+    our_mac = getattr(new_mode.interface, 'mac_address', None) or ''
+    gw_mac_for_state = ''
 
     # Acquire mode-transition lock
     state.mode_transition_lock.acquire()
     try:
         _send_mode_changed_sse(new_name, is_disconnected=False)
 
-        # 1. Clear BandwidthCalculator on the old engine
-        if state.capture_engine and hasattr(state.capture_engine, 'bandwidth'):
-            try:
-                state.capture_engine.bandwidth.reset()
-            except Exception:
-                pass
-
-        # 2. Clear InMemoryDashboardState and set mode context
+        # 1. Clear InMemoryDashboardState and set mode context
         #    Only clear byte counters when the network genuinely changed
         #    (different subnet/gateway/SSID).  Interface-only flaps (same
         #    network, different adapter) should NOT reset accumulated usage.
-        own_traffic = False
-        gw_mac_for_state = ''
         try:
             from utils.realtime_state import dashboard_state
             if network_changed:
@@ -385,13 +430,18 @@ def _on_mode_change_locked(old_mode, new_mode):
             else:
                 logger.debug("Same network, different interface — preserving dashboard state")
 
-            own_traffic = (new_mode.get_scope().name == "OWN_TRAFFIC_ONLY")
-            is_hotspot = (new_name == "hotspot")
             is_ethernet = (new_name == "ethernet")
-            our_mac = getattr(new_mode.interface, 'mac_address', None) or ''
-            gw_mac_for_state = resolve_gateway_mac(
-                getattr(new_mode.interface, 'gateway', None) or ''
-            )
+
+            if is_hotspot:
+                # In hotspot mode the host IS the gateway — use our own
+                # adapter MAC as the gateway MAC so it gets excluded from
+                # the device list.  interface.gateway is None for hotspot.
+                gw_mac_for_state = our_mac
+            else:
+                gw_mac_for_state = resolve_gateway_mac(
+                    getattr(new_mode.interface, 'gateway', None) or ''
+                )
+
             all_host_macs = get_all_local_macs()
 
             # In own-traffic mode (public_network) and ethernet mode, the
@@ -413,12 +463,18 @@ def _on_mode_change_locked(old_mode, new_mode):
                 # IP-based host exclusion: only needed for hotspot mode
                 # where the virtual adapter MAC may not be detected by
                 # psutil.  In ethernet mode the host IS a device we track.
-                our_ip=new_mode.interface.ip_address or '' if is_hotspot else '',
+                our_ip=(new_mode.interface.ip_address or '') if is_hotspot else '',
             )
+            # Hotspot mode: use a short active window so disconnected
+            # clients disappear quickly from the dashboard.
+            if is_hotspot:
+                dashboard_state.set_device_active_window(60)   # 60 seconds
+            else:
+                dashboard_state.set_device_active_window(300)  # 5 minutes
         except Exception:
             pass
 
-        # 2b. Clear stale device data on network change
+        # 1b. Clear stale device data on network change
         if network_changed:
             try:
                 from database.connection import get_connection as _gc
@@ -435,7 +491,7 @@ def _on_mode_change_locked(old_mode, new_mode):
             except Exception:
                 pass
 
-        # 3. Invalidate SSE cache + clear route-level TTL caches
+        # 2. Invalidate SSE cache + clear route-level TTL caches
         try:
             from backend.blueprints.bandwidth_bp import invalidate_sse_cache
             invalidate_sse_cache()
@@ -447,7 +503,7 @@ def _on_mode_change_locked(old_mode, new_mode):
         except ImportError:
             pass
 
-        # 4. Stop old NetworkDiscovery before creating new
+        # 3. Stop old NetworkDiscovery before creating new
         with state.cached_discovery_lock:
             if state.cached_discovery is not None:
                 try:
@@ -457,7 +513,7 @@ def _on_mode_change_locked(old_mode, new_mode):
                     pass
                 state.cached_discovery = None
 
-        # 5. Update subnet cache and mode for device filtering
+        # 4. Update subnet cache and mode for device filtering
         try:
             from database.queries.device_queries import (
                 set_subnet_from_ip, set_current_mode, reset_subnet_cache,
@@ -468,16 +524,28 @@ def _on_mode_change_locked(old_mode, new_mode):
             if new_mode.interface.name:
                 set_capture_interface(new_mode.interface.name)
             if new_mode.interface.ip_address:
-                set_subnet_from_ip(new_mode.interface.ip_address)
+                set_subnet_from_ip(
+                    new_mode.interface.ip_address,
+                    getattr(new_mode.interface, 'netmask', None),
+                )
                 new_parts = new_mode.interface.ip_address.split('.')
                 if len(new_parts) == 4:
-                    new_prefix = f"{new_parts[0]}.{new_parts[1]}.{new_parts[2]}"
+                    new_scope = f"{new_parts[0]}.{new_parts[1]}.{new_parts[2]}"
+                    try:
+                        netmask = getattr(new_mode.interface, 'netmask', None)
+                        if netmask:
+                            new_scope = str(ipaddress.IPv4Network(
+                                f"{new_mode.interface.ip_address}/{netmask}",
+                                strict=False,
+                            ))
+                    except Exception:
+                        pass
                     our_mac = getattr(new_mode.interface, 'mac_address', None) or ''
                     gw_mac = resolve_gateway_mac(
                         getattr(new_mode.interface, 'gateway', None) or ''
                     )
                     scope_devices_to_mode(
-                        new_name, new_prefix,
+                        new_name, new_scope,
                         our_mac=our_mac,
                         gateway_mac=gw_mac,
                     )
@@ -521,7 +589,12 @@ def _on_mode_change_locked(old_mode, new_mode):
                             _learn_hostname(_self_ip, _hostname, source='MDNS')
                     set_gateway_mac(gw_mac)
             gw = getattr(new_mode.interface, "gateway", None)
-            set_gateway_ip(gw or "")
+            if is_hotspot:
+                # Hotspot: the host IS the gateway — set our own IP/MAC
+                set_gateway_ip(new_mode.interface.ip_address or "")
+                set_gateway_mac(our_mac)
+            else:
+                set_gateway_ip(gw or "")
             set_current_mode(new_name)
             if own_traffic and new_mode.interface.ip_address:
                 _set_resolver_restrict_mode(new_mode.interface.ip_address)
@@ -529,12 +602,13 @@ def _on_mode_change_locked(old_mode, new_mode):
                 _set_resolver_restrict_mode(None)
             logger.info(
                 "Device discovery updated for mode '%s' on %s (gw=%s)",
-                new_name, new_mode.interface.ip_address, gw,
+                new_name, new_mode.interface.ip_address,
+                new_mode.interface.ip_address if is_hotspot else gw,
             )
         except Exception as e:
             logger.warning("Could not update subnet for new mode: %s", e)
 
-        # 6. Register known IPs/MACs to prevent false alerts
+        # 5. Register known IPs/MACs to prevent false alerts
         try:
             from alerts import get_shared_engine as _get_shared_engine
             ae = _get_shared_engine()
@@ -554,39 +628,36 @@ def _on_mode_change_locked(old_mode, new_mode):
                     ae.add_known_mac(gw_mac_for_state)
         except Exception:
             pass
-
-        # 7. Stop the old engine
-        if state.capture_engine and state.capture_engine.is_running:
-            try:
-                state.capture_engine.stop()
-            except Exception as e:
-                logger.error("Error stopping old capture engine: %s", e)
-
-        # 8. Wait briefly for the interface to be ready
-        iface_name = new_mode.interface.name
-        for attempt in range(3):
-            try:
-                import psutil
-                if any(iface_name.lower() in name.lower() for name in psutil.net_if_addrs()):
-                    break
-            except ImportError:
-                break
-            except Exception:
-                pass
-            logger.debug("Waiting for interface '%s' to be ready (%d/3)...", iface_name, attempt + 1)
-            time.sleep(1)
-
-        # 9. Start a new engine with the new mode
-        try:
-            state.capture_engine = _create_capture_engine(new_mode)
-            state.capture_engine.start()
-            expose_engine_to_routes()
-            logger.info("Capture engine restarted for mode '%s' on interface '%s'",
-                        new_name, new_mode.interface.name)
-        except Exception as e:
-            logger.error("Failed to restart capture engine: %s", e)
     finally:
         state.mode_transition_lock.release()
+
+    # Wait briefly for the interface to be ready (outside transition lock).
+    iface_name = new_mode.interface.name
+    for attempt in range(3):
+        try:
+            import psutil
+            if any(iface_name.lower() in name.lower() for name in psutil.net_if_addrs()):
+                break
+        except ImportError:
+            break
+        except Exception:
+            pass
+        logger.debug("Waiting for interface '%s' to be ready (%d/3)...", iface_name, attempt + 1)
+        time.sleep(1)
+
+    # Start a new engine with the new mode (outside transition lock).
+    _set_transition_phase(f"ENTERING_{new_name.upper()}")
+    try:
+        state.capture_engine = _create_capture_engine(new_mode)
+        state.capture_engine.start()
+        logger.info("Capture engine restarted for mode '%s' on interface '%s'",
+                    new_name, new_mode.interface.name)
+    except Exception as e:
+        state.capture_engine = None
+        logger.error("Failed to restart capture engine: %s", e)
+    finally:
+        expose_engine_to_routes()
+        _set_transition_phase("STABLE")
 
 
 # =========================================================================

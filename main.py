@@ -64,6 +64,7 @@ from orchestration.discovery_manager import (
 from orchestration.background_tasks import (
     start_anomaly_detector, start_cleanup_task,
     start_health_monitor, start_thread_watchdog,
+    start_flow_normalizer, start_twin_builder, start_behavior_analyzer,
 )
 
 # Hostname resolver functions
@@ -212,8 +213,13 @@ def signal_handler(signum, frame):
 
 
 def print_banner():
-    """Print the NetWatch startup banner."""
-    print(f"""
+    """Print the NetWatch startup banner.
+
+    Falls back to plain ASCII when stdout cannot encode the box-drawing
+    characters (cp1252 pipes, redirected output, Windows services) —
+    a banner must never be able to crash startup.
+    """
+    fancy = f"""
     ╔══════════════════════════════════════════════════════════════════════════╗
     ║                                                                          ║
     ║  ███╗   ██╗███████╗████████╗██╗    ██╗ █████╗ ████████╗ ██████╗██╗  ██╗  ║
@@ -225,7 +231,11 @@ def print_banner():
     ║                                                                          ║
     ║   v{APP_VERSION}  |  {APP_ENV}                                                  ║
     ╚══════════════════════════════════════════════════════════════════════════╝
-    """)
+    """
+    try:
+        print(fancy)
+    except (UnicodeEncodeError, OSError):
+        print(f"\n    === NetWatch v{APP_VERSION} ({APP_ENV}) ===\n")
 
 
 def main():
@@ -273,16 +283,39 @@ def main():
 
     # --reset-db: full cleanup of in-memory state and model artefacts
     if args.reset_db:
-        # Clean log files FIRST (before DB init so we start fresh)
+        # Clean log files so reset starts from a minimal baseline.
         _logs_dir = os.path.join(PROJECT_ROOT, 'logs')
         if os.path.isdir(_logs_dir):
-            import shutil
-            try:
-                shutil.rmtree(_logs_dir)
-                os.makedirs(_logs_dir, exist_ok=True)
-                logger.info("Cleared logs directory: %s", _logs_dir)
-            except OSError as e:
-                logger.warning("Could not clear logs directory: %s", e)
+            deleted = 0
+            truncated = 0
+            failed = 0
+            for root, dirs, files in os.walk(_logs_dir, topdown=False):
+                for name in files:
+                    fp = os.path.join(root, name)
+                    try:
+                        os.remove(fp)
+                        deleted += 1
+                    except OSError:
+                        # Windows keeps currently-open log handles locked.
+                        # Truncating in-place still gives us a clean start.
+                        try:
+                            with open(fp, 'wb'):
+                                pass
+                            truncated += 1
+                        except OSError:
+                            failed += 1
+                for name in dirs:
+                    dpath = os.path.join(root, name)
+                    try:
+                        os.rmdir(dpath)
+                    except OSError:
+                        pass
+            logger.info(
+                "Log cleanup complete (deleted=%d, truncated=%d, failed=%d)",
+                deleted,
+                truncated,
+                failed,
+            )
         try:
             from utils.realtime_state import dashboard_state
             dashboard_state.clear()
@@ -332,7 +365,10 @@ def main():
                 mode = state.interface_manager.get_current_mode()
                 if mode and mode.interface.ip_address:
                     set_capture_interface(mode.interface.name)
-                    set_subnet_from_ip(mode.interface.ip_address)
+                    set_subnet_from_ip(
+                        mode.interface.ip_address,
+                        getattr(mode.interface, 'netmask', None),
+                    )
                     gw = getattr(mode.interface, "gateway", None)
                     set_gateway_ip(gw or "")
                     set_current_mode(mode.get_mode_name().value)
@@ -403,6 +439,30 @@ def main():
     detector_started = start_anomaly_detector(alert_engine)
     if detector_started:
         logger.info("Anomaly detector started")
+
+    # Start flow normalizer (Phase 0, AI-first: flow/DNS telemetry)
+    if capture_started and start_flow_normalizer():
+        logger.info("Flow normalizer started (flows + dns_queries telemetry)")
+
+    # Start digital twin + behavior learning (Phase 1, AI-first)
+    if start_twin_builder():
+        logger.info("Twin builder started (network digital twin)")
+        # Identify self/gateway so twin nodes get the right roles
+        try:
+            mode = state.interface_manager.get_current_mode() if state.interface_manager else None
+            if mode and state.twin_builder:
+                gw_ip = getattr(mode.interface, 'gateway', None) or ""
+                state.twin_builder.set_context(
+                    our_mac=getattr(mode.interface, 'mac_address', '') or '',
+                    our_ip=mode.interface.ip_address or '',
+                    gateway_mac=resolve_gateway_mac(gw_ip) if gw_ip else '',
+                    gateway_ip=gw_ip,
+                    mode=mode.get_mode_name().value,
+                )
+        except Exception as e:
+            logger.debug("Twin context not set: %s", e)
+    if capture_started and start_behavior_analyzer(alert_engine):
+        logger.info("Behavior analyzer started (per-device baselines)")
 
     # Start system health monitor
     health_started = start_health_monitor(alert_engine)

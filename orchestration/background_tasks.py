@@ -43,6 +43,61 @@ def start_anomaly_detector(alert_engine):
 
 
 # =========================================================================
+# Flow normalizer (Phase 0, AI-first substrate)
+# =========================================================================
+
+def start_flow_normalizer():
+    """Start the packet-batch → flow/DNS telemetry consumer.
+
+    Subscribes to the in-process event bus; never touches the capture
+    hot path.  See intelligence/flow_normalizer.py and ROADMAP.md P0.6.
+    """
+    from intelligence.flow_normalizer import FlowNormalizer
+
+    try:
+        state.flow_normalizer = FlowNormalizer(
+            shutdown_event=state.shutdown_event,
+        )
+        return state.flow_normalizer.start()
+    except Exception as e:
+        logger.error("Failed to start flow normalizer: %s", e)
+        return False
+
+
+# =========================================================================
+# Digital twin + behavior learning (Phase 1, AI-first)
+# =========================================================================
+
+def start_twin_builder():
+    """Start the digital-twin graph builder (event-bus consumer)."""
+    from intelligence.twin import TwinBuilder
+
+    try:
+        state.twin_builder = TwinBuilder(
+            shutdown_event=state.shutdown_event,
+        )
+        return state.twin_builder.start()
+    except Exception as e:
+        logger.error("Failed to start twin builder: %s", e)
+        return False
+
+
+def start_behavior_analyzer(alert_engine):
+    """Start per-device behavior learning (event-bus consumer)."""
+    from intelligence.behavior import BehaviorAnalyzer
+
+    try:
+        state.behavior_analyzer = BehaviorAnalyzer(
+            alert_engine=alert_engine,
+            shutdown_event=state.shutdown_event,
+        )
+        return state.behavior_analyzer.start()
+    except Exception as e:
+        logger.error("Failed to start behavior analyzer: %s", e)
+        return False
+
+
+# =========================================================================
 # Health monitor
 # =========================================================================
 
@@ -213,6 +268,9 @@ _WATCHED_THREAD_PATTERNS = {
     "CleanupTask": ("CleanupTask",),
     "AnomalyDetector": ("AnomalyDetector",),
     "HealthMonitor": ("HealthMonitor",),
+    "FlowNormalizer": ("FlowNormalizer",),
+    "TwinBuilder": ("TwinBuilder",),
+    "BehaviorAnalyzer": ("BehaviorAnalyzer",),
 }
 
 

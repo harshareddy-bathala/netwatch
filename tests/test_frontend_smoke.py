@@ -51,6 +51,13 @@ class TestFrontendSmoke:
         resp = client.get('/js/app.js')
         assert resp.status_code == 200
 
+    def test_sse_stream_uses_query_api_key(self, client):
+        """api.js should append api_key to SSE URL for EventSource auth."""
+        resp = client.get('/js/api.js')
+        assert resp.status_code == 200
+        body = resp.data.decode('utf-8')
+        assert "params.set('api_key'" in body
+
     def test_theme_init_external_script(self, client):
         """js/theme-init.js must exist (moved from inline <script>)."""
         resp = client.get('/js/theme-init.js')

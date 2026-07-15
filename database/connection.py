@@ -20,6 +20,7 @@ import threading
 import queue
 import os
 import sys
+import ipaddress
 from contextlib import contextmanager
 from typing import Optional
 
@@ -42,6 +43,22 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _sqlite_ip_in_subnet(ip_value, subnet_cidr) -> int:
+    """SQLite UDF: return 1 when IPv4 address belongs to CIDR subnet."""
+    try:
+        if ip_value is None or subnet_cidr is None:
+            return 0
+        ip_text = str(ip_value)
+        cidr_text = str(subnet_cidr)
+        if not ip_text or not cidr_text or ":" in ip_text:
+            return 0
+        ip_obj = ipaddress.IPv4Address(ip_text)
+        subnet_obj = ipaddress.IPv4Network(cidr_text, strict=False)
+        return 1 if ip_obj in subnet_obj else 0
+    except Exception:
+        return 0
 
 # ---------------------------------------------------------------------------
 # Module-level singleton
@@ -94,6 +111,7 @@ class ConnectionPool:
         """Create a single connection with all PRAGMAs applied."""
         conn = sqlite3.connect(self.db_path, timeout=DATABASE_TIMEOUT, check_same_thread=False)
         conn.row_factory = sqlite3.Row
+        conn.create_function("ip_in_subnet", 2, _sqlite_ip_in_subnet)
 
         # Performance PRAGMAs (applied once per connection lifetime)
         conn.execute(f"PRAGMA journal_mode={DB_JOURNAL_MODE}")
@@ -175,6 +193,22 @@ class ConnectionPool:
             raise
         finally:
             if conn is not None:
+                # Safety net: never return a connection with an open
+                # transaction to the pool. A forgotten commit() in any
+                # caller can otherwise hold a write lock indefinitely.
+                try:
+                    if getattr(conn, "in_transaction", False):
+                        logger.warning(
+                            "Connection returned with open transaction; rolling back before pooling"
+                        )
+                        conn.rollback()
+                except sqlite3.Error:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    conn = self._create_connection()
+
                 try:
                     self._pool.put_nowait(conn)
                 except queue.Full:

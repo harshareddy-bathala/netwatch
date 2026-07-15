@@ -135,3 +135,94 @@ class TestStats:
         assert "anomaly_count" in stats
         assert "check_count" in stats
         assert "running" in stats
+
+
+# ===================================================================
+# Feature enrichment (regression: per-bucket variance, #Phase0)
+# ===================================================================
+
+class TestEnrichmentPerBucket:
+    """Regression tests for _enrich_with_features.
+
+    A previous implementation computed ONE aggregate feature dict over the
+    whole history range and copied it to every row, collapsing 7 of the 8
+    training features to constants.  These tests assert features are now
+    joined per time bucket.
+    """
+
+    @staticmethod
+    def _make_traffic_db():
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("""
+            CREATE TABLE traffic_summary (
+                timestamp TEXT, source_ip TEXT, dest_ip TEXT,
+                protocol TEXT, raw_protocol TEXT,
+                bytes_transferred INTEGER, direction TEXT, is_control INTEGER
+            )
+        """)
+        rows = []
+        # Bucket A (10:00): DNS-heavy minute — 5 DNS + 2 TCP packets
+        for i in range(5):
+            rows.append(("2026-07-14 10:00:%02d" % (i * 5),
+                         "192.168.1.10", "8.8.8.8", "DNS", "udp", 80, "upload", 0))
+        for i in range(2):
+            rows.append(("2026-07-14 10:00:%02d" % (30 + i),
+                         "192.168.1.10", "1.2.3.4", "TCP", "tcp", 1500, "download", 0))
+        # Bucket B (10:01): single HTTPS packet
+        rows.append(("2026-07-14 10:01:10",
+                     "192.168.1.11", "5.6.7.8", "HTTPS", "tls", 4000, "download", 0))
+        conn.executemany(
+            "INSERT INTO traffic_summary VALUES (?,?,?,?,?,?,?,?)", rows)
+        conn.commit()
+        return conn
+
+    def _enrich(self, detector, history):
+        from contextlib import contextmanager
+        conn = self._make_traffic_db()
+
+        @contextmanager
+        def fake_get_connection():
+            yield conn
+
+        with patch('database.connection.get_connection', fake_get_connection):
+            return detector._enrich_with_features(history)
+
+    def test_features_vary_across_buckets(self, detector):
+        history = [
+            {"timestamp": "2026-07-14 10:00:00", "bytes_per_second": 100.0},
+            {"timestamp": "2026-07-14 10:01:00", "bytes_per_second": 200.0},
+        ]
+        enriched = self._enrich(detector, history)
+        assert len(enriched) == 2
+        a, b = enriched
+
+        # Bucket-specific counts, not a shared aggregate
+        assert a["dns_queries_count"] == 5
+        assert b["dns_queries_count"] == 0
+        assert a["https_requests_count"] == 0
+        assert b["https_requests_count"] == 1
+        assert a["active_connections"] == 2
+        assert b["active_connections"] == 1
+
+        # The regression itself: rows must not share identical feature dicts
+        keys = ["active_connections", "unique_protocols", "dns_queries_count",
+                "http_requests_count", "https_requests_count"]
+        assert any(a[k] != b[k] for k in keys)
+
+    def test_bucket_without_traffic_gets_defaults(self, detector):
+        history = [
+            {"timestamp": "2026-07-14 10:00:00", "bytes_per_second": 100.0},
+            {"timestamp": "2026-07-14 10:05:00", "bytes_per_second": 0.0},
+        ]
+        enriched = self._enrich(detector, history)
+        quiet = enriched[1]
+        assert quiet["dns_queries_count"] == 0
+        assert quiet["active_connections"] == 0
+        assert quiet["tcp_retransmit_ratio"] == 0.0
+
+    def test_total_bandwidth_preserved(self, detector):
+        history = [{"timestamp": "2026-07-14 10:00:00", "bytes_per_second": 123.4}]
+        enriched = self._enrich(detector, history)
+        assert enriched[0]["total_bandwidth"] == 123.4

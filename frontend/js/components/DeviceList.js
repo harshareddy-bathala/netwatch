@@ -24,7 +24,42 @@ export default class DeviceList {
     this._editingIp = null;    // IP of device currently being edited
     this._openModal = null;    // track currently open DeviceDetail modal (#48)
     this._modeData = null;     // current mode capabilities from store
-    this._pendingRenames = new Map(); // ip → newName; preserved across store updates until server confirms
+    this._pendingRenames = new Map(); // device key (ip/mac) -> newName
+    this._showControlOverhead = !!store.get('includeControlTraffic');
+    this._refreshTimer = null;
+  }
+
+  _normalizeDevicesPayload(data) {
+    if (Array.isArray(data)) return data;
+    if (Array.isArray(data?.devices)) return data.devices;
+    if (Array.isArray(data?.data)) return data.data;
+    if (Array.isArray(data?.data?.devices)) return data.data.devices;
+    return [];
+  }
+
+  _normalizeMac(mac) {
+    return (mac || '').trim().toLowerCase().replace(/-/g, ':');
+  }
+
+  _renameKey(ip, mac) {
+    const ipKey = (ip || '').trim();
+    if (ipKey) return `ip:${ipKey}`;
+    const macKey = this._normalizeMac(mac);
+    if (macKey) return `mac:${macKey}`;
+    return '';
+  }
+
+  _deviceRowKey(device, index = 0) {
+    const macKey = this._normalizeMac(device?.mac_address);
+    if (macKey) return `mac:${macKey}`;
+
+    const ipKey = (device?.ip_address || '').trim();
+    if (ipKey) return `ip:${ipKey}`;
+
+    const nameKey = (device?.hostname || device?.device_name || '').trim().toLowerCase();
+    if (nameKey) return `name:${nameKey}:${index}`;
+
+    return `row:${index}`;
   }
 
   render() {
@@ -38,6 +73,10 @@ export default class DeviceList {
           <input class="search-box__input" id="device-search"
                  placeholder="Search by IP, MAC, or hostname…" type="text" />
         </div>
+        <label class="control-toggle control-toggle--compact" title="Include control traffic in per-device usage">
+          <input type="checkbox" id="device-control-overhead-toggle" ${this._showControlOverhead ? 'checked' : ''}>
+          <span>Show control overhead</span>
+        </label>
         <span class="device-count" id="device-count">— devices</span>
       </div>
 
@@ -49,7 +88,7 @@ export default class DeviceList {
       </div>
 
       <div class="chart-card">
-        <div class="device-table" id="device-table">
+        <div class="device-table${this._showControlOverhead ? ' device-table--control' : ''}" id="device-table">
           <div class="device-table__header" id="device-table-header">
             ${this._renderHeaderCells()}
           </div>
@@ -64,17 +103,25 @@ export default class DeviceList {
     this._bindSearch();
     this._bindRowActions();
 
+    const controlToggle = this.container.querySelector('#device-control-overhead-toggle');
+    if (controlToggle) {
+      controlToggle.addEventListener('change', () => {
+        store.setState('includeControlTraffic', !!controlToggle.checked);
+      });
+    }
+
     this._unsubs.push(store.subscribe('devices', data => {
-      const rawDevices = data?.devices || data || [];
+      const rawDevices = this._normalizeDevicesPayload(data);
       // Preserve any pending renames so SSE updates don't revert the UI
       // while waiting for the server to reflect the change.
       if (this._pendingRenames.size > 0) {
         this._devices = rawDevices.map(d => {
-          const override = this._pendingRenames.get(d.ip_address);
+          const renameKey = this._renameKey(d.ip_address, d.mac_address);
+          const override = renameKey ? this._pendingRenames.get(renameKey) : undefined;
           if (override !== undefined) {
             // Server has caught up — drop the override
             if (d.hostname === override) {
-              this._pendingRenames.delete(d.ip_address);
+              this._pendingRenames.delete(renameKey);
               return d;
             }
             return { ...d, hostname: override };
@@ -88,6 +135,10 @@ export default class DeviceList {
       if (!this._isEditing) {
         this._renderRows();
       }
+    }));
+
+    this._unsubs.push(store.subscribe('includeControlTraffic', value => {
+      this._onControlPreference(value);
     }));
 
     // Phase 5 + Phase B: show/hide discovery banner based on mode capabilities
@@ -117,18 +168,38 @@ export default class DeviceList {
       // Re-render rows to update ARP-only styling
       if (!this._isEditing) this._renderRows();
     }));
+
+    // Keep devices page fresh even when SSE is healthy (the global polling
+    // loop pauses while SSE is connected).
+    this._refreshFromApi();
+    this._refreshTimer = setInterval(() => this._refreshFromApi(), 5000);
+  }
+
+  async _refreshFromApi() {
+    const includeControl = !!store.get('includeControlTraffic');
+    const resp = await api.getAllDevices(200, 0, includeControl);
+    if (resp && !resp.error) {
+      const rows = this._normalizeDevicesPayload(resp);
+      store.setState('devices', rows);
+    }
   }
 
   /* ── Column header rendering ─────────────── */
 
   _renderHeaderCells() {
+    const usageLabel = this._showControlOverhead ? 'Usage (App + Ctrl)' : 'Usage (App)';
     const cols = [
       { key: 'ip_address', label: 'IP' },
       { key: 'mac_address', label: 'MAC' },
       { key: 'hostname', label: 'Hostname' },
-      { key: 'total_bytes', label: 'Usage' },
+      { key: 'total_bytes', label: usageLabel },
       { key: 'last_seen', label: 'Last Seen' },
     ];
+
+    if (this._showControlOverhead) {
+      cols.splice(4, 0, { key: 'control_overhead_ratio', label: 'Control' });
+    }
+
     return cols
       .map(c => {
         const sorted = this._sortKey === c.key;
@@ -194,7 +265,7 @@ export default class DeviceList {
       if (ip) {
         // Close any existing modal before opening a new one (#48)
         if (this._openModal) { this._openModal.close(); this._openModal = null; }
-        const modal = new DeviceDetail(this.container, ip);
+        const modal = new DeviceDetail(this.container, ip, this._showControlOverhead);
         this._openModal = modal;
         modal.open();
       }
@@ -207,7 +278,13 @@ export default class DeviceList {
     const rowsEl = document.getElementById('device-rows');
     if (!rowsEl) return;
 
-    let filtered = [...this._devices];
+    const table = this.container.querySelector('#device-table');
+    if (table) {
+      table.classList.toggle('device-table--control', this._showControlOverhead);
+    }
+
+    const deviceList = Array.isArray(this._devices) ? this._devices : [];
+    let filtered = [...deviceList];
 
     // Filter
     if (this._search) {
@@ -220,8 +297,20 @@ export default class DeviceList {
 
     // Sort
     filtered.sort((a, b) => {
-      let va = a[this._sortKey] ?? '';
-      let vb = b[this._sortKey] ?? '';
+      let va;
+      let vb;
+
+      if (this._sortKey === 'total_bytes') {
+        va = this._getDisplayUsageBytes(a);
+        vb = this._getDisplayUsageBytes(b);
+      } else if (this._sortKey === 'control_overhead_ratio') {
+        va = this._getControlOverheadRatio(a);
+        vb = this._getControlOverheadRatio(b);
+      } else {
+        va = a[this._sortKey] ?? '';
+        vb = b[this._sortKey] ?? '';
+      }
+
       if (typeof va === 'string') va = va.toLowerCase();
       if (typeof vb === 'string') vb = vb.toLowerCase();
       if (va < vb) return this._sortAsc ? -1 : 1;
@@ -240,22 +329,31 @@ export default class DeviceList {
 
     // Incremental DOM patching: reuse existing rows, update changed cells (#52)
     const existingRows = rowsEl.querySelectorAll('.device-row');
-    const existingByIp = new Map();
-    existingRows.forEach(el => existingByIp.set(el.dataset.ip, el));
+    const existingByKey = new Map();
+    existingRows.forEach(el => {
+      const key = el.dataset.deviceKey || '';
+      if (key) {
+        existingByKey.set(key, el);
+      }
+    });
 
     const fragment = document.createDocumentFragment();
     const seen = new Set();
 
-    for (const d of filtered) {
+    for (const [index, d] of filtered.entries()) {
+      const rowKey = this._deviceRowKey(d, index);
       const ip = d.ip_address;
       const ipDisplay = ip || '—';
-      seen.add(ip);
+      seen.add(rowKey);
 
-      let row = existingByIp.get(ip);
+      let row = existingByKey.get(rowKey);
       if (row) {
+        row.dataset.deviceKey = rowKey;
+        row.dataset.ip = ip || '';
         // Patch changed cells in-place
         const ipCell = row.querySelector('.device-row__ip');
-        if (ipCell && ipCell.textContent !== ipDisplay) ipCell.textContent = ipDisplay;
+        const ipHtml = `${this._statusDot(d)}${escapeHtml(ipDisplay)}`;
+        if (ipCell && ipCell.innerHTML !== ipHtml) ipCell.innerHTML = ipHtml;
 
         const macCell = row.querySelector('.device-row__mac');
         const macText = d.mac_address || '—';
@@ -267,20 +365,32 @@ export default class DeviceList {
         if (hostnameSpan && hostnameSpan.textContent !== hnText) hostnameSpan.textContent = hnText;
 
         const bwCell = row.querySelector('.device-row__bandwidth');
-        const bwText = formatBytes(d.total_bytes || 0);
+        const bwText = formatBytes(this._getDisplayUsageBytes(d));
         if (bwCell && bwCell.textContent !== bwText) bwCell.textContent = bwText;
+
+        if (this._showControlOverhead) {
+          const controlCell = row.querySelector('.device-row__control');
+          const controlText = this._formatControlOverhead(d);
+          if (controlCell && controlCell.textContent !== controlText) controlCell.textContent = controlText;
+        }
 
         const seenCell = row.querySelector('.device-row__seen');
         const seenText = formatRelativeTime(d.last_seen);
         if (seenCell && seenCell.textContent !== seenText) seenCell.textContent = seenText;
 
+        row.classList.toggle('device-row--control', this._showControlOverhead);
+
         fragment.appendChild(row);
       } else {
         // Create new row
         const div = document.createElement('div');
-        div.className = 'device-row';
-        div.dataset.ip = ip;
+        div.className = `device-row${this._showControlOverhead ? ' device-row--control' : ''}`;
+        div.dataset.deviceKey = rowKey;
+        div.dataset.ip = ip || '';
         div.dataset.mac = d.mac_address || '';
+        const controlCellHtml = this._showControlOverhead
+          ? `<div class="device-row__control">${this._formatControlOverhead(d)}</div>`
+          : '';
         div.innerHTML = `
           <div class="device-row__ip">${this._statusDot(d)}${escapeHtml(ipDisplay)}</div>
           <div class="device-row__mac">${escapeHtml(d.mac_address || '—')}</div>
@@ -288,7 +398,8 @@ export default class DeviceList {
             <span class="hostname-text">${escapeHtml(d.hostname || d.device_name || d.ip_address || '—')}</span>
             <span class="device-row__hostname-edit" title="Edit hostname">✎</span>
           </div>
-          <div class="device-row__bandwidth">${formatBytes(d.total_bytes || 0)}</div>
+          <div class="device-row__bandwidth">${formatBytes(this._getDisplayUsageBytes(d))}</div>
+          ${controlCellHtml}
           <div class="device-row__seen">${formatRelativeTime(d.last_seen)}</div>
         `;
         fragment.appendChild(div);
@@ -304,7 +415,8 @@ export default class DeviceList {
 
     // Remove stale rows (devices that disappeared)
     existingRows.forEach(el => {
-      if (!seen.has(el.dataset.ip)) el.remove();
+      const key = el.dataset.deviceKey || '';
+      if (!seen.has(key)) el.remove();
     });
 
     // Replace contents in correct sorted order
@@ -320,9 +432,10 @@ export default class DeviceList {
    * is public_network (i.e. can_arp_scan is false).
    */
   _isArpOnlyDevice(d) {
-    const hasTraffic = (d.total_bytes || 0) > 0
-                    || (d.total_bytes_sent || 0) > 0
-                    || (d.total_bytes_received || 0) > 0;
+    const appTotal = d.total_bytes_app ?? d.total_bytes ?? 0;
+    const appSent = d.bytes_sent_app ?? d.total_bytes_sent ?? 0;
+    const appReceived = d.bytes_received_app ?? d.total_bytes_received ?? 0;
+    const hasTraffic = appTotal > 0 || appSent > 0 || appReceived > 0;
     if (hasTraffic) return false;
     // In modes with full discovery, zero-traffic devices are still
     // actively scanned — only flag them in ARP-cache-only modes.
@@ -342,6 +455,51 @@ export default class DeviceList {
     const color = isArpOnly ? 'var(--text-muted,#666)' : 'var(--success,#4caf50)';
     const title = isArpOnly ? 'ARP cache only — no traffic observed' : 'Traffic active';
     return `<span class="device-status-dot" title="${title}" style="background:${color}"></span>`;
+  }
+
+  _getDisplayUsageBytes(device) {
+    const appBytes = device?.total_bytes_app ?? device?.total_bytes ?? 0;
+    const controlBytes = device?.total_bytes_control ?? 0;
+    const totalBytes = device?.total_bytes_total ?? (appBytes + controlBytes);
+    return this._showControlOverhead ? totalBytes : appBytes;
+  }
+
+  _getControlOverheadRatio(device) {
+    const explicit = Number(device?.control_overhead_ratio);
+    if (Number.isFinite(explicit) && explicit >= 0) return explicit;
+    const appBytes = device?.total_bytes_app ?? device?.total_bytes ?? 0;
+    const controlBytes = device?.total_bytes_control ?? 0;
+    const totalBytes = device?.total_bytes_total ?? (appBytes + controlBytes);
+    if (!totalBytes) return 0;
+    return controlBytes / totalBytes;
+  }
+
+  _formatControlOverhead(device) {
+    const controlBytes = device?.total_bytes_control ?? 0;
+    const ratio = this._getControlOverheadRatio(device);
+    const pct = Math.round(ratio * 100);
+    if (!controlBytes) return `${pct}%`;
+    return `${pct}% • ${formatBytes(controlBytes)}`;
+  }
+
+  _onControlPreference(enabled) {
+    this._showControlOverhead = !!enabled;
+
+    const toggle = this.container.querySelector('#device-control-overhead-toggle');
+    if (toggle) toggle.checked = this._showControlOverhead;
+
+    if (!this._showControlOverhead && this._sortKey === 'control_overhead_ratio') {
+      this._sortKey = 'total_bytes';
+      this._sortAsc = false;
+    }
+
+    const header = this.container.querySelector('#device-table-header');
+    if (header) {
+      header.innerHTML = this._renderHeaderCells();
+      this._bindSort();
+    }
+
+    this._renderRows();
   }
 
   /* ── Inline hostname edit ────────────────── */
@@ -382,15 +540,23 @@ export default class DeviceList {
 
       if (newName !== current) {
         // Locally update the device list so next render keeps the new name
-        const device = this._devices.find(d => d.ip_address === ip);
+        const targetMac = this._normalizeMac(mac);
+        const device = this._devices.find(d => {
+          const dIp = (d.ip_address || '').trim();
+          const dMac = this._normalizeMac(d.mac_address);
+          return (ip && dIp === ip) || (!ip && targetMac && dMac === targetMac);
+        });
         if (device) {
           device.hostname = newName;
         }
         // Register as pending so store subscription won't revert it
-        this._pendingRenames.set(ip, newName);
+        const renameKey = this._renameKey(ip, mac);
+        if (renameKey) {
+          this._pendingRenames.set(renameKey, newName);
+        }
 
         try {
-          const result = await api.updateDeviceName(ip, newName, mac);
+          const result = await api.updateDeviceName(ip || '', newName, mac);
           if (result && result.error) {
             throw new Error(result.message || 'Update failed');
           }
@@ -401,7 +567,10 @@ export default class DeviceList {
           newSpan.textContent = current;
           // Revert local change
           if (device) device.hostname = current;
-          this._pendingRenames.delete(ip);
+          const renameKey = this._renameKey(ip, mac);
+          if (renameKey) {
+            this._pendingRenames.delete(renameKey);
+          }
         }
       }
 
@@ -422,6 +591,10 @@ export default class DeviceList {
   destroy() {
     // Close any open DeviceDetail modal (#48)
     if (this._openModal) { this._openModal.close(); this._openModal = null; }
+    if (this._refreshTimer) {
+      clearInterval(this._refreshTimer);
+      this._refreshTimer = null;
+    }
     this._unsubs.forEach(fn => fn());
   }
 }

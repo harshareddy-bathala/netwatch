@@ -42,6 +42,7 @@ if PROJECT_ROOT not in sys.path:
 
 from config import (
     AUTH_ENABLED,
+    AUTH_EXPLICITLY_ENABLED,
     API_KEY,
     AUTH_EXEMPT_ROUTES,
     AUTH_EXEMPT_PREFIXES,
@@ -148,9 +149,18 @@ def register_middleware(app: Flask) -> None:
 
     @app.before_request
     def _check_auth():
-        """Enforce API-key authentication on /api/* routes."""
-        if not AUTH_ENABLED or not API_KEY:
+        """Enforce API-key authentication on /api/* routes.
+
+        Fail-closed rule: when the operator explicitly enabled auth
+        (``NETWATCH_AUTH_ENABLED=true``) but no API key is configured,
+        protected routes are DENIED rather than silently left open.
+        Production-implied auth without a key keeps the historical
+        allow-through behaviour but warns loudly at startup.
+        """
+        if not AUTH_ENABLED:
             return  # Auth disabled — allow everything
+        if not API_KEY and not AUTH_EXPLICITLY_ENABLED:
+            return  # Production-implied auth without a key: warned at startup
 
         path = request.path
 
@@ -164,7 +174,21 @@ def register_middleware(app: Flask) -> None:
         if not path.startswith('/api/'):
             return
 
-        # Check API key in header or query param
+        if not API_KEY:
+            # Explicitly requested auth but no key configured — fail closed.
+            logger.error(
+                "Auth explicitly enabled but NETWATCH_API_KEY is not set — "
+                "denying %s (set the key or unset NETWATCH_AUTH_ENABLED)",
+                path,
+            )
+            return jsonify({
+                'error': 'Service Misconfigured',
+                'message': 'Authentication is enabled but no API key is configured on the server.'
+            }), 503
+
+        # Check API key in header or query param.
+        # NOTE: the query-param form exists only because EventSource (SSE)
+        # cannot set custom headers.  Prefer the X-API-Key header.
         provided_key = (
             request.headers.get('X-API-Key')
             or request.headers.get('Authorization', '').removeprefix('Bearer ').strip()
@@ -228,9 +252,12 @@ def register_middleware(app: Flask) -> None:
         response.headers['X-Frame-Options'] = 'SAMEORIGIN'
         response.headers['X-XSS-Protection'] = '1; mode=block'
         response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+        # Offline-first CSP: Chart.js is vendored (frontend/vendor/), so no
+        # CDN script source is needed.  Font hosts remain for the optional
+        # Google Fonts preconnect in index.html; everything else is 'self'.
         response.headers['Content-Security-Policy'] = (
             "default-src 'self'; "
-            "script-src 'self' https://cdn.jsdelivr.net; "
+            "script-src 'self'; "
             "style-src 'self' https://fonts.googleapis.com; "
             "img-src 'self' data:; "
             "connect-src 'self'; "
@@ -276,9 +303,21 @@ def register_middleware(app: Flask) -> None:
                 'status': 500,
             }), 500
 
+    if AUTH_ENABLED and not API_KEY:
+        if AUTH_EXPLICITLY_ENABLED:
+            logger.error(
+                "NETWATCH_AUTH_ENABLED=true but NETWATCH_API_KEY is not set — "
+                "all /api/* requests will be DENIED (fail-closed) until a key is configured."
+            )
+        else:
+            logger.warning(
+                "Running in production without NETWATCH_API_KEY — the API is "
+                "UNAUTHENTICATED. Set NETWATCH_API_KEY to enable authentication."
+            )
+
     logger.info(
         "Security middleware registered (auth=%s, rate_limit=%s, metrics=%s)",
-        'ON' if (AUTH_ENABLED and API_KEY) else 'OFF',
+        'ON' if (AUTH_ENABLED and API_KEY) else ('FAIL-CLOSED' if (AUTH_ENABLED and AUTH_EXPLICITLY_ENABLED) else 'OFF'),
         'ON' if ENABLE_RATE_LIMITING else 'OFF',
         'ON' if _PRODUCTION_UTILS else 'OFF',
     )

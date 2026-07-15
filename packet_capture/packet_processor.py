@@ -23,6 +23,7 @@ Key design decisions
 
 import ipaddress
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
@@ -45,14 +46,33 @@ except ImportError:
     _DHCP = _BOOTP = None
     _DHCP_AVAILABLE = False
 
+# Optional: IPv6 ND/SLAAC layers for control-traffic tagging
+try:
+    from scapy.all import ICMPv6ND_NS, ICMPv6ND_NA, ICMPv6ND_RS, ICMPv6ND_RA, ICMPv6ND_Redirect
+    _ICMPV6_ND_LAYERS = (
+        ICMPv6ND_NS,
+        ICMPv6ND_NA,
+        ICMPv6ND_RS,
+        ICMPv6ND_RA,
+        ICMPv6ND_Redirect,
+    )
+except ImportError:
+    ICMPv6ND_NS = ICMPv6ND_NA = ICMPv6ND_RS = ICMPv6ND_RA = ICMPv6ND_Redirect = None
+    _ICMPV6_ND_LAYERS = tuple()
+
 # Project imports
 import os, sys
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from packet_capture.protocols import detect_protocol
+from packet_capture.protocols import detect_protocol, is_control_protocol
 from packet_capture.modes.base_mode import BaseMode, ModeName, NetworkScope
+
+try:
+    from orchestration import state as _orch_state
+except Exception:
+    _orch_state = None
 
 
 # =============================================================================
@@ -83,6 +103,7 @@ class PacketData:
     flags: Optional[str] = None
     device_name: Optional[str] = None
     vendor: Optional[str] = None
+    is_control_traffic: bool = False
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -101,7 +122,15 @@ class PacketData:
             "dest_mac": self.dest_mac,
             "device_name": self.device_name,
             "vendor": self.vendor,
+            "is_control_traffic": self.is_control_traffic,
+            "transition_phase": self.extra.get("transition_phase"),
+            "is_transition_packet": bool(self.extra.get("is_transition_packet", False)),
         }
+        # DNS telemetry (Phase 0): only present on DNS query packets, so the
+        # common-case dict stays small.
+        if "dns_qname" in self.extra:
+            d["dns_qname"] = self.extra["dns_qname"]
+            d["dns_qtype"] = self.extra.get("dns_qtype")
         return d
 
 
@@ -157,6 +186,9 @@ class PacketProcessor:
         if self._scope == NetworkScope.ALL_TRAFFIC:
             self._populate_all_local_ips()
 
+        # Throttle control-traffic debug samples to avoid log spam.
+        self._last_control_log_ts: float = 0.0
+
     # ------------------------------------------------------------------ #
     #  Public API
     # ------------------------------------------------------------------ #
@@ -191,12 +223,50 @@ class PacketProcessor:
             # --- Transport info ---------------------------------------------
             src_port, dst_port = self._extract_ports(packet)
             raw_proto = self._get_raw_protocol(packet)
-            app_proto = detect_protocol(src_port, dst_port, raw_proto)
+            tunnel_signature = self._has_ike_signature(packet, src_port, dst_port, raw_proto)
+            app_proto = detect_protocol(
+                src_port,
+                dst_port,
+                raw_proto,
+                tunnel_signature=tunnel_signature,
+            )
+
+            # Tag control/background packets so downstream layers can
+            # exclude them from end-user usage totals.
+            is_control_traffic = self._is_control_traffic(
+                packet=packet,
+                app_protocol=app_proto,
+                raw_protocol=raw_proto,
+                src_port=src_port,
+                dst_port=dst_port,
+            )
+
+            transition_phase = self._get_transition_phase()
+            is_transition_packet = transition_phase != "STABLE"
+            if is_transition_packet:
+                # Transition-window traffic is debug-only context and should
+                # not contribute to normal per-device usage attribution.
+                is_control_traffic = True
+            if is_control_traffic and logger.isEnabledFor(logging.DEBUG):
+                now_ts = time.time()
+                if now_ts - self._last_control_log_ts >= 5.0:
+                    logger.debug(
+                        "Control packet tagged: proto=%s raw=%s src=%s:%s dst=%s:%s",
+                        app_proto,
+                        raw_proto,
+                        src_ip,
+                        src_port,
+                        dst_ip,
+                        dst_port,
+                    )
+                    self._last_control_log_ts = now_ts
 
             # --- Direction (mode-aware, with MAC fallback for IPv6) ---------
             direction = self._determine_direction(
                 src_ip, dst_ip, src_mac=src_mac, dst_mac=dst_mac,
             )
+            if is_transition_packet:
+                direction = "transition"
 
             # Fallback: enrich with our known MAC when Ether layer is
             # missing (Windows WiFi/Npcap) or when the captured MAC is
@@ -227,6 +297,24 @@ class PacketProcessor:
             extra: Dict[str, Any] = {}
             if packet.haslayer(DNS):
                 extra["dns"] = True
+                # Phase 0 (AI-first): carry the queried name so the flow
+                # normalizer can persist DNS telemetry (dns_queries table).
+                try:
+                    _dns = packet[DNS]
+                    if _dns.qr == 0 and _dns.qdcount > 0 and _dns.qd is not None:
+                        _q = _dns.qd[0]
+                        _qname = _q.qname
+                        if isinstance(_qname, bytes):
+                            _qname = _qname.decode("utf-8", errors="replace")
+                        _qname = _qname.rstrip(".")
+                        if _qname:
+                            extra["dns_qname"] = _qname
+                            extra["dns_qtype"] = int(_q.qtype or 0)
+                except Exception:
+                    pass
+            if is_transition_packet:
+                extra["transition_phase"] = transition_phase
+                extra["is_transition_packet"] = True
             # Note: TCP seq/ack intentionally not stored — never persisted,
             # saves ~100 bytes per packet in memory.
 
@@ -258,6 +346,7 @@ class PacketProcessor:
                 ttl=ttl,
                 flags=flags,
                 device_name=device_name,
+                is_control_traffic=is_control_traffic,
                 extra=extra,
             )
 
@@ -483,7 +572,66 @@ class PacketProcessor:
             proto_map = {1: "ICMP", 2: "IGMP", 6: "TCP", 17: "UDP",
                          47: "GRE", 50: "ESP", 51: "AH", 89: "OSPF"}
             return proto_map.get(proto_num, f"PROTO-{proto_num}")
+        if packet.haslayer(IPv6):
+            next_header = packet[IPv6].nh
+            ipv6_map = {6: "TCP", 17: "UDP", 58: "ICMPV6"}
+            return ipv6_map.get(next_header, f"IPV6-NH-{next_header}")
         return "UNKNOWN"
+
+    @staticmethod
+    def _is_control_traffic(
+        packet,
+        app_protocol: str,
+        raw_protocol: str,
+        src_port: Optional[int],
+        dst_port: Optional[int],
+    ) -> bool:
+        """Return True when packet is classified as control/background traffic."""
+        if is_control_protocol(app_protocol) or is_control_protocol(raw_protocol):
+            return True
+
+        # DHCPv6 uses UDP 546/547.
+        if src_port in (546, 547) or dst_port in (546, 547):
+            return True
+
+        # IPv6 Neighbor Discovery / Router Solicitation / Advertisement.
+        if packet is not None and _ICMPV6_ND_LAYERS:
+            for layer_cls in _ICMPV6_ND_LAYERS:
+                try:
+                    if packet.haslayer(layer_cls):
+                        return True
+                except Exception:
+                    continue
+
+        return False
+
+    @staticmethod
+    def _has_ike_signature(packet, src_port, dst_port, raw_proto: str) -> bool:
+        """Best-effort IKE payload hint for more accurate UDP/500 labeling."""
+        if (raw_proto or "").upper() != "UDP":
+            return False
+        if src_port not in (500, 4500) and dst_port not in (500, 4500):
+            return False
+        if not packet.haslayer(Raw):
+            return False
+
+        try:
+            payload = bytes(packet[Raw].load or b"")
+        except Exception:
+            return False
+
+        if len(payload) < 20:
+            return False
+
+        # NAT-T IKE over UDP/4500 prepends a 4-byte non-ESP marker.
+        offset = 4 if payload.startswith(b"\x00\x00\x00\x00") else 0
+        if len(payload) < offset + 20:
+            return False
+
+        version_byte = payload[offset + 17]
+        exchange_type = payload[offset + 18]
+        # IKEv1=0x10, IKEv2=0x20; exchange type must be non-zero.
+        return version_byte in (0x10, 0x20) and exchange_type > 0
 
     @staticmethod
     def _get_tcp_flags(packet) -> Optional[str]:
@@ -516,10 +664,22 @@ class PacketProcessor:
                 direction="other",
                 source_mac=packet[Ether].src if packet.haslayer(Ether) else None,
                 dest_mac=packet[Ether].dst if packet.haslayer(Ether) else None,
+                is_control_traffic=True,
                 extra={"arp_op": packet[ARP].op},
             )
         except Exception:
             return None
+
+    @staticmethod
+    def _get_transition_phase() -> str:
+        """Return current orchestration transition phase label."""
+        if _orch_state is None:
+            return "STABLE"
+        try:
+            phase = getattr(_orch_state, "mode_transition_phase", "STABLE")
+            return str(phase or "STABLE")
+        except Exception:
+            return "STABLE"
 
     @staticmethod
     def _extract_hostname_from_packet(

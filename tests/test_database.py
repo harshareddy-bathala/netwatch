@@ -65,6 +65,26 @@ class TestConnectionPool:
         assert len(errors) == 0, f"Pool errors: {errors}"
         assert all(r == 42 for r in results)
 
+    def test_pool_rolls_back_uncommitted_transaction_on_return(self, connection_pool):
+        """A connection returned with an open transaction must be rolled back."""
+        now = datetime.now().isoformat()
+
+        with connection_pool.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO devices (mac_address, ip_address, first_seen, last_seen) VALUES (?, ?, ?, ?)",
+                ("AA:BB:CC:DD:EE:99", "192.168.1.99", now, now),
+            )
+            assert conn.in_transaction is True
+            # Intentionally no commit()
+
+        with connection_pool.get_connection() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM devices WHERE mac_address = ?",
+                ("AA:BB:CC:DD:EE:99",),
+            ).fetchone()[0]
+
+        assert count == 0
+
 
 # ===================================================================
 # WAL Mode Tests

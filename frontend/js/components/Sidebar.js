@@ -59,6 +59,10 @@ export default class Sidebar {
           Alerts
           <span class="sidebar__nav-badge" id="alert-badge" style="display:none">0</span>
         </a>
+        <a href="/topology" class="sidebar__nav-item" data-route="/topology">
+          <svg class="sidebar__nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><line x1="12" y1="8" x2="5" y2="16"/><line x1="12" y1="8" x2="19" y2="16"/><line x1="8" y1="19" x2="16" y2="19"/></svg>
+          Topology
+        </a>
       </nav>
 
       <div class="sidebar__footer">

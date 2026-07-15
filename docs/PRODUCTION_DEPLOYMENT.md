@@ -11,6 +11,7 @@
 7. [Upgrades](#upgrades)
 8. [Uninstallation](#uninstallation)
 9. [Security Hardening](#security-hardening)
+10. [Idle Baseline Monitoring](#idle-baseline-monitoring)
 
 ---
 
@@ -420,6 +421,53 @@ sudo nano /etc/nginx/sites-available/netwatch
 sudo nginx -t
 sudo systemctl reload nginx
 ```
+
+---
+
+## Idle Baseline Monitoring
+
+Phase 5 introduces an idle-client baseline monitor so production deployments
+can detect false usage drift and mode instability early.
+
+### Endpoint
+
+```bash
+curl "http://127.0.0.1:5000/api/health/idle-client-baseline?hours=24"
+```
+
+Key response fields:
+
+- `app_bytes_per_hour`
+- `control_bytes_per_hour`
+- `app_pps`
+- `control_pps`
+- `control_overhead_ratio`
+- `mode_transition_count`
+- `active_devices_realtime`
+- `status`
+
+### Export Baseline Snapshots
+
+```bash
+cd /opt/netwatch
+venv/bin/python scripts/export_baseline_metrics.py --hours 24
+```
+
+Outputs:
+
+- `docs/baseline_metrics.json`
+- `docs/baseline_metrics.csv`
+
+### Recommended Production Check
+
+Run once daily (cron or scheduler):
+
+1. Call `/api/health/idle-client-baseline`.
+2. Export snapshot using `scripts/export_baseline_metrics.py`.
+3. Alert if app idle baseline exceeds expected threshold (default 100 KB/h).
+4. Alert if mode transitions exceed expected stability threshold.
+
+For deeper analysis and thresholds, see [IDLE_CLIENT_BASELINE.md](IDLE_CLIENT_BASELINE.md).
 
 ### Minimal Nginx Example
 

@@ -172,7 +172,13 @@ def parse_packet(packet) -> Optional[Dict[str, Any]]:
         result['raw_protocol'] = raw_protocol
         
         # Detect application protocol
-        result['protocol'] = detect_protocol(src_port, dst_port, raw_protocol)
+        tunnel_signature = has_ike_signature(packet, src_port, dst_port, raw_protocol)
+        result['protocol'] = detect_protocol(
+            src_port,
+            dst_port,
+            raw_protocol,
+            tunnel_signature=tunnel_signature,
+        )
         
         # Extract TCP flags if applicable
         if packet.haslayer(TCP):
@@ -358,6 +364,32 @@ def get_raw_protocol(packet) -> str:
     except Exception as e:
         logger.debug("Error determining protocol: %s", e)
         return 'UNKNOWN'
+
+
+def has_ike_signature(packet, src_port, dst_port, raw_protocol: str) -> bool:
+    """Best-effort IKE payload hint for conservative UDP/500 detection."""
+    if (raw_protocol or '').upper() != 'UDP':
+        return False
+    if src_port not in (500, 4500) and dst_port not in (500, 4500):
+        return False
+    if not packet.haslayer(Raw):
+        return False
+
+    try:
+        payload = bytes(packet[Raw].load or b'')
+    except Exception:
+        return False
+
+    if len(payload) < 20:
+        return False
+
+    offset = 4 if payload.startswith(b'\x00\x00\x00\x00') else 0
+    if len(payload) < offset + 20:
+        return False
+
+    version_byte = payload[offset + 17]
+    exchange_type = payload[offset + 18]
+    return version_byte in (0x10, 0x20) and exchange_type > 0
 
 
 def get_tcp_flags(packet) -> Optional[str]:

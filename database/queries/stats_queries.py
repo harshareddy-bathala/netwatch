@@ -80,7 +80,9 @@ def get_realtime_stats(live_bandwidth_bps: float = None) -> dict:
                     COUNT(*) AS packets,
                     SUM(CASE WHEN direction = 'download' THEN bytes_transferred ELSE 0 END) AS dl_bytes,
                     SUM(CASE WHEN direction = 'upload'   THEN bytes_transferred ELSE 0 END) AS ul_bytes
-                FROM traffic_summary WHERE timestamp >= ?
+                                FROM traffic_summary
+                                WHERE timestamp >= ?
+                                    AND COALESCE(is_control, 0) = 0
             """, (ten_secs,))
             recent = cursor.fetchone()
             bytes_recent = (recent["bytes"] or 0) if recent else 0
@@ -103,7 +105,9 @@ def get_realtime_stats(live_bandwidth_bps: float = None) -> dict:
             else:
                 cursor.execute("""
                     SELECT SUM(bytes_transferred) AS bytes, COUNT(*) AS packets
-                    FROM traffic_summary WHERE timestamp >= ?
+                                        FROM traffic_summary
+                                        WHERE timestamp >= ?
+                                            AND COALESCE(is_control, 0) = 0
                 """, (today_start,))
                 today = cursor.fetchone()
                 today_bytes = (today["bytes"] or 0) if today else 0
@@ -188,7 +192,9 @@ def get_health_score() -> dict:
                 traffic_count = traffic_cached
             else:
                 cursor.execute("""
-                    SELECT COUNT(*) AS count FROM traffic_summary WHERE timestamp >= ?
+                                        SELECT COUNT(*) AS count FROM traffic_summary
+                                        WHERE timestamp >= ?
+                                            AND COALESCE(is_control, 0) = 0
                 """, (one_hour,))
                 traffic_count = (cursor.fetchone()["count"] or 0)
                 _hourly_traffic_cache.set("hourly_traffic_hs", traffic_count)
@@ -286,7 +292,9 @@ def get_dashboard_data() -> dict:
                     COUNT(*) AS packets,
                     SUM(CASE WHEN direction = 'download' THEN bytes_transferred ELSE 0 END) AS dl_bytes,
                     SUM(CASE WHEN direction = 'upload'   THEN bytes_transferred ELSE 0 END) AS ul_bytes
-                FROM traffic_summary WHERE timestamp >= ?
+                                FROM traffic_summary
+                                WHERE timestamp >= ?
+                                    AND COALESCE(is_control, 0) = 0
             """, (ten_secs,))
             recent = cursor.fetchone()
             bytes_recent = (recent["bytes"] or 0) if recent else 0
@@ -310,7 +318,9 @@ def get_dashboard_data() -> dict:
             else:
                 cursor.execute("""
                     SELECT SUM(bytes_transferred) AS bytes, COUNT(*) AS packets
-                    FROM traffic_summary WHERE timestamp >= ?
+                                        FROM traffic_summary
+                                        WHERE timestamp >= ?
+                                            AND COALESCE(is_control, 0) = 0
                 """, (today_start,))
                 today = cursor.fetchone()
                 today_bytes = (today["bytes"] or 0) if today else 0
@@ -351,7 +361,9 @@ def get_dashboard_data() -> dict:
                 traffic_count = traffic_cached
             else:
                 cursor.execute("""
-                    SELECT COUNT(*) AS count FROM traffic_summary WHERE timestamp >= ?
+                                        SELECT COUNT(*) AS count FROM traffic_summary
+                                        WHERE timestamp >= ?
+                                            AND COALESCE(is_control, 0) = 0
                 """, (one_hour,))
                 traffic_count = (cursor.fetchone()["count"] or 0)
                 _hourly_traffic_cache.set("hourly_traffic", traffic_count)
@@ -396,7 +408,9 @@ def get_dashboard_data() -> dict:
                 SELECT protocol AS name,
                        COUNT(*) AS count,
                        SUM(bytes_transferred) AS bytes
-                FROM traffic_summary WHERE timestamp >= ?
+                                FROM traffic_summary
+                                WHERE timestamp >= ?
+                                    AND COALESCE(is_control, 0) = 0
                 GROUP BY protocol ORDER BY bytes DESC
             """, (one_hour,))
             proto_rows = [dict_from_row(r) for r in cursor.fetchall() if dict_from_row(r)]
@@ -494,6 +508,7 @@ def get_recent_activity(limit: int = 20) -> List[dict]:
                        COUNT(*) AS packet_count
                 FROM traffic_summary
                 WHERE timestamp >= datetime('now', '-1 hour')
+                    AND COALESCE(is_control, 0) = 0
                 GROUP BY time_bucket, source_ip
                 HAVING total_bytes > 1000000
                 ORDER BY total_bytes DESC LIMIT 5

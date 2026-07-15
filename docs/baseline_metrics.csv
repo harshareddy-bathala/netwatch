@@ -1,0 +1,2 @@
+generated_at,window_hours,app_bytes_per_hour,control_bytes_per_hour,app_pps,control_pps,control_overhead_ratio,mode_transition_count,active_devices_realtime,status
+2026-04-02T22:26:11.311882,24,817579.08,4970.96,0.2439,0.0296,0.0061,0,0,warning

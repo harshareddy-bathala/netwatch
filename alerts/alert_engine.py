@@ -33,6 +33,8 @@ Usage::
 
 import json
 import logging
+import operator as _op
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 
 from config import (
@@ -55,6 +57,8 @@ from database.queries.alert_queries import (
     resolve_alert as db_resolve_alert,
     count_alerts as db_count_alerts,
     get_alert_summary as db_get_alert_summary,
+    list_enabled_alert_rules as db_list_enabled_alert_rules,
+    mark_alert_rule_triggered as db_mark_alert_rule_triggered,
 )
 from database.queries.device_queries import get_active_device_count
 
@@ -72,6 +76,7 @@ ALERT_DEVICE_COUNT = "device_count"
 ALERT_HEALTH = "health"
 ALERT_NEW_DEVICE = "new_device"
 ALERT_SECURITY = "security"
+ALERT_CUSTOM = "custom"
 
 
 class AlertEngine:
@@ -93,9 +98,55 @@ class AlertEngine:
 
         logger.info("AlertEngine initialised (cooldown=%ds)", cooldown_seconds)
 
+    _RULE_OPERATOR_MAP = {
+        ">": _op.gt,
+        "<": _op.lt,
+        ">=": _op.ge,
+        "<=": _op.le,
+        "==": _op.eq,
+    }
+
     # ──────────────────────────────────────────────────────────────────────
     # Core: create alert with dedup
     # ──────────────────────────────────────────────────────────────────────
+
+    def _create_alert_with_dedup(
+        self,
+        *,
+        alert_type: str,
+        severity: str,
+        title: str,
+        message: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        dedup_key: Optional[str] = None,
+    ) -> Optional[int]:
+        """Internal alert creator with optional explicit dedup key."""
+        key = dedup_key or AlertDeduplicator.make_key(alert_type, severity)
+
+        if self.dedup.should_throttle(key):
+            logger.debug("Alert throttled: %s", key)
+            return None
+
+        full_message = f"{title}: {message}" if title and title != message else message
+        details_str = json.dumps(metadata) if metadata else None
+
+        alert_id = db_create_alert(
+            alert_type=alert_type,
+            severity=severity,
+            message=full_message,
+            details=details_str,
+        )
+
+        if alert_id:
+            self.dedup.record_alert(key)
+            logger.warning(
+                "Alert #%d created [%s/%s]: %s", alert_id, alert_type, severity, full_message
+            )
+            self._push_alerts_to_dashboard()
+        else:
+            logger.error("Failed to persist alert [%s/%s]: %s", alert_type, severity, full_message)
+
+        return alert_id
 
     def create_alert(
         self,
@@ -126,41 +177,148 @@ class AlertEngine:
         int or None
             Alert ID if created, ``None`` if throttled or on error.
         """
-        dedup_key = AlertDeduplicator.make_key(alert_type, severity)
-
-        if self.dedup.should_throttle(dedup_key):
-            logger.debug("Alert throttled: %s", dedup_key)
-            return None
-
-        # Build the full message with title prefix when title != message
-        full_message = f"{title}: {message}" if title and title != message else message
-
-        # Serialise metadata
-        details_str = json.dumps(metadata) if metadata else None
-
-        alert_id = db_create_alert(
+        return self._create_alert_with_dedup(
             alert_type=alert_type,
             severity=severity,
-            message=full_message,
-            details=details_str,
+            title=title,
+            message=message,
+            metadata=metadata,
         )
 
-        if alert_id:
-            self.dedup.record_alert(dedup_key)
-            logger.warning(
-                "Alert #%d created [%s/%s]: %s", alert_id, alert_type, severity, full_message
-            )
-            self._push_alerts_to_dashboard()
-        else:
-            logger.error("Failed to persist alert [%s/%s]: %s", alert_type, severity, full_message)
+    @staticmethod
+    def _parse_db_timestamp(value: Optional[str]) -> Optional[datetime]:
+        """Parse SQLite timestamp formats used by alert_rules."""
+        if not value:
+            return None
+        # sqlite CURRENT_TIMESTAMP is usually "YYYY-MM-DD HH:MM:SS"
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
+            try:
+                return datetime.strptime(value, fmt)
+            except ValueError:
+                continue
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
 
-        return alert_id
+    def _rule_on_cooldown(self, rule: Dict[str, Any]) -> bool:
+        """Return True when the custom rule is still inside cooldown window."""
+        cooldown = int(rule.get("cooldown_seconds") or 0)
+        if cooldown <= 0:
+            return False
+
+        last_triggered = self._parse_db_timestamp(rule.get("last_triggered_at"))
+        if not last_triggered:
+            return False
+
+        return datetime.now() < (last_triggered + timedelta(seconds=cooldown))
+
+    def _build_rule_metric_snapshot(self, stats: Dict[str, Any], rules: list) -> Dict[str, float]:
+        """Build one metric snapshot for all enabled custom rules."""
+        if isinstance(stats.get("bandwidth_bps"), (int, float)):
+            bandwidth_bps = float(stats.get("bandwidth_bps") or 0.0)
+        else:
+            # total_bandwidth is bytes/s in anomaly features.
+            bandwidth_bps = float(stats.get("total_bandwidth") or 0.0) * 8.0
+
+        metrics: Dict[str, float] = {
+            "bandwidth_bps": bandwidth_bps,
+            "device_count": float(stats.get("active_devices") or stats.get("device_count") or 0.0),
+            "packet_rate": float(stats.get("packets_per_second") or stats.get("packet_rate") or 0.0),
+        }
+
+        needs_protocol_bytes = any((r.get("metric") == "protocol_bytes") for r in rules)
+        if not needs_protocol_bytes:
+            return metrics
+
+        if "protocol_bytes" in stats and isinstance(stats.get("protocol_bytes"), (int, float)):
+            metrics["protocol_bytes"] = float(stats.get("protocol_bytes") or 0.0)
+            return metrics
+
+        # protocol_bytes = bytes of top protocol in last hour (cached query)
+        try:
+            from database.queries.traffic_queries import get_protocol_distribution
+
+            dist = get_protocol_distribution(hours=1)
+            metrics["protocol_bytes"] = float((dist[0].get("bytes") if dist else 0) or 0)
+        except Exception as exc:
+            logger.debug("protocol_bytes metric unavailable: %s", exc)
+            metrics["protocol_bytes"] = 0.0
+
+        return metrics
+
+    def check_custom_rules(self, stats: Dict[str, Any]) -> int:
+        """Evaluate enabled custom alert rules against the current snapshot."""
+        try:
+            rules = db_list_enabled_alert_rules()
+        except Exception as exc:
+            logger.error("Failed to load custom alert rules: %s", exc)
+            return 0
+
+        if not rules:
+            return 0
+
+        metric_values = self._build_rule_metric_snapshot(stats, rules)
+        fired = 0
+
+        for rule in rules:
+            try:
+                metric = (rule.get("metric") or "").strip()
+                operator = (rule.get("operator") or "").strip()
+                threshold = float(rule.get("threshold"))
+                severity = (rule.get("severity") or SEVERITY_WARNING).strip()
+                rule_id = int(rule.get("id"))
+
+                if self._rule_on_cooldown(rule):
+                    continue
+
+                comparator = self._RULE_OPERATOR_MAP.get(operator)
+                if comparator is None:
+                    logger.debug("Skipping custom rule %s: unsupported operator %s", rule_id, operator)
+                    continue
+
+                current_value = metric_values.get(metric)
+                if current_value is None:
+                    logger.debug("Skipping custom rule %s: missing metric %s", rule_id, metric)
+                    continue
+
+                if not comparator(float(current_value), threshold):
+                    continue
+
+                name = (rule.get("name") or f"Rule {rule_id}").strip()
+                alert_id = self._create_alert_with_dedup(
+                    alert_type=ALERT_CUSTOM,
+                    severity=severity,
+                    title=f"Custom Rule Triggered: {name}",
+                    message=(
+                        f"Rule matched: {metric} {operator} {threshold:g} "
+                        f"(current: {float(current_value):.2f})"
+                    ),
+                    metadata={
+                        "rule_id": rule_id,
+                        "rule_name": name,
+                        "metric": metric,
+                        "operator": operator,
+                        "threshold": threshold,
+                        "current_value": round(float(current_value), 4),
+                    },
+                    # Per-rule dedup key prevents different custom rules
+                    # from throttling each other when severities match.
+                    dedup_key=f"custom_rule:{rule_id}",
+                )
+                if alert_id:
+                    db_mark_alert_rule_triggered(rule_id)
+                    fired += 1
+            except Exception as exc:
+                logger.error("Custom rule evaluation error: %s", exc)
+
+        return fired
 
     # ──────────────────────────────────────────────────────────────────────
     # Threshold: bandwidth
     # ──────────────────────────────────────────────────────────────────────
 
-    def check_bandwidth_threshold(self, current_bps: float) -> Optional[int]:
+    def check_bandwidth_threshold(self, current_bps: float, control_bps: float = 0.0) -> Optional[int]:
         """
         Check bandwidth against configured thresholds.
 
@@ -175,37 +333,65 @@ class AlertEngine:
         int or None
             Alert ID if a new alert was created.
         """
-        current_mbps = current_bps * 8 / 1_000_000  # bytes/s → megabits/s
+        app_bps = max(float(current_bps or 0.0), 0.0)
+        control_bps = max(float(control_bps or 0.0), 0.0)
 
-        if current_mbps >= BANDWIDTH_CRITICAL_MBPS:
+        app_mbps = app_bps * 8 / 1_000_000
+        control_mbps = control_bps * 8 / 1_000_000
+        combined_bps = app_bps + control_bps
+        combined_mbps = app_mbps + control_mbps
+
+        if control_mbps > 0:
+            breakdown = (
+                f"Bandwidth: {app_mbps:.1f} Mbps app "
+                f"(+{control_mbps:.1f} Mbps control, total {combined_mbps:.1f} Mbps)"
+            )
+        else:
+            breakdown = f"Bandwidth: {app_mbps:.1f} Mbps"
+
+        if app_mbps >= BANDWIDTH_CRITICAL_MBPS:
             return self.create_alert(
                 alert_type=ALERT_BANDWIDTH,
                 severity=SEVERITY_CRITICAL,
                 title="Critical Bandwidth Usage",
                 message=(
-                    f"Bandwidth: {current_mbps:.1f} Mbps "
-                    f"(threshold: {BANDWIDTH_CRITICAL_MBPS} Mbps)"
+                    f"{breakdown} "
+                    f"(threshold: {BANDWIDTH_CRITICAL_MBPS} Mbps app)"
                 ),
                 metadata={
-                    "current_mbps": round(current_mbps, 2),
+                    "current_mbps": round(app_mbps, 2),
+                    "app_mbps": round(app_mbps, 2),
+                    "control_mbps": round(control_mbps, 2),
+                    "combined_mbps": round(combined_mbps, 2),
                     "threshold_mbps": BANDWIDTH_CRITICAL_MBPS,
-                    "current_bps": round(current_bps, 0),
+                    "current_bps": round(app_bps, 0),
+                    "app_bps": round(app_bps, 0),
+                    "control_bps": round(control_bps, 0),
+                    "combined_bps": round(combined_bps, 0),
+                    "threshold_scope": "app_only",
                 },
             )
 
-        if current_mbps >= BANDWIDTH_WARNING_MBPS:
+        if app_mbps >= BANDWIDTH_WARNING_MBPS:
             return self.create_alert(
                 alert_type=ALERT_BANDWIDTH,
                 severity=SEVERITY_WARNING,
                 title="High Bandwidth Usage",
                 message=(
-                    f"Bandwidth: {current_mbps:.1f} Mbps "
-                    f"(threshold: {BANDWIDTH_WARNING_MBPS} Mbps)"
+                    f"{breakdown} "
+                    f"(threshold: {BANDWIDTH_WARNING_MBPS} Mbps app)"
                 ),
                 metadata={
-                    "current_mbps": round(current_mbps, 2),
+                    "current_mbps": round(app_mbps, 2),
+                    "app_mbps": round(app_mbps, 2),
+                    "control_mbps": round(control_mbps, 2),
+                    "combined_mbps": round(combined_mbps, 2),
                     "threshold_mbps": BANDWIDTH_WARNING_MBPS,
-                    "current_bps": round(current_bps, 0),
+                    "current_bps": round(app_bps, 0),
+                    "app_bps": round(app_bps, 0),
+                    "control_bps": round(control_bps, 0),
+                    "combined_bps": round(combined_bps, 0),
+                    "threshold_scope": "app_only",
                 },
             )
 
@@ -408,6 +594,63 @@ class AlertEngine:
     # Anomaly helper (used by AnomalyDetector)
     # ──────────────────────────────────────────────────────────────────────
 
+    def create_behavior_alert(
+        self,
+        mac: str,
+        evidence: list,
+        confidence: float,
+        hostname: str = "",
+        severity: str = SEVERITY_WARNING,
+    ) -> Optional[int]:
+        """
+        Create a per-device behavior anomaly alert (Phase 1, AI-first).
+
+        Deduplicated **per device** (not per alert type), so two different
+        devices misbehaving in the same cooldown window both alert.
+
+        Parameters
+        ----------
+        mac : str
+            Device MAC address the anomaly belongs to.
+        evidence : list of dict
+            Explainable evidence items, each like::
+
+                {"metric": "dns_queries", "observed": 480,
+                 "baseline_mean": 12.1, "baseline_std": 8.0,
+                 "z_score": 58.5, "hour_of_week": 34}
+        confidence : float
+            0-1 confidence derived from the strongest deviation.
+        hostname : str
+            Friendly device name for the message (falls back to MAC).
+        """
+        label = hostname or mac
+        top = max(evidence, key=lambda e: abs(e.get("z_score", 0))) if evidence else {}
+        message = (
+            f"Device '{label}' is behaving unusually "
+            f"(confidence: {confidence:.0%})."
+        )
+        if top:
+            message += (
+                f" Strongest signal: {top.get('metric')} = {top.get('observed')}"
+                f" vs typical {top.get('baseline_mean', 0):.1f}"
+                f" (z={top.get('z_score', 0):.1f})."
+            )
+
+        return self._create_alert_with_dedup(
+            alert_type="anomaly",
+            severity=severity,
+            title="Device Behavior Anomaly",
+            message=message,
+            metadata={
+                "device_mac": mac,
+                "device_name": hostname,
+                "confidence": round(confidence, 4),
+                "evidence": evidence,
+                "detector": "behavior_baseline",
+            },
+            dedup_key=f"behavior:{mac.lower()}",
+        )
+
     def create_anomaly_alert(
         self,
         anomaly_score: float,
@@ -433,10 +676,28 @@ class AlertEngine:
         # Build a human-readable description of what the anomaly looks like
         description_parts = []
         if details:
-            bw_bps = details.get("bandwidth_bps") or details.get("total_bandwidth", 0)
-            if bw_bps:
-                bw_mbps = bw_bps * 8 / 1_000_000
-                description_parts.append(f"bandwidth {bw_mbps:.2f} Mbps")
+            app_bw_bits = details.get("bandwidth_bps")
+            if app_bw_bits is None:
+                # total_bandwidth in anomaly features is bytes/s.
+                app_bw_bits = float(details.get("total_bandwidth", 0) or 0) * 8.0
+            app_bw_bits = float(app_bw_bits or 0)
+            control_bw_bits = float(details.get("control_bandwidth_bps", 0) or 0)
+
+            app_bw_mbps = app_bw_bits / 1_000_000
+            control_bw_mbps = control_bw_bits / 1_000_000
+            combined_bw_mbps = app_bw_mbps + control_bw_mbps
+
+            metadata["app_bandwidth_mbps"] = round(app_bw_mbps, 3)
+            metadata["control_bandwidth_mbps"] = round(control_bw_mbps, 3)
+            metadata["combined_bandwidth_mbps"] = round(combined_bw_mbps, 3)
+
+            if control_bw_mbps > 0:
+                description_parts.append(
+                    f"bandwidth {combined_bw_mbps:.2f} Mbps "
+                    f"({app_bw_mbps:.2f} app + {control_bw_mbps:.2f} control)"
+                )
+            elif app_bw_mbps > 0:
+                description_parts.append(f"bandwidth {app_bw_mbps:.2f} Mbps app")
 
             active_devices = details.get("active_devices", 0)
             if active_devices:

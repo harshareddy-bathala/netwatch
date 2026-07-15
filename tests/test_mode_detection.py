@@ -238,6 +238,32 @@ class TestHotspotAdapterActiveCheck:
         detector = ModeDetector()
         assert detector._is_hotspot_adapter_active("Local Area Connection* 10") is False
 
+    @patch(
+        "packet_capture.platform_helpers.run_command",
+        return_value=(
+            "Local Area Connection* 11\n"
+            "   Type:                 Dedicated\n"
+            "   Administrative state: Enabled\n"
+            "   Connect state:        Connected\n"
+        ),
+    )
+    def test_adapter_active_from_netsh_connected_state(self, mock_cmd):
+        detector = ModeDetector()
+        assert detector._is_hotspot_adapter_active("Local Area Connection* 11") is True
+
+    @patch(
+        "packet_capture.platform_helpers.run_command",
+        return_value=(
+            "Local Area Connection* 11\n"
+            "   Type:                 Dedicated\n"
+            "   Administrative state: Enabled\n"
+            "   Connect state:        Disconnected\n"
+        ),
+    )
+    def test_adapter_inactive_from_netsh_disconnected_state(self, mock_cmd):
+        detector = ModeDetector()
+        assert detector._is_hotspot_adapter_active("Local Area Connection* 11") is False
+
     @patch("packet_capture.platform_helpers.run_command", return_value=None)
     def test_adapter_failclosed_on_command_failure(self, mock_cmd):
         """When PowerShell fails, assume adapter is inactive (fail-closed)."""
@@ -459,6 +485,91 @@ class TestModeDetector:
             ifaces = detector.get_all_interfaces()
             assert isinstance(ifaces, list)
             assert len(ifaces) == 1
+
+
+class TestEthernetSelectionGuards:
+    """Regression tests for VPN/tunnel adapters and invalid gateways."""
+
+    @staticmethod
+    def _iface(
+        name: str,
+        ip: str,
+        gateway: str,
+        iface_type: str,
+        *,
+        ssid: str | None = None,
+        friendly_name: str | None = None,
+    ) -> InterfaceInfo:
+        return InterfaceInfo(
+            name=name,
+            friendly_name=friendly_name or name,
+            ip_address=ip,
+            mac_address="AA:BB:CC:DD:EE:01",
+            netmask="255.255.255.0",
+            gateway=gateway,
+            ssid=ssid,
+            interface_type=iface_type,
+            is_active=True,
+        )
+
+    def test_check_ethernet_rejects_zero_gateway(self):
+        detector = ModeDetector()
+        detector._all_interfaces = [
+            self._iface(
+                name="ProtonVPN",
+                ip="10.2.0.2",
+                gateway="0.0.0.0",
+                iface_type="unknown",
+            )
+        ]
+        assert detector._check_ethernet() is None
+
+    def test_check_ethernet_skips_likely_vpn_tunnel(self):
+        detector = ModeDetector()
+        detector._all_interfaces = [
+            self._iface(
+                name="ProtonVPN",
+                friendly_name="ProtonVPN Tunnel",
+                ip="10.2.0.2",
+                gateway="10.2.0.1",
+                iface_type="unknown",
+            )
+        ]
+        assert detector._check_ethernet() is None
+
+    @patch("packet_capture.mode_detector.IS_WINDOWS", False)
+    def test_detect_stays_public_network_when_only_wifi_is_routable(self):
+        detector = ModeDetector()
+        wifi = self._iface(
+            name="Wi-Fi",
+            ip="10.242.198.253",
+            gateway="10.242.198.235",
+            iface_type="wifi",
+            ssid="CampusNet",
+        )
+        vpn = self._iface(
+            name="ProtonVPN",
+            friendly_name="ProtonVPN Tunnel",
+            ip="10.2.0.2",
+            gateway="0.0.0.0",
+            iface_type="unknown",
+        )
+
+        with patch.object(detector, '_enumerate_interfaces', return_value=[wifi, vpn]):
+            with patch.object(detector, '_check_port_mirror', return_value=None):
+                with patch.object(detector, '_check_hotspot', return_value=None):
+                    mode = detector.detect()
+
+        assert isinstance(mode, PublicNetworkMode)
+        assert mode.interface.name == "Wi-Fi"
+
+
+class TestWindowsInterfaceClassification:
+    def test_guess_type_windows_marks_protonvpn_as_virtual(self):
+        from packet_capture import platform_helpers as ph
+
+        iface_type = ph.guess_type_windows("ProtonVPN Tunnel", "ProtonVPN")
+        assert iface_type == "virtual"
 
 
 # ===================================================================

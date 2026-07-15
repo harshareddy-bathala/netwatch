@@ -240,7 +240,11 @@ class CaptureProcessorMixin:
 
         # Feed BandwidthCalculator
         for pd in processed:
-            self.bandwidth.add_bytes(pd.bytes, pd.direction)
+            self.bandwidth.add_bytes(
+                pd.bytes,
+                pd.direction,
+                is_control_traffic=pd.is_control_traffic,
+            )
 
         # Record source MACs for port-mirror detection heuristic
         if hasattr(self, '_recent_src_macs_lock'):
