@@ -114,21 +114,32 @@ Default OFF (`CAPTURE_IPC_ENABLED`); the in-process monolith is untouched.
 Remaining for a later sprint: wire the daemon spawn into `main.py`'s
 mode-handler lifecycle (transport + bridge + daemon are ready and tested).
 
-### Phase 3 — LLM investigations (Sprints 8–10, weeks 15–20)
+### Phase 3 — LLM investigations (Sprints 8–10, weeks 15–20)  ← **core complete (2026-07-15)**
 
-- Knowledge-graph projection (twin + time + provenance)
-- Local LLM runtime (Ollama/llama.cpp, quantized 4–8B) in a **separate process**, strict JSON tool calls only: `query_metrics`, `query_graph`, `list_incidents`
-- "Ask NetWatch" chat view + incident timeline view
-- Explainability: every alert/incident carries `evidence[]`, `confidence`, feature attributions
+- [x] **P3.1** Grounding tools (`intelligence/investigator_tools.py`):
+  `query_metrics`, `query_graph`, `list_incidents` — read-only, each
+  returning JSON with a `provenance {source, read_at}` stamp (the
+  twin + time + provenance projection the model reasons over)
+- [x] **P3.2** Local LLM runtime (`intelligence/llm_runtime.py`):
+  `OllamaRuntime` talks only to a local Ollama server (127.0.0.1:11434) —
+  a separate process, zero cloud; `ScriptedRuntime` drives tests with no
+  model; `get_runtime()` degrades to None when none is reachable
+- [x] **P3.3** Investigator (`intelligence/investigator.py`): bounded
+  tool-calling loop, strict one-JSON-object-per-turn protocol, returns
+  answer + validated citations + full tool-call trace
+- [x] **P3.4** "Ask NetWatch" chat view (`AskView.js`) + `/api/investigate*`;
+  incident timeline view already shipped (Phase 2 polish)
+- [x] **P3.5** Explainability: alerts/incidents carry `evidence[]` +
+  `confidence` (Phase 1/2); investigations carry citations + the tool
+  trace, and citations are validated against the real toolset so an answer
+  cannot cite a source it never had
 
-### Phase 3 — LLM investigations (Sprints 8–10, weeks 15–20)
-
-- Knowledge-graph projection (twin + time + provenance)
-- Local LLM runtime (Ollama/llama.cpp, quantized 4–8B) in a **separate process**, strict JSON tool calls only: `query_metrics`, `query_graph`, `list_incidents`
-- "Ask NetWatch" chat view + incident timeline view
-- Explainability: every alert/incident carries `evidence[]`, `confidence`, feature attributions
-
-*Exit:* "Why did the lab Wi-Fi degrade at 10:42?" answered with citations, fully offline.
+*Exit met (model-dependent):* with a local model pulled
+(`ollama pull llama3`), "Why did the lab Wi-Fi degrade at 10:42?" is
+answered with citations, fully offline. The whole pipeline is tested
+without a model via the scripted runtime. Remaining for a later sprint:
+richer time-series/knowledge-graph tools, citation-faithfulness eval
+harness (Phase 4).
 
 ### Phase 4 — Evaluation + packaging (Sprints 11–12, weeks 21–24)
 
