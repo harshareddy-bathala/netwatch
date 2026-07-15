@@ -96,7 +96,27 @@ class AlertEngine:
         self._known_macs: set = set()
         self._known_ips: set = set()   # IPs belonging to our own machine
 
+        # Alert→incident fusion (Phase 2).  Wired at startup; when None
+        # (tests, standalone use) alerts are simply not triaged.
+        self.incident_manager = None
+
         logger.info("AlertEngine initialised (cooldown=%ds)", cooldown_seconds)
+
+    def _triage_incident(self, alert_id, alert_type, severity, message, metadata):
+        """Offer a persisted alert to the incident manager (never raises)."""
+        if self.incident_manager is None:
+            return
+        try:
+            device_mac = (metadata or {}).get("device_mac")
+            self.incident_manager.triage(
+                alert_id=alert_id,
+                alert_type=alert_type,
+                severity=severity,
+                device_mac=device_mac,
+                message=message,
+            )
+        except Exception:
+            logger.exception("Incident triage hook failed for alert #%s", alert_id)
 
     _RULE_OPERATOR_MAP = {
         ">": _op.gt,
@@ -142,6 +162,7 @@ class AlertEngine:
             logger.warning(
                 "Alert #%d created [%s/%s]: %s", alert_id, alert_type, severity, full_message
             )
+            self._triage_incident(alert_id, alert_type, severity, full_message, metadata)
             self._push_alerts_to_dashboard()
         else:
             logger.error("Failed to persist alert [%s/%s]: %s", alert_type, severity, full_message)

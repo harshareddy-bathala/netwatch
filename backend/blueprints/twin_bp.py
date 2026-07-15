@@ -53,6 +53,11 @@ def _get_threats():
     return getattr(state, 'threat_detector', None)
 
 
+def _get_incidents():
+    from orchestration import state
+    return getattr(state, 'incident_manager', None)
+
+
 @twin_bp.route('/api/twin', methods=['GET'])
 @handle_errors
 def get_twin():
@@ -72,6 +77,7 @@ def get_twin_stats():
     twin = _get_twin()
     behavior = _get_behavior()
     threats = _get_threats()
+    incidents = _get_incidents()
     try:
         from intelligence.event_bus import event_bus
         bus_stats = event_bus.get_stats()
@@ -81,6 +87,7 @@ def get_twin_stats():
         'twin': twin.get_stats() if twin else {'running': False},
         'behavior': behavior.get_stats() if behavior else {'running': False},
         'threats': threats.get_stats() if threats else {'running': False},
+        'incidents': incidents.get_stats() if incidents else {'running': False},
         'event_bus': bus_stats,
     }})
 

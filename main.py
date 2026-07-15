@@ -414,6 +414,15 @@ def main():
     alert_engine = AlertEngine()
     logger.info("AlertEngine created (shared instance)")
 
+    # Phase 2: fuse related alerts into incidents (same device / window)
+    try:
+        from intelligence.incidents import IncidentManager
+        alert_engine.incident_manager = IncidentManager()
+        state.incident_manager = alert_engine.incident_manager
+        logger.info("IncidentManager attached (alert->incident fusion)")
+    except Exception as e:
+        logger.error("Incident triage unavailable: %s", e)
+
     # Register our own MAC as known so it won't trigger security alerts
     if _own_mac:
         alert_engine.add_known_mac(_own_mac)

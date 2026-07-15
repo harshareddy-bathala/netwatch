@@ -13,6 +13,7 @@ from backend.blueprints.export_bp import export_bp
 from backend.blueprints.health import health_bp
 from backend.blueprints.twin_bp import twin_bp
 from backend.blueprints.forecast_bp import forecast_bp
+from backend.blueprints.incidents_bp import incidents_bp
 
 ALL_BLUEPRINTS = [
     devices_bp,
@@ -25,11 +26,12 @@ ALL_BLUEPRINTS = [
     health_bp,
     twin_bp,
     forecast_bp,
+    incidents_bp,
 ]
 
 __all__ = [
     'ALL_BLUEPRINTS',
     'devices_bp', 'alerts_bp', 'bandwidth_bp', 'discovery_bp',
     'interface_bp', 'system_bp', 'export_bp', 'health_bp', 'twin_bp',
-    'forecast_bp',
+    'forecast_bp', 'incidents_bp',
 ]

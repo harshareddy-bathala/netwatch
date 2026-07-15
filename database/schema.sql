@@ -81,8 +81,35 @@ CREATE TABLE IF NOT EXISTS alerts (
     resolved_at TIMESTAMP DEFAULT NULL,
     resolved_by TEXT DEFAULT NULL,
     acknowledged INTEGER DEFAULT 0,
-    acknowledged_at TIMESTAMP DEFAULT NULL
+    acknowledged_at TIMESTAMP DEFAULT NULL,
+    incident_id INTEGER DEFAULT NULL REFERENCES incidents(id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_alerts_incident ON alerts(incident_id);
+
+-- =============================================================================
+-- INCIDENTS TABLE (Phase 2, AI-first)
+-- =============================================================================
+-- Fused groups of related alerts: alerts hitting the same device (or the
+-- network at large) inside a rolling window share one incident.
+-- Maintained by intelligence.incidents.IncidentManager via migration 012.
+
+CREATE TABLE IF NOT EXISTS incidents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'resolved')),
+    severity TEXT NOT NULL DEFAULT 'info'
+        CHECK(severity IN ('info', 'low', 'medium', 'warning', 'high', 'critical')),
+    title TEXT NOT NULL,
+    device_mac TEXT DEFAULT NULL,    -- NULL = network-wide
+    alert_count INTEGER NOT NULL DEFAULT 0,
+    categories TEXT DEFAULT NULL,    -- JSON array of alert types
+    summary TEXT DEFAULT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_incidents_status_updated
+    ON incidents(status, updated_at);
 
 -- =============================================================================
 -- BANDWIDTH_STATS TABLE

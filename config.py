@@ -733,6 +733,14 @@ FORECAST_LINK_CAPACITY_MBPS = float(os.getenv('FORECAST_LINK_CAPACITY_MBPS', '0'
 FORECAST_CACHE_TTL_SECONDS = int(os.getenv('FORECAST_CACHE_TTL_SECONDS', '30'))
 
 # =============================================================================
+# INCIDENT TRIAGE (Phase 2, AI-first) — alert → incident fusion
+# =============================================================================
+
+# Alerts hitting the same device (or the network at large) within this
+# rolling window are fused into one incident.
+INCIDENT_WINDOW_MINUTES = int(os.getenv('INCIDENT_WINDOW_MINUTES', '30'))
+
+# =============================================================================
 # PERFORMANCE TUNING — Prevents NetWatch from degrading network performance
 # =============================================================================
 
