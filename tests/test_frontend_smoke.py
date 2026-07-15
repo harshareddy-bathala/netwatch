@@ -130,3 +130,34 @@ class TestIncidentsView:
         body = client.get('/css/components.css').data.decode('utf-8')
         assert '.incident-timeline' in body
         assert '.incident-row' in body
+
+
+class TestAskView:
+    """The Phase 3 Ask NetWatch view is served and wired in."""
+
+    def test_ask_view_served(self, client):
+        resp = client.get('/js/components/AskView.js')
+        assert resp.status_code == 200
+        body = resp.data.decode('utf-8')
+        assert 'investigate' in body
+        assert 'citations' in body
+
+    def test_ask_route_registered(self, client):
+        body = client.get('/js/app.js').data.decode('utf-8')
+        assert 'AskView' in body
+        assert "'/ask'" in body
+
+    def test_ask_nav_entry(self, client):
+        body = client.get('/js/components/Sidebar.js').data.decode('utf-8')
+        assert 'data-route="/ask"' in body
+
+    def test_ask_api_methods(self, client):
+        body = client.get('/js/api.js').data.decode('utf-8')
+        for method in ('getInvestigateStatus', 'getInvestigateTools',
+                       'investigate'):
+            assert method in body
+
+    def test_ask_css_present(self, client):
+        body = client.get('/css/components.css').data.decode('utf-8')
+        assert '.ask__thread' in body
+        assert '.ask-msg' in body

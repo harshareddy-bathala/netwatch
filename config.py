@@ -767,6 +767,19 @@ CAPTURE_IPC_PORT_FILE = os.getenv(
 )
 
 # =============================================================================
+# LLM INVESTIGATIONS (Phase 3, AI-first) — tool-grounded local model
+# =============================================================================
+
+# Local Ollama model name for "Ask NetWatch". The runtime talks only to a
+# local Ollama server (127.0.0.1:11434) — zero cloud. Investigations
+# degrade to "unavailable" when no local model is reachable.
+LLM_MODEL = os.getenv('NETWATCH_LLM_MODEL', 'llama3')
+
+# Max tool calls the investigator may make before it must answer — bounds
+# cost and stops a confused model from looping forever.
+LLM_MAX_STEPS = int(os.getenv('NETWATCH_LLM_MAX_STEPS', '5'))
+
+# =============================================================================
 # PERFORMANCE TUNING — Prevents NetWatch from degrading network performance
 # =============================================================================
 

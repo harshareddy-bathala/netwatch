@@ -104,6 +104,13 @@ const api = {
   getIncidentStats: ()     => request('/incidents/stats'),
   resolveIncident:  (id)   => request(`/incidents/${id}/resolve`, { method: 'POST' }),
 
+  // Ask NetWatch — LLM investigations (Phase 3)
+  getInvestigateStatus: ()        => request('/investigate/status'),
+  getInvestigateTools:  ()        => request('/investigate/tools'),
+  investigate:          (question) => request('/investigate', {
+      method: 'POST', body: JSON.stringify({ question }),
+  }),
+
   // Alerts
   getAlerts: (limit=50, severity=null, acknowledged=null) => {
     let url = `/alerts?limit=${limit}`;
