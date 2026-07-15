@@ -93,6 +93,10 @@ const api = {
   getProtocols:       (hours=1)                      => request(`/protocols?hours=${hours}`),
   getBandwidthDual:   (hours=1, interval='minute')   => request(`/bandwidth/dual?hours=${hours}&interval=${interval}`),
 
+  // Forecasting (Phase 2)
+  getForecastBandwidth: (horizon=30) => request(`/forecast/bandwidth?horizon=${horizon}`),
+  getForecastDevices:   (horizon=6)  => request(`/forecast/devices?horizon=${horizon}`),
+
   // Alerts
   getAlerts: (limit=50, severity=null, acknowledged=null) => {
     let url = `/alerts?limit=${limit}`;

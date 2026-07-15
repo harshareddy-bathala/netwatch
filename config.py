@@ -711,6 +711,28 @@ THREAT_LATERAL_WINDOW_SECONDS = int(os.getenv('THREAT_LATERAL_WINDOW_SECONDS', '
 THREAT_LATERAL_HOST_THRESHOLD = int(os.getenv('THREAT_LATERAL_HOST_THRESHOLD', '3'))
 
 # =============================================================================
+# FORECASTING (Phase 2, AI-first) — bandwidth saturation + device-count trend
+# =============================================================================
+
+# Holt double-exponential smoothing coefficients for the bandwidth forecast.
+# alpha weights the level, beta the trend; both in (0, 1).
+FORECAST_ALPHA = float(os.getenv('FORECAST_ALPHA', '0.5'))
+FORECAST_BETA = float(os.getenv('FORECAST_BETA', '0.1'))
+
+# Minimum per-minute history buckets before a forecast is attempted.
+FORECAST_MIN_SAMPLES = int(os.getenv('FORECAST_MIN_SAMPLES', '20'))
+
+# History window fed to the model and default forecast horizon.
+FORECAST_HISTORY_HOURS = int(os.getenv('FORECAST_HISTORY_HOURS', '3'))
+FORECAST_HORIZON_MINUTES = int(os.getenv('FORECAST_HORIZON_MINUTES', '30'))
+
+# Link capacity in Mbps for saturation ETA (0 = saturation check disabled).
+FORECAST_LINK_CAPACITY_MBPS = float(os.getenv('FORECAST_LINK_CAPACITY_MBPS', '0'))
+
+# Forecast responses are cached for this many seconds.
+FORECAST_CACHE_TTL_SECONDS = int(os.getenv('FORECAST_CACHE_TTL_SECONDS', '30'))
+
+# =============================================================================
 # PERFORMANCE TUNING — Prevents NetWatch from degrading network performance
 # =============================================================================
 

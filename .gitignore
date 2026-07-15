@@ -69,3 +69,4 @@ deploy/build/
 .env
 .env.local
 secret_key.txt
+netwatch_speaker_notes.md

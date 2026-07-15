@@ -8,6 +8,7 @@
 
 import { formatTimestamp } from '../utils/formatters.js';
 import store from '../store.js';
+import api from '../api.js';
 
 /** Read a CSS custom property from the document root. */
 function cssVar(name, fallback = '') {
@@ -21,6 +22,7 @@ function getColors() {
     upload:       cssVar('--chart-upload',         '#3b82f6'),
     controlDownload: cssVar('--chart-control-download', '#f59e0b'),
     controlUpload:   cssVar('--chart-control-upload',   '#ef4444'),
+    forecast:     cssVar('--chart-forecast',       '#a78bfa'),
     grid:         cssVar('--chart-grid',           'rgba(255,255,255,0.04)'),
     text:         cssVar('--chart-text',           '#6b6b6b'),
     tooltipBg:    cssVar('--chart-tooltip-bg',     '#1a1a1a'),
@@ -81,6 +83,9 @@ export default class BandwidthChart {
     this._lastFingerprint = '';
     this._lastRaw = null;
     this._showControlOverhead = !!store.get('includeControlTraffic');
+    this._forecast = null;          // last /api/forecast/bandwidth payload
+    this._forecastFetchedAt = 0;    // throttle timestamp (ms)
+    this._forecastInFlight = false;
   }
 
   /** Call after the canvas element is in the DOM */
@@ -173,6 +178,50 @@ export default class BandwidthChart {
             pointHoverBorderWidth: 1.5,
             borderWidth: 1.5,
             hidden: !this._showControlOverhead,
+          },
+          {
+            // Total-bandwidth forecast (Holt) — dashed line into the future
+            label: 'Forecast (total)',
+            data: [],
+            borderColor: COLORS.forecast,
+            backgroundColor: 'transparent',
+            fill: false,
+            trafficClass: 'forecast',
+            borderDash: [4, 4],
+            tension: 0.3,
+            spanGaps: false,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            pointHoverBackgroundColor: COLORS.forecast,
+            pointHoverBorderColor: '#fff',
+            pointHoverBorderWidth: 1.5,
+            borderWidth: 2,
+          },
+          {
+            // Confidence band upper bound — fills down to the lower bound.
+            // '_' prefix hides it from legend and tooltip (see filters).
+            label: '_Forecast upper',
+            data: [],
+            borderColor: 'transparent',
+            backgroundColor: 'rgba(167, 139, 250, 0.10)',
+            fill: '+1',
+            trafficClass: 'forecast',
+            spanGaps: false,
+            pointRadius: 0,
+            pointHoverRadius: 0,
+            borderWidth: 0,
+          },
+          {
+            label: '_Forecast lower',
+            data: [],
+            borderColor: 'transparent',
+            backgroundColor: 'transparent',
+            fill: false,
+            trafficClass: 'forecast',
+            spanGaps: false,
+            pointRadius: 0,
+            pointHoverRadius: 0,
+            borderWidth: 0,
           }
         ]
       },
@@ -202,6 +251,8 @@ export default class BandwidthChart {
               font: { size: 11, weight: 500 },
               boxWidth: 8,
               boxHeight: 8,
+              // Hide internal band-bound datasets ('_'-prefixed labels)
+              filter: item => !(item.text || '').startsWith('_'),
             }
           },
           tooltip: {
@@ -219,6 +270,7 @@ export default class BandwidthChart {
             boxWidth: 8,
             boxHeight: 8,
             boxPadding: 4,
+            filter: item => !(item.dataset?.label || '').startsWith('_'),
             callbacks: {
               title(items) {
                 if (!items.length) return '';
@@ -235,6 +287,9 @@ export default class BandwidthChart {
                 let appTotal = 0;
                 let controlTotal = 0;
                 for (const item of items) {
+                  // Forecast values are projections — never sum them
+                  // into the measured totals row.
+                  if (item?.dataset?.trafficClass === 'forecast') continue;
                   const value = item?.parsed?.y || 0;
                   total += value;
                   if (item?.dataset?.trafficClass === 'control') {
@@ -243,6 +298,7 @@ export default class BandwidthChart {
                     appTotal += value;
                   }
                 }
+                if (total === 0 && appTotal === 0 && controlTotal === 0) return '';
 
                 if (controlTotal > 0) {
                   return [
@@ -298,6 +354,7 @@ export default class BandwidthChart {
 
     // Subscribe to bandwidth data
     this._unsubBandwidth = store.subscribe('bandwidth', data => this.update(data));
+    this._maybeRefreshForecast();
     this._unsubControl = store.subscribe('includeControlTraffic', enabled => {
       this._showControlOverhead = !!enabled;
       this._syncDisplayMode();
@@ -334,8 +391,28 @@ export default class BandwidthChart {
     this._controlUlGrad = controlUlGrad;
   }
 
+  /**
+   * Fetch /api/forecast/bandwidth at most once a minute.  On arrival the
+   * chart re-renders so the dashed projection tracks the latest model.
+   */
+  _maybeRefreshForecast() {
+    const REFRESH_MS = 60_000;
+    if (this._forecastInFlight) return;
+    if (Date.now() - this._forecastFetchedAt < REFRESH_MS) return;
+    this._forecastInFlight = true;
+    api.getForecastBandwidth(30)
+      .then(resp => {
+        this._forecast = resp?.data || null;
+        this._forecastFetchedAt = Date.now();
+        if (this.chart) this.update(this._lastRaw, true);
+      })
+      .catch(() => { this._forecastFetchedAt = Date.now(); })  // retry next window
+      .finally(() => { this._forecastInFlight = false; });
+  }
+
   update(raw, forceRender = false) {
     if (!this.chart) return;
+    this._maybeRefreshForecast();
 
     this._lastRaw = raw;
 
@@ -364,7 +441,9 @@ export default class BandwidthChart {
       return `${ts}|${dl}|${ul}|${cdl}|${cul}`;
     }).join(';');
     const chartMode = this._showControlOverhead ? 'control' : 'app';
-    const modeAwareFingerprint = `${chartMode}:${fp}`;
+    const fc = this._forecast;
+    const fcStamp = fc?.available ? `${fc.generated_at}:${fc.points?.length || 0}` : 'none';
+    const modeAwareFingerprint = `${chartMode}:${fcStamp}:${fp}`;
     if (modeAwareFingerprint === this._lastFingerprint && !this._firstUpdate && !forceRender) return;
     this._lastFingerprint = modeAwareFingerprint;
 
@@ -380,11 +459,33 @@ export default class BandwidthChart {
     controlDlData = this._applyIdleFloor(this._smooth(controlDlData));
     controlUlData = this._applyIdleFloor(this._smooth(controlUlData));
 
-    this.chart.data.labels = history.map(d => formatTimestamp(d.timestamp));
+    const labels = history.map(d => formatTimestamp(d.timestamp));
     this.chart.data.datasets[0].data = dlData;
     this.chart.data.datasets[1].data = controlDlData;
     this.chart.data.datasets[2].data = ulData;
     this.chart.data.datasets[3].data = controlUlData;
+
+    // Forecast overlay: extend the x-axis into the horizon and draw the
+    // dashed total projection + confidence band.  Measured datasets stay
+    // history-length; Chart.js leaves them blank past their last point.
+    const fcPoints = (fc?.available && Array.isArray(fc.points)) ? fc.points : [];
+    if (fcPoints.length && history.length) {
+      const histLen = history.length;
+      for (const p of fcPoints) labels.push(formatTimestamp(p.timestamp));
+      // Bridge from the last measured total so the line connects visually.
+      const bridge = (dlData[histLen - 1] || 0) + (ulData[histLen - 1] || 0);
+      this.chart.data.datasets[4].data =
+        Array(histLen - 1).fill(null).concat([bridge], fcPoints.map(p => p.mbps));
+      this.chart.data.datasets[5].data =
+        Array(histLen).fill(null).concat(fcPoints.map(p => p.upper));
+      this.chart.data.datasets[6].data =
+        Array(histLen).fill(null).concat(fcPoints.map(p => p.lower));
+    } else {
+      this.chart.data.datasets[4].data = [];
+      this.chart.data.datasets[5].data = [];
+      this.chart.data.datasets[6].data = [];
+    }
+    this.chart.data.labels = labels;
 
     // Update live speed badge
     this._updateSpeedBadge(dlData, ulData, controlDlData, controlUlData);
@@ -525,6 +626,10 @@ export default class BandwidthChart {
     ds[3].borderColor = C.controlUpload;
     ds[3].backgroundColor = this._controlUlGrad;
     ds[3].pointHoverBackgroundColor = C.controlUpload;
+    if (ds[4]) {
+      ds[4].borderColor = C.forecast;
+      ds[4].pointHoverBackgroundColor = C.forecast;
+    }
     this.chart.options.plugins.legend.labels.color = C.text;
     this.chart.options.plugins.tooltip.backgroundColor = C.tooltipBg;
     this.chart.options.plugins.tooltip.titleColor = C.tooltipText;

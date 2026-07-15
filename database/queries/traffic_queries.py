@@ -79,6 +79,41 @@ def get_bandwidth_history(hours: int = 1, interval: str = "minute") -> List[dict
 
 
 @time_query
+def get_hourly_device_counts(hours: int = 24) -> List[dict]:
+    """
+    Distinct active source devices per hour bucket — the input series for
+    the device-count trend forecast (Phase 2).
+
+    Broadcast and missing MACs are excluded; control frames still count
+    because a device emitting only control traffic is still present.
+    """
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            since = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute("""
+                SELECT
+                    strftime('%Y-%m-%d %H:00:00', timestamp) AS time_bucket,
+                    COUNT(DISTINCT source_mac)                AS device_count
+                FROM traffic_summary
+                WHERE timestamp >= ?
+                  AND source_mac IS NOT NULL
+                  AND source_mac != ''
+                  AND source_mac != 'ff:ff:ff:ff:ff:ff'
+                GROUP BY time_bucket
+                ORDER BY time_bucket ASC
+            """, (since,))
+            return [
+                {"timestamp": row["time_bucket"],
+                 "device_count": row["device_count"] or 0}
+                for row in cursor.fetchall()
+            ]
+    except sqlite3.Error as e:
+        logger.error("get_hourly_device_counts error: %s", e)
+        return []
+
+
+@time_query
 def get_bandwidth_history_dual(hours: int = 1, interval: str = "minute") -> List[dict]:
     """
     Same as ``get_bandwidth_history`` but returns Mbps fields for
