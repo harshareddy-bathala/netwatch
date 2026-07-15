@@ -124,11 +124,17 @@ class CaptureEngine(CaptureProcessorMixin):
         batch_timeout: Optional[float] = None,
         bandwidth_window: Optional[int] = None,
         strategy=None,
+        db_writer=None,
     ):
         # Mode & interface
         self._mode = mode
         self._interface = interface or mode.interface.name
         self._strategy = strategy  # optional CaptureStrategy (setup/teardown NIC)
+        # Phase 2.5: an injected sink (any object exposing enqueue/start/stop)
+        # replaces the built-in DatabaseWriter — the capture daemon passes a
+        # socket-publishing adapter here so the same capture stack streams
+        # batches to the unprivileged process instead of writing the DB.
+        self._injected_writer = db_writer
 
         # Components
         self._filter_mgr = FilterManager(mode)
@@ -185,7 +191,7 @@ class CaptureEngine(CaptureProcessorMixin):
         except (ImportError, AttributeError):
             pass
 
-        self._db_writer = DatabaseWriter(
+        self._db_writer = self._injected_writer or DatabaseWriter(
             max_queue_size=_db_queue_size,
             stats_lock=self._stats_lock,
             mode_transition_lock=_mtl,

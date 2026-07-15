@@ -70,3 +70,6 @@ deploy/build/
 .env.local
 secret_key.txt
 netwatch_speaker_notes.md
+
+# Capture daemon endpoint advertisement (Phase 2.5)
+.capture_ipc

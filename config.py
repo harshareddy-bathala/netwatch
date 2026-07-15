@@ -741,6 +741,32 @@ FORECAST_CACHE_TTL_SECONDS = int(os.getenv('FORECAST_CACHE_TTL_SECONDS', '30'))
 INCIDENT_WINDOW_MINUTES = int(os.getenv('INCIDENT_WINDOW_MINUTES', '30'))
 
 # =============================================================================
+# CAPTURE PRIVILEGE SEPARATION (Phase 2.5, AI-first)
+# =============================================================================
+
+# When enabled, packet capture runs in a separate minimal privileged
+# process (the capture daemon) and streams packet batches to the
+# unprivileged main process over a loopback socket.  Default OFF — the
+# in-process monolithic capture path is unchanged when this is false.
+CAPTURE_IPC_ENABLED = os.getenv('CAPTURE_IPC_ENABLED', 'false').lower() == 'true'
+
+# Loopback endpoint for the capture transport.  Port 0 lets the daemon
+# pick a free port and advertise it (see CAPTURE_IPC_PORT_FILE).
+CAPTURE_IPC_HOST = os.getenv('CAPTURE_IPC_HOST', '127.0.0.1')
+CAPTURE_IPC_PORT = int(os.getenv('CAPTURE_IPC_PORT', '0'))
+
+# Shared token gating the transport so other local processes cannot
+# inject packets.  Auto-generated per run when unset.
+CAPTURE_IPC_TOKEN = os.getenv('CAPTURE_IPC_TOKEN', '')
+
+# File the daemon writes its chosen host:port:token to, and the main
+# process reads to connect (co-located, local-only).
+CAPTURE_IPC_PORT_FILE = os.getenv(
+    'CAPTURE_IPC_PORT_FILE',
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), '.capture_ipc'),
+)
+
+# =============================================================================
 # PERFORMANCE TUNING — Prevents NetWatch from degrading network performance
 # =============================================================================
 
