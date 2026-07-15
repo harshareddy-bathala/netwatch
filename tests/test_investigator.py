@@ -265,3 +265,43 @@ class TestInvestigateAPI:
         assert data["available"] is True
         assert data["answer"] == "The network looks healthy."
         assert data["citations"] == ["query_metrics"]
+
+
+class TestRuntimeFailureMidLoop:
+    """The investigator must degrade, not 500, when the backend dies or the
+    model isn't pulled during a call."""
+
+    def test_llm_unavailable_mid_investigation(self, initialized_db):
+        from intelligence.investigator import Investigator
+        from intelligence.llm_runtime import LLMUnavailable
+
+        class DyingRuntime:
+            def is_available(self): return True
+            def generate(self, messages):
+                raise LLMUnavailable("model not found (404)")
+
+        result = Investigator(DyingRuntime()).investigate("How's the network?")
+        assert result["available"] is False
+        assert "unavailable" in result["reason"].lower()
+        assert result["answer"] == ""
+
+    def test_backend_dies_after_a_tool_call(self, initialized_db):
+        from intelligence.investigator import Investigator
+        from intelligence.llm_runtime import LLMUnavailable
+
+        class FlakyRuntime:
+            def __init__(self):
+                self.n = 0
+            def is_available(self): return True
+            def generate(self, messages):
+                self.n += 1
+                if self.n == 1:
+                    return json.dumps({"action": "tool",
+                                       "tool": "query_metrics", "params": {}})
+                raise LLMUnavailable("connection reset")
+
+        result = Investigator(FlakyRuntime()).investigate("q")
+        assert result["available"] is False
+        # The tool result gathered before the failure is preserved.
+        assert len(result["tool_calls"]) == 1
+        assert result["tool_calls"][0]["tool"] == "query_metrics"

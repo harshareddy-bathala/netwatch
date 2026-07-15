@@ -30,6 +30,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from intelligence.investigator_tools import TOOLS, run_tool, tool_schema
+from intelligence.llm_runtime import LLMUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,23 @@ class Investigator:
         trace: List[Dict[str, Any]] = []
 
         for step in range(self._max_steps):
-            raw = self._runtime.generate(messages)
+            try:
+                raw = self._runtime.generate(messages)
+            except LLMUnavailable as exc:
+                # The backend died or the model isn't pulled — degrade
+                # gracefully instead of surfacing a 500. Preserve any tool
+                # results already gathered.
+                logger.warning("Investigation aborted — LLM unavailable: %s", exc)
+                return {
+                    "available": False,
+                    "question": question,
+                    "reason": f"The local model became unavailable mid-"
+                              f"investigation: {exc}",
+                    "answer": "",
+                    "citations": [],
+                    "tool_calls": trace,
+                    "steps": step,
+                }
             action = self._parse_action(raw)
 
             if action is None:

@@ -1,0 +1,2109 @@
+{
+  "version": "1.0",
+  "seed": 20260715,
+  "labels": [
+    "port_scan",
+    "beaconing",
+    "dns_tunneling",
+    "rogue_device",
+    "lateral_movement",
+    "benign"
+  ],
+  "scenarios": [
+    {
+      "id": "portscan-vertical-0",
+      "label": "port_scan",
+      "description": "one host probed on many ports",
+      "events": [
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 20,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 21,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 22,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 23,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 24,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 25,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 26,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 27,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 28,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 29,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 30,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 31,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 32,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 33,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 34,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 35,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 36,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 37,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 38,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 39,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 40,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 41,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 42,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 43,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 44,
+          "protocol": "TCP",
+          "is_control": false
+        }
+      ],
+      "known_macs": [
+        "de:ad:00:00:01:00"
+      ]
+    },
+    {
+      "id": "portscan-vertical-1",
+      "label": "port_scan",
+      "description": "one host probed on many ports",
+      "events": [
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 20,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 21,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 22,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 23,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 24,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 25,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 26,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 27,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 28,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 29,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 30,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 31,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 32,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 33,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 34,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 35,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 36,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 37,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 38,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 39,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 40,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 41,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 42,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 43,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:01:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 44,
+          "protocol": "TCP",
+          "is_control": false
+        }
+      ],
+      "known_macs": [
+        "de:ad:00:00:01:01"
+      ]
+    },
+    {
+      "id": "portscan-horizontal-0",
+      "label": "port_scan",
+      "description": "one non-admin port swept across many hosts",
+      "events": [
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.1",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.2",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.3",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.4",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.5",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.6",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.7",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.8",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.11",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.12",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.13",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.14",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.15",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        }
+      ],
+      "known_macs": [
+        "de:ad:00:00:02:00"
+      ]
+    },
+    {
+      "id": "portscan-horizontal-1",
+      "label": "port_scan",
+      "description": "one non-admin port swept across many hosts",
+      "events": [
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.1",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.2",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.3",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.4",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.5",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.6",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.7",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.8",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.9",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.11",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.12",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.13",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.14",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:02:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.15",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        }
+      ],
+      "known_macs": [
+        "de:ad:00:00:02:01"
+      ]
+    },
+    {
+      "id": "beacon-0",
+      "label": "beaconing",
+      "description": "regular low-jitter C2 heartbeat",
+      "events": [
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.10",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.10",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.10",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.10",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.10",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.10",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.10",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.10",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.10",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.10",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.10",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:00",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.10",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        }
+      ],
+      "known_macs": [
+        "de:ad:00:00:03:00"
+      ]
+    },
+    {
+      "id": "beacon-1",
+      "label": "beaconing",
+      "description": "regular low-jitter C2 heartbeat",
+      "events": [
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.11",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.11",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.11",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.11",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.11",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.11",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.11",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.11",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.11",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.11",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.11",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:03:01",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.11",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        }
+      ],
+      "known_macs": [
+        "de:ad:00:00:03:01"
+      ]
+    },
+    {
+      "id": "dnstunnel-0",
+      "label": "dns_tunneling",
+      "description": "query burst with long high-entropy subdomains",
+      "events": [
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "372656a7e14a46378dad96159304d59df162bd2e4ab48183bb5bbefe.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "e2e50a36411209c9d538ceb3d3c59e977a8f61a83398108cae67fbef.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "f5e7896aa787afea51a27127ce23ac292700796d9a14b10fb500dd68.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "dc3cffc7e1603c2f1fd40ad170136e867a8361215f63210be376ff00.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "eec1ea369f44a7000f1bedd5cd177ad9650824a6be76326e49638f4d.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "8970c91302ac6faa9539a5ab694061f736b9364f6cd9823b31d329b7.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "000a878b590184d7209ff3dbea3f48ec9f0c524b7445b812da5ee8e4.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "3b41ae0fb37ed4db8ef9e740355424792cd534662c6ba17d7b364aca.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "3a93f9b52938a872f3649b8fe297dd59c9642c93f24e0dd2263f19aa.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "816e750d2593f382c16f8910fc3c3fec8d4e7637b4dc1a1eaf074415.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "117252ddf6eea0d5fb5a638dee0b97d938088a4172f795c4a9e2d5a1.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "6f28f045ca9dd53b8bbb1d0a14b3dd56d0345842e48846f06730beef.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "f7fa57886d833469c6f75346d994545a5b942effa8a5a7bc7971bc76.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "a331fc68136a278e073f8aeb762933891235a63d2a12bf8bcab2b68a.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "3c3bfbcbc38be64507763847a1ae8b8f347298a43ecd35f528e89977.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "e20fd59adb01fd7894752d037f2b9f8030de4963bbd5cedb47ab87b0.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "fc293368286d98c7e632fcf691b60ccff41fe865f504a9eb51083bd6.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "9c424925a84c61484a32ad6062caf6bf2ad3b310007086c603ed6bcb.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "bc81c2de7f3de6e189c7a9e70520b64d1badee22ee5587c1f56280f8.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "b91cb2c030e85d1f6adbd7f67a75fe0bc4140bb479a933377f21d9db.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "9122ebc26ade5125ad002e7ca680df6362123584757a0948d1057304.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "79f5afec860a1fbba417c3c87717a32fb4a184b5de1ad924538610ef.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "8f1a3cf82a1d0b9eb7e1e623014ea6132e1b6cc8ec365913ea290d1f.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "2ba7ce7360298cc4493ea641b977bec6330cd4176aad03b96c7ed54a.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "f52da522b84a8b58c01b4e25b6df14790c3837d6ba355044cd538b73.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "571323db558b0aa86469a05af0349fe05a96bb94aadeeceb0d109727.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "12f4583cddc1ab9d2a74b1619dd077b5cc0d8fb3385c626b8a37265f.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "7e77be014097dcada561de9e2006ee2129e190c5df9175e91faa0555.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "1979359ef7bf359148a533732337d2c908f5b314ef46194991051d28.exfil0.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:00",
+          "source_ip": "10.143.77.50",
+          "qname": "238f48d375a067605890e584869b4fd683416a2739555627e1c7a07b.exfil0.example.com",
+          "qtype": "A"
+        }
+      ],
+      "known_macs": [
+        "de:ad:00:00:04:00"
+      ]
+    },
+    {
+      "id": "dnstunnel-1",
+      "label": "dns_tunneling",
+      "description": "query burst with long high-entropy subdomains",
+      "events": [
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "9410fb46357d87ba5b86f6d391575718d0016420d38bff342791c62e.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "72015f04eab14aaccac5a8283548c952b92de9e49bb661803f3db6a8.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "155cc9bd464dd5056742bc36981901283fe4c0c720acd03573c2b22f.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "222723b9059f3bdb2b3845e4e74a4544967a33ac602d9d176378b326.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "78af9a535caed0eb3c64358f59324b8dcccc411c65ea05ce0615687d.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "69cde5194a86056d3ba53858e0971a46988b08dbd9fb19436ad07140.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "2e5ac5b0c49a43a6789c0299281a19195686156f49c91468cfe3ccc7.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "fdb90c25e1901858b9eb3d1fa94b6681cba02fbe9a94c85349f4bed6.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "eb47e24e257b87d710d5c0cd5d5b6d1250d61e73acf99a0f7d34fbdf.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "260cb85ee282015c8e411df6bad44339153560af2de53ecd85e128a4.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "86517809aca47ca7244d2fd4a38b57e9c338705535bedeab472dba68.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "455f63368509fd889d1377b5bb95ac10691215a4b936cf75c477fc6b.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "652341b2a9fcb9929b79b4cebdaae41ec043c1d5e15a1be0d3561555.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "6b294a78c9db0b127511b8b1e6b5415465d1905d6cb70e96635a8469.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "c8d5adc26876108952f4bfe4f31c47d0bb6f142d56c2c8de8223eaf8.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "0885e12e8163a7d61087ebf52c72e47e1b2884eef46bce7f0c94cdf8.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "7fca0c1a80e9f526e334cf3fb5e8aa1b3dca146620c76fae54c0cf36.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "8496b9d3bd51432ffcee0c241bb97313a594668ec0ed111e6b0d6605.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "1c1941a4dcf98237ac9a54428d5008b0a30277dd1db64aafd032b073.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "cfc7adaddfa0545e46b1c495a3123628cd39570bffd40e620d89e03e.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "3b85001153beb7027fab12f03d4714855d164e5fbb741d2c8aec57fa.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "4689df6bb969b3f5626b845f87ce2d66da9321a0fa54f9489b1ce6db.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "e861bb6dad8f4557cdcdce2e822698af7d418f43092d0a94cbab2100.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "aa25ac438e15d762ad71f70c512e8fc53d912dbfa8d5645166c18603.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "f4e598ced9c7a8b1bcf96114263668f39dce7b50895801e7e7d7757d.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "7b2e8abf621231e6469817d1d822785f2904d0982cafe8ad2225085a.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "78660b7bd3ab4f96a5d1f6a876669bdf5c5b850cc0f28fe7bae54401.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "bd748c5b913e675e3c3e227411fa48e575ec4c6ebc68b9d5577c0789.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "f042c9fd8a4658c41c7ce5eba2c0f7c737f8eca6e8b4cdf81659ead7.exfil1.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "de:ad:00:00:04:01",
+          "source_ip": "10.143.77.50",
+          "qname": "83b60fee3eaefb8fa71d5da32c779b894bdacfbbd9cdb349d053bcc4.exfil1.example.com",
+          "qtype": "A"
+        }
+      ],
+      "known_macs": [
+        "de:ad:00:00:04:01"
+      ]
+    },
+    {
+      "id": "rogue-0",
+      "label": "rogue_device",
+      "description": "never-before-seen device joins the network",
+      "events": [
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:05:00",
+          "source_ip": "10.143.77.200",
+          "dest_ip": "10.143.77.1",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        }
+      ],
+      "known_macs": []
+    },
+    {
+      "id": "rogue-1",
+      "label": "rogue_device",
+      "description": "never-before-seen device joins the network",
+      "events": [
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:05:01",
+          "source_ip": "10.143.77.201",
+          "dest_ip": "10.143.77.1",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        }
+      ],
+      "known_macs": []
+    },
+    {
+      "id": "lateral-0",
+      "label": "lateral_movement",
+      "description": "one host reaches several internal hosts on admin ports",
+      "events": [
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:06:00",
+          "source_ip": "10.143.77.210",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 445,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:06:00",
+          "source_ip": "10.143.77.210",
+          "dest_ip": "10.143.77.11",
+          "dest_port": 445,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:06:00",
+          "source_ip": "10.143.77.210",
+          "dest_ip": "10.143.77.12",
+          "dest_port": 445,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:06:00",
+          "source_ip": "10.143.77.210",
+          "dest_ip": "10.143.77.13",
+          "dest_port": 445,
+          "protocol": "TCP",
+          "is_control": false
+        }
+      ],
+      "known_macs": [
+        "de:ad:00:00:06:00"
+      ]
+    },
+    {
+      "id": "lateral-1",
+      "label": "lateral_movement",
+      "description": "one host reaches several internal hosts on admin ports",
+      "events": [
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:06:01",
+          "source_ip": "10.143.77.211",
+          "dest_ip": "10.143.77.10",
+          "dest_port": 445,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:06:01",
+          "source_ip": "10.143.77.211",
+          "dest_ip": "10.143.77.11",
+          "dest_port": 445,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:06:01",
+          "source_ip": "10.143.77.211",
+          "dest_ip": "10.143.77.12",
+          "dest_port": 445,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "de:ad:00:00:06:01",
+          "source_ip": "10.143.77.211",
+          "dest_ip": "10.143.77.13",
+          "dest_port": 445,
+          "protocol": "TCP",
+          "is_control": false
+        }
+      ],
+      "known_macs": [
+        "de:ad:00:00:06:01"
+      ]
+    },
+    {
+      "id": "benign-browsing",
+      "label": "benign",
+      "description": "normal web browsing (few ports, few hosts)",
+      "events": [
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "93.184.216.34",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "93.184.216.34",
+          "dest_port": 80,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "140.82.112.3",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        }
+      ],
+      "known_macs": [
+        "aa:bb:cc:00:00:aa"
+      ]
+    },
+    {
+      "id": "benign-fileshare",
+      "label": "benign",
+      "description": "single SMB connection to one file server",
+      "events": [
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.5",
+          "dest_port": 445,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.5",
+          "dest_port": 445,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.5",
+          "dest_port": 445,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.5",
+          "dest_port": 445,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.5",
+          "dest_port": 445,
+          "protocol": "TCP",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.5",
+          "dest_port": 445,
+          "protocol": "TCP",
+          "is_control": false
+        }
+      ],
+      "known_macs": [
+        "aa:bb:cc:00:00:aa"
+      ]
+    },
+    {
+      "id": "benign-dns",
+      "label": "benign",
+      "description": "ordinary short DNS lookups to varied domains",
+      "events": [
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "google.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "github.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "cloudflare.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "wikipedia.org",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "python.org",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "example.net",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "cdn.jsdelivr.net",
+          "qtype": "A"
+        }
+      ],
+      "known_macs": [
+        "aa:bb:cc:00:00:aa"
+      ]
+    },
+    {
+      "id": "benign-ptr-burst",
+      "label": "benign",
+      "description": "ip6.arpa reverse-DNS burst (long qnames, legitimate)",
+      "events": [
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "0.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "1.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "2.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "3.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "4.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "5.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "6.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "7.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "8.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "9.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "10.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "11.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "12.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "13.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "14.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "15.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "16.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "17.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "18.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "19.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "20.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "21.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "22.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "23.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "24.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "25.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "26.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "27.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "28.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "29.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.b.ip6.arpa",
+          "qtype": "A"
+        }
+      ],
+      "known_macs": [
+        "aa:bb:cc:00:00:aa"
+      ]
+    },
+    {
+      "id": "benign-jittery",
+      "label": "benign",
+      "description": "irregular periodic traffic (high jitter, not a beacon)",
+      "events": [
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.200",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.200",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.200",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.200",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.200",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.200",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.200",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.200",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.200",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.200",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.200",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "203.0.113.200",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        }
+      ],
+      "known_macs": [
+        "aa:bb:cc:00:00:aa"
+      ]
+    },
+    {
+      "id": "benign-mixed",
+      "label": "benign",
+      "description": "known device with mixed normal traffic",
+      "events": [
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "1.1.1.1",
+          "dest_port": 443,
+          "protocol": "HTTPS",
+          "is_control": false
+        },
+        {
+          "kind": "dns",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "qname": "news.example.com",
+          "qtype": "A"
+        },
+        {
+          "kind": "flow",
+          "source_mac": "aa:bb:cc:00:00:aa",
+          "source_ip": "10.143.77.50",
+          "dest_ip": "10.143.77.1",
+          "dest_port": 53,
+          "protocol": "UDP",
+          "is_control": false
+        }
+      ],
+      "known_macs": [
+        "aa:bb:cc:00:00:aa"
+      ]
+    }
+  ]
+}
