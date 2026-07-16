@@ -500,8 +500,11 @@ def _clear_stale_active_mode_devices(mode_name: str, max_age_seconds: int) -> in
                     (mode_name, f"-{int(max_age_seconds)} seconds"),
                 )
                 cleared = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
-                if cleared:
-                    conn.commit()
+                # Commit even when nothing matched: the UPDATE opened a write
+                # transaction regardless, and returning the connection to the
+                # pool with it open holds the write lock until the pool's
+                # safety net rolls it back.
+                conn.commit()
                 return cleared
         except sqlite3.OperationalError as exc:
             msg = str(exc).lower()

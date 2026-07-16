@@ -8,6 +8,7 @@ Covers hotspot/public discovery upsert behaviors:
 - stale IP refresh when fresher ARP data arrives
 """
 
+import logging
 import os
 import sqlite3
 import sys
@@ -272,6 +273,33 @@ class TestDiscoveryManagerUpserts:
 
         assert stale is None
         assert fresh == "hotspot"
+
+    def test_clear_stale_active_mode_devices_commits_when_nothing_stale(
+        self, initialized_db, caplog
+    ):
+        """The UPDATE opens a write transaction even when it matches no rows,
+        so the connection must not go back to the pool still holding it (the
+        pool would roll it back, but only after the write lock has been held
+        across the handoff — once per discovery cycle)."""
+        with get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO devices (
+                    mac_address, ip_address, ipv4_address, detected_mode, active_mode,
+                    first_seen, last_seen
+                )
+                VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                """,
+                ("AA:BB:CC:DD:EE:74", "192.168.50.74", "192.168.50.74", "hotspot", "hotspot"),
+            )
+            conn.commit()
+
+        with caplog.at_level(logging.WARNING, logger="database.connection"):
+            assert _clear_stale_active_mode_devices("hotspot", 60) == 0
+
+        assert not [
+            r for r in caplog.records if "open transaction" in r.getMessage()
+        ], "connection was returned to the pool with an open write transaction"
 
     def test_clear_stale_active_mode_devices_retries_when_locked(self, initialized_db, monkeypatch):
         attempts = {"count": 0, "commits": 0, "sleeps": []}
