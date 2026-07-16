@@ -38,7 +38,7 @@ Goal: trustworthy telemetry + an event stream every AI feature can subscribe to.
 - [x] **P0.4** Anomaly-detector feature enrichment fixed — per-minute-bucket features (single `GROUP BY` query) instead of one aggregate copied to every training row; regression tests in `tests/test_anomaly_detector.py::TestEnrichmentPerBucket`
 - [x] **P0.5** In-process **event bus** (`intelligence/event_bus.py`): bounded, drop-oldest, never blocks the capture path; publishers wired in `DatabaseWriter` (`packet.batch`) and mode transitions (`mode.changed`); `device.seen` reserved for Phase 1
 - [x] **P0.6** **Flow telemetry**: migration 010 adds `flows` + `dns_queries`; `intelligence/flow_normalizer.py` consumes `packet.batch` events into flow records (idle/max-age flush, self-contained 72h retention); DNS query names captured in `PacketData.extra` and persisted; `flow.completed` / `dns.query` published on the bus
-- [x] **P0.7** Chart.js 4.4.0 vendored at `frontend/vendor/` (SRI-verified byte-identical to the CDN copy); CSP tightened to `script-src 'self'`
+- [x] **P0.7** Chart.js 4.4.0 vendored at `frontend/vendor/` (SRI-verified byte-identical to the CDN copy); CSP is now **fully self-contained — every directive is `'self'`, no external host at all**. (Verification on 2026-07-16 found this had been overclaimed: `style-src`/`font-src` still allowed the Google Fonts hosts. Nothing used them — the UI is system-font-only — but two `preconnect` hints in `index.html` still opened DNS/TLS connections to Google on every page load. Both removed.)
 - [x] **P0.8** Test suite green after all of the above (751 passed, 0 failed — includes 27 new tests for enrichment, event bus, and flow normalizer)
 
 **Phase 0 complete (2026-07-14).** Next: Phase 1 — twin builder subscribing to
@@ -184,6 +184,30 @@ regression-tested — none were reachable with the scripted runtime):
 of weights stay paged out and generation slows ~2.5x (67.4s vs 26.8s on the
 same question, same 3 steps). `llama3.2:3b` fits in RAM and is the better
 local-first default; `NETWATCH_LLM_MODEL` / `NETWATCH_LLM_TIMEOUT` tune both.
+
+**Optimised for the 3B default (2026-07-16).** Its measured failure modes
+drove: pre-converted `human`/`summary` fields in tool results (it converted
+raw bytes to "548.7 MB" — arithmetic it gets wrong, so it now quotes rather
+than computes); a tool-call budget that no longer charges protocol
+corrections (2 of 8 questions had exhausted it before retrieving anything);
+forcing an answer from retrieved data on budget exhaustion; and repairing
+the near-miss `{"action": "<tool name>"}` deviation it reliably emits (which
+had caused 14 identical malformed calls, 0 tools, truncation). Measured
+effect: citation validity 0.750 -> **1.000**, claim support 0.812 ->
+**0.929**, hallucination rate 0.286 -> **0.053**, ablation delta +0.125 ->
+**+0.286** (ungrounded hallucinates 2/2 facts; grounded 0/24).
+
+**Full verification pass (2026-07-16).** Every roadmap claim checked against
+the codebase and the running app, not the checkboxes: all artifacts present;
+red-team demo 6/6 named threats with evidence; detector eval macro-F1 1.000 /
+benign FP-rate 0.000; P0.3 auth fail-closed and P0.4 enrichment regression
+tests green; all AI-first endpoints + frontend assets 200 on the live app;
+live capture 989 packets / 0 dropped, firing a real `rogue_device` threat ->
+alert -> incident. Live `/ask`: "19 open security incidents", independently
+confirmed against `/api/incidents` (19). Two real defects were found and
+fixed — the P0.7 CSP overclaim above, and a test-isolation bug where the
+seeder tests read host subnet state that other test modules mutate (they
+passed alone, failed in the full suite; now pinned via a hermetic fixture).
 
 ---
 
