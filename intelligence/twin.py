@@ -65,6 +65,17 @@ SNAPSHOT_MAX_EDGES = 500
 RECENT_DNS_PER_DEVICE = 20
 NODE_STALE_HOURS = 24
 
+# How recently a device/external node must have been seen to appear in the
+# *live* topology snapshot and its counts. Node retention (NODE_STALE_HOURS)
+# is a memory bound; this is the "is it on the network right now" window, so
+# a client that disconnects drops off the map within minutes rather than
+# lingering for a day. self/gateway are structural and never filtered out.
+try:
+    from config import TWIN_ACTIVE_DEVICE_SECONDS as _ACTIVE_SECS
+    TWIN_ACTIVE_SECONDS = float(_ACTIVE_SECS)
+except (ImportError, ValueError, TypeError):
+    TWIN_ACTIVE_SECONDS = 300.0
+
 
 def _norm_mac(mac: Optional[str]) -> str:
     return (mac or "").lower().replace("-", ":").strip()
@@ -446,31 +457,62 @@ class TwinBuilder:
         return removed
 
     def snapshot(self, max_edges: int = SNAPSHOT_MAX_EDGES) -> dict:
-        """Thread-safe JSON-ready view of the twin (size-capped)."""
+        """Thread-safe JSON-ready view of the twin (size-capped).
+
+        Only *live* nodes are returned: self/gateway are always present
+        (structural), while device/external nodes must have been seen within
+        ``TWIN_ACTIVE_SECONDS`` — so a client that left the network drops off
+        the map (and the counts) promptly instead of lingering for hours.
+        """
         with self._lock:
+            active_cutoff = time.time() - TWIN_ACTIVE_SECONDS
+
+            def _is_live(node) -> bool:
+                if node.node_type in ("self", "gateway"):
+                    return True
+                return node.last_seen >= active_cutoff
+
+            live_ids = {
+                nid for nid, n in self._nodes.items() if _is_live(n)
+            }
+            # An edge is live only if both endpoints are live, so we never
+            # draw a line to a node that has aged out of the view. The count
+            # is over all live edges; the drawn list is additionally capped.
+            live_edges = [
+                e for e in self._edges.values()
+                if e.source in live_ids and e.target in live_ids
+            ]
             edges = sorted(
-                self._edges.values(), key=lambda e: e.bytes, reverse=True,
+                live_edges, key=lambda e: e.bytes, reverse=True,
             )[:max_edges]
             keep_ids = {e.source for e in edges} | {e.target for e in edges}
-            # Always include local devices even if edge-less (just seeded)
             nodes = [
                 n.to_dict() for n in self._nodes.values()
-                if n.node_id in keep_ids or n.node_type in ("device", "self", "gateway")
+                if n.node_id in live_ids and (
+                    n.node_id in keep_ids
+                    or n.node_type in ("device", "self", "gateway")
+                )
             ]
+
+            # Counts describe the *live* network. "self" is the capture host,
+            # not a client — it is excluded from device_count so this number
+            # agrees with the dashboard's active-device count.
+            device_count = sum(
+                1 for n in self._nodes.values()
+                if n.node_type == "device" and n.last_seen >= active_cutoff
+            )
+            external_count = sum(
+                1 for n in self._nodes.values()
+                if n.node_type == "external" and n.last_seen >= active_cutoff
+            )
             return {
                 "generated_at": time.time(),
                 "mode": self._mode,
                 "stats": {
                     "node_count": len(self._nodes),
-                    "edge_count": len(self._edges),
-                    "device_count": sum(
-                        1 for n in self._nodes.values()
-                        if n.node_type in ("device", "self")
-                    ),
-                    "external_count": sum(
-                        1 for n in self._nodes.values()
-                        if n.node_type == "external"
-                    ),
+                    "edge_count": len(live_edges),
+                    "device_count": device_count,
+                    "external_count": external_count,
                     "events_consumed": self.events_consumed,
                 },
                 "mode_timeline": list(self._mode_timeline)[-10:],

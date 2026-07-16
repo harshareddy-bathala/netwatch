@@ -190,6 +190,52 @@ class TestMaintenance:
         assert snap["stats"]["edge_count"] == 60
 
 
+class TestLiveSnapshot:
+    """device_count reflects live client devices only — matching the
+    dashboard's active-device count (the '2 vs 1' report)."""
+
+    def test_self_not_counted_as_device(self):
+        # Host is both self and gateway (hotspot: host IS the gateway) with
+        # one real client. Only the client should count as a device.
+        twin = _twin(our_mac=LAPTOP, our_ip="192.168.1.1",
+                     gateway_mac=LAPTOP, gateway_ip="192.168.1.1")
+        twin.ingest_packets([
+            _pkt(src_mac=PHONE, dst_mac=LAPTOP,
+                 src_ip="192.168.1.11", dst_ip="8.8.8.8", direction="upload"),
+        ])
+        snap = twin.snapshot()
+        types = {n["id"]: n["type"] for n in snap["nodes"]}
+        assert types[f"mac:{LAPTOP}"] == "self"
+        assert types[f"mac:{PHONE}"] == "device"
+        assert snap["stats"]["device_count"] == 1
+
+    def test_stale_device_drops_off_live_snapshot(self):
+        import intelligence.twin as twin_mod
+        twin = _twin()
+        twin.ingest_packets([_pkt(src_mac=PHONE, src_ip="192.168.1.11")])
+        assert twin.snapshot()["stats"]["device_count"] == 1
+        # Age the client past the active window without deleting the node.
+        node = twin._nodes[f"mac:{PHONE}"]
+        node.last_seen = time.time() - (twin_mod.TWIN_ACTIVE_SECONDS + 60)
+        snap = twin.snapshot()
+        assert snap["stats"]["device_count"] == 0
+        assert f"mac:{PHONE}" not in {n["id"] for n in snap["nodes"]}
+        assert snap["edges"] == []
+
+    def test_self_and_gateway_always_present_even_if_idle(self):
+        import intelligence.twin as twin_mod
+        twin = _twin(our_mac=LAPTOP, our_ip="192.168.1.10",
+                     gateway_mac=GATEWAY, gateway_ip="192.168.1.1")
+        twin.ingest_packets([
+            _pkt(src_mac=LAPTOP, dst_mac=GATEWAY,
+                 src_ip="192.168.1.10", dst_ip="192.168.1.1"),
+        ])
+        for node in twin._nodes.values():
+            node.last_seen = time.time() - (twin_mod.TWIN_ACTIVE_SECONDS + 60)
+        types = {n["type"] for n in twin.snapshot()["nodes"]}
+        assert "self" in types and "gateway" in types
+
+
 class TestBusConsumption:
 
     def test_end_to_end_via_bus(self):
