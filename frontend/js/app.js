@@ -15,6 +15,7 @@ import DeviceList from './components/DeviceList.js';
 import AlertFeed from './components/AlertFeed.js';
 import TopologyView from './components/TopologyView.js';
 import IncidentsView from './components/IncidentsView.js';
+import ActivityView from './components/ActivityView.js';
 import AskView from './components/AskView.js';
 
 class App {
@@ -91,6 +92,9 @@ class App {
       })
       .on('/incidents', () => {
         loadView(IncidentsView, 'Incidents', '/incidents');
+      })
+      .on('/activity', () => {
+        loadView(ActivityView, 'Activity', '/activity');
       })
       .on('/ask', () => {
         loadView(AskView, 'Ask NetWatch', '/ask');

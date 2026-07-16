@@ -93,6 +93,8 @@ const api = {
     request(`/flows/recent?limit=${limit}${mac ? `&mac=${encodeURIComponent(mac)}` : ''}`),
   getRecentDns:       (limit=100, mac='') =>
     request(`/dns/recent?limit=${limit}${mac ? `&mac=${encodeURIComponent(mac)}` : ''}`),
+  getActivity:        (minutes=5, limit=300, mac='') =>
+    request(`/activity/recent?minutes=${minutes}&limit=${limit}${mac ? `&mac=${encodeURIComponent(mac)}` : ''}`),
   getBehaviorProfile: (mac)              =>
     request(`/behavior/profiles/${encodeURIComponent(mac)}`),
 

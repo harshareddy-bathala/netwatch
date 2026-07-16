@@ -150,6 +150,56 @@ def get_recent_dns_queries(limit: int = 100, since: Optional[str] = None,
         return []
 
 
+def get_recent_activity(minutes: int = 5, limit: int = 300,
+                        mac: Optional[str] = None) -> List[dict]:
+    """Recent DNS resolutions enriched with the client's friendly name.
+
+    Powers the live "Activity" feed: each row is one domain a client
+    looked up (a good proxy for the site/app it is using), joined to the
+    ``devices`` table so the UI can show "moto-g34-5G → instagram.com"
+    instead of a bare MAC. Newest first, within the last *minutes*.
+    """
+    # dns_queries timestamps are written in *local* time
+    # (packet_processor uses datetime.fromtimestamp), so the cutoff must be
+    # local too — using UTC here would offset the window by the local tz.
+    since = (datetime.now() - timedelta(minutes=max(1, minutes))).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    clauses = ["q.timestamp >= ?"]
+    params: list = [since]
+    if mac:
+        clauses.append("LOWER(q.source_mac) = LOWER(?)")
+        params.append(mac)
+    where = "WHERE " + " AND ".join(clauses)
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                SELECT
+                    q.timestamp                            AS timestamp,
+                    q.source_ip                            AS source_ip,
+                    q.source_mac                           AS source_mac,
+                    q.qname                                AS qname,
+                    q.qtype                                AS qtype,
+                    COALESCE(NULLIF(d.hostname, ''),
+                             NULLIF(d.device_name, ''))    AS device_name
+                FROM dns_queries q
+                LEFT JOIN devices d
+                    ON LOWER(d.mac_address) = LOWER(q.source_mac)
+                {where}
+                ORDER BY q.timestamp DESC
+                LIMIT ?
+                """,
+                (*params, int(limit)),
+            )
+            cols = [c[0] for c in cursor.description]
+            return [dict(zip(cols, row)) for row in cursor.fetchall()]
+    except sqlite3.Error as e:
+        logger.error("get_recent_activity error: %s", e)
+        return []
+
+
 def cleanup_old_flow_data(retention_hours: int = 72) -> dict:
     """Delete flow/DNS rows older than *retention_hours*.
 

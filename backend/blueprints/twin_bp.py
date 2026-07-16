@@ -20,7 +20,7 @@ from flask import Blueprint, jsonify, request
 
 from backend.helpers import handle_errors
 from database.queries.flow_queries import (
-    get_recent_flows, get_recent_dns_queries,
+    get_recent_flows, get_recent_dns_queries, get_recent_activity,
 )
 
 logger = logging.getLogger(__name__)
@@ -110,6 +110,17 @@ def get_dns_recent():
     mac = request.args.get('mac')
     since = request.args.get('since')
     return jsonify({'data': get_recent_dns_queries(limit=limit, since=since, mac=mac)})
+
+
+@twin_bp.route('/api/activity/recent', methods=['GET'])
+@handle_errors
+def get_activity_recent():
+    """Live per-client activity feed: recent DNS lookups (site/app usage)
+    enriched with each client's friendly name. Newest first."""
+    minutes = min(max(request.args.get('minutes', 5, type=int), 1), 1440)
+    limit = min(max(request.args.get('limit', 300, type=int), 1), 1000)
+    mac = request.args.get('mac')
+    return jsonify({'data': get_recent_activity(minutes=minutes, limit=limit, mac=mac)})
 
 
 @twin_bp.route('/api/behavior/profiles/<mac>', methods=['GET'])

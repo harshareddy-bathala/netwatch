@@ -100,6 +100,59 @@ class TestTelemetryEndpoints:
         resp = client.get('/api/flows/recent?limit=999999')
         assert resp.status_code == 200
 
+    def test_activity_enriches_with_device_name(self, client, db_connection):
+        from datetime import datetime
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        db_connection.execute("""
+            INSERT INTO devices (mac_address, ip_address, hostname, first_seen, last_seen)
+            VALUES ('aa:bb:cc:00:00:07', '192.168.137.70', 'moto-g34-5G',
+                    ?, ?)
+        """, (now, now))
+        db_connection.execute("""
+            INSERT INTO dns_queries (timestamp, source_ip, source_mac,
+                                     qname, qtype, protocol)
+            VALUES (?, '192.168.137.70', 'aa:bb:cc:00:00:07',
+                    'instagram.com', 1, 'DNS')
+        """, (now,))
+        db_connection.commit()
+        resp = client.get('/api/activity/recent')
+        assert resp.status_code == 200
+        rows = resp.get_json()['data']
+        match = [r for r in rows if r['qname'] == 'instagram.com']
+        assert match, "recent DNS lookup should appear in the activity feed"
+        assert match[0]['device_name'] == 'moto-g34-5G'
+
+    def test_activity_returns_unnamed_client(self, client, db_connection):
+        """A lookup from a device with no directory row still appears (the
+        client is simply shown by IP/MAC)."""
+        from datetime import datetime
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        db_connection.execute("""
+            INSERT INTO dns_queries (timestamp, source_ip, source_mac,
+                                     qname, qtype, protocol)
+            VALUES (?, '192.168.137.71', 'aa:bb:cc:00:00:08',
+                    'unknown-app.example', 1, 'DNS')
+        """, (now,))
+        db_connection.commit()
+        resp = client.get('/api/activity/recent')
+        assert resp.status_code == 200
+        rows = resp.get_json()['data']
+        match = [r for r in rows if r['qname'] == 'unknown-app.example']
+        assert match and match[0]['device_name'] is None
+
+    def test_activity_window_excludes_old(self, client, db_connection):
+        db_connection.execute("""
+            INSERT INTO dns_queries (timestamp, source_ip, source_mac,
+                                     qname, qtype, protocol)
+            VALUES ('2020-01-01 00:00:00', '192.168.137.72',
+                    'aa:bb:cc:00:00:09', 'ancient.example', 1, 'DNS')
+        """)
+        db_connection.commit()
+        resp = client.get('/api/activity/recent?minutes=5')
+        assert resp.status_code == 200
+        rows = resp.get_json()['data']
+        assert not any(r['qname'] == 'ancient.example' for r in rows)
+
 
 class TestBehaviorEndpoint:
 
