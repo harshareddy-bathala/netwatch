@@ -19,18 +19,25 @@ let _apiKey = localStorage.getItem('netwatch-api-key') || '';
 
 /* ── Core fetch ────────────────────────────────────── */
 
-async function request(endpoint, opts = {}, retries = MAX_RETRIES) {
+async function request(endpoint, opts = {}, retries) {
+  // Per-call overrides: `timeout` (ms) and `retries` let slow endpoints
+  // (e.g. LLM investigations that run tens of seconds) opt out of the
+  // short default budget without changing every other call.
+  const { timeout, retries: optRetries, ...fetchOpts } = opts;
+  const budget = timeout || TIMEOUT;
+  if (retries === undefined) retries = optRetries !== undefined ? optRetries : MAX_RETRIES;
+
   const url = BASE + endpoint;
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT);
+  const timer = setTimeout(() => ctrl.abort(), budget);
 
   // Inject X-API-Key header when configured
-  const headers = { ...HEADERS, ...opts.headers };
+  const headers = { ...HEADERS, ...fetchOpts.headers };
   if (_apiKey) headers['X-API-Key'] = _apiKey;
 
   try {
     const res = await fetch(url, {
-      ...opts,
+      ...fetchOpts,
       headers,
       signal: ctrl.signal,
     });
@@ -49,12 +56,21 @@ async function request(endpoint, opts = {}, retries = MAX_RETRIES) {
     return data;
   } catch (err) {
     clearTimeout(timer);
-    if (retries > 0) {
+    // Never auto-retry an aborted request: for a slow endpoint the retry
+    // just starts a second expensive run while the first may still be
+    // executing server-side (compounding load on a constrained host).
+    if (err.name !== 'AbortError' && retries > 0) {
       await sleep(RETRY_DELAY);
       return request(endpoint, opts, retries - 1);
     }
     console.error(`[api] ${endpoint}:`, err.message);
-    return { error: true, status: 0, message: err.message || 'Network error' };
+    const aborted = err.name === 'AbortError';
+    return {
+      error: true,
+      status: 0,
+      aborted,
+      message: aborted ? `Request timed out after ${Math.round(budget / 1000)}s` : (err.message || 'Network error'),
+    };
   }
 }
 
@@ -107,8 +123,12 @@ const api = {
   // Ask NetWatch — LLM investigations (Phase 3)
   getInvestigateStatus: ()        => request('/investigate/status'),
   getInvestigateTools:  ()        => request('/investigate/tools'),
+  // Investigations run a local LLM through a multi-step tool loop; on a
+  // modest host this legitimately takes tens of seconds. Give it a long
+  // budget and never auto-retry (a retry would launch a second run).
   investigate:          (question) => request('/investigate', {
       method: 'POST', body: JSON.stringify({ question }),
+      timeout: 240000, retries: 0,
   }),
 
   // Alerts

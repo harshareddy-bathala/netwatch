@@ -109,11 +109,22 @@ export default class AskView {
       const resp = await api.investigate(question);
       if (this._destroyed) return;
       thinking.remove();
-      const data = (resp && resp.data) || {};
-      if (data.available === false) {
-        this._appendNotice(data.reason || 'Investigations are unavailable.');
+      if (resp && resp.error) {
+        // Transport-level failure (timeout, server error) — say so plainly
+        // rather than rendering an empty bubble as "(no answer)".
+        this._appendNotice(
+          resp.aborted
+            ? 'The investigation is taking longer than expected and was stopped. ' +
+              'On a low-memory machine the local model can be slow — try a ' +
+              'simpler question, or a smaller/faster model.'
+            : (resp.message || 'Something went wrong reaching the investigator.'));
       } else {
-        this._appendAnswer(data);
+        const data = (resp && resp.data) || {};
+        if (data.available === false) {
+          this._appendNotice(data.reason || 'Investigations are unavailable.');
+        } else {
+          this._appendAnswer(data);
+        }
       }
     } catch (err) {
       thinking.remove();
