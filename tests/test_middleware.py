@@ -73,10 +73,15 @@ class TestCSPPolicy:
         assert 'cdn.jsdelivr.net' not in csp
         assert "script-src 'self';" in csp + ';'
 
-    def test_csp_allows_google_fonts(self, client):
+    def test_csp_is_fully_self_contained(self, client):
+        """NetWatch is offline-capable: the CSP must not permit ANY external
+        host. Fonts are system stacks, so the old Google Fonts allowances
+        granted network access that nothing used."""
         resp = client.get('/api/status')
         csp = resp.headers.get('Content-Security-Policy', '')
-        assert 'fonts.googleapis.com' in csp
+        assert 'fonts.googleapis.com' not in csp
+        assert 'fonts.gstatic.com' not in csp
+        assert 'http://' not in csp and 'https://' not in csp
 
 
 # ===================================================================

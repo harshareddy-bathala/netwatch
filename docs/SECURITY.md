@@ -92,17 +92,21 @@ NetWatch sets the following CSP header on every response:
 ```
 default-src 'self';
 script-src 'self';
-style-src 'self' https://fonts.googleapis.com;
+style-src 'self';
 img-src 'self' data:;
 connect-src 'self';
-font-src 'self' https://fonts.gstatic.com
+font-src 'self'
 ```
 
 - **No `unsafe-inline`** — all scripts and styles are external files.
 - **No CDN scripts** — Chart.js is vendored locally at
-  `frontend/vendor/chart.umd.min.js`, so the dashboard runs fully
-  offline. The only external hosts permitted are the optional Google
-  Fonts endpoints.
+  `frontend/vendor/chart.umd.min.js`, so the dashboard runs fully offline.
+- **No external hosts at all.** Every directive is `'self'`. The policy
+  previously allowed the Google Fonts endpoints, but the UI uses system
+  font stacks (`css/variables.css`) and loaded no webfont — the only
+  remnants were `preconnect` hints that opened DNS/TLS connections to
+  Google on every page load for no benefit. Both are gone: NetWatch is
+  offline-capable and contacts no third party.
 
 ---
 

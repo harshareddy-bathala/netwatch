@@ -343,6 +343,29 @@ class TestFailedInvestigationsExcluded:
         assert out["questions_asked"] == 1
 
 
+@pytest.fixture
+def pinned_subnet(monkeypatch):
+    """Pin subnet detection for both the seeder and the device-count query.
+
+    Both read the *host's* live subnet from module-global cached state
+    (`_cached_subnet`), which other test modules mutate — so these tests
+    passed alone and failed in the full suite (seeded into subnet A,
+    counted against subnet B, 0 devices). Pinning makes them hermetic and
+    order-independent instead of dependent on ambient network state.
+    """
+    cidr = "192.168.77.0/24"
+    import database.queries.network_filters as nf
+    from database.queries import device_queries as dq
+    from evaluation import network_seed as ns
+    monkeypatch.setattr(nf, "_detect_subnet_cidr", lambda: cidr, raising=False)
+    monkeypatch.setattr(dq, "_detect_subnet_cidr", lambda: cidr, raising=False)
+    monkeypatch.setattr(ns, "_subnet_prefix", lambda: "192.168.77.")
+    monkeypatch.setattr(nf, "_current_mode_name", None, raising=False)
+    dq._device_cache.clear()
+    yield cidr
+    dq._device_cache.clear()
+
+
 class TestNetworkSeed:
     """The seeded network is what makes claim_support measurable — an idle
     DB yields answers with no checkable facts in them."""
@@ -357,7 +380,7 @@ class TestNetworkSeed:
         assert a["traffic_rows"] == b["traffic_rows"]
         assert a["device_ips"] == b["device_ips"]
 
-    def test_seed_populates_metrics(self, initialized_db):
+    def test_seed_populates_metrics(self, initialized_db, pinned_subnet):
         from evaluation import network_seed as ns
         from intelligence.investigator_tools import run_tool
         ns.clear_seed()
@@ -378,7 +401,8 @@ class TestNetworkSeed:
         blob = json.dumps(run_tool("query_metrics", {}), default=str)
         assert len(fa.checkable_facts(blob)) > 5
 
-    def test_refresh_recent_revives_a_decayed_seed(self, initialized_db):
+    def test_refresh_recent_revives_a_decayed_seed(self, initialized_db,
+                                                   pinned_subnet):
         # The live window is 10s (bandwidth) / 5min (devices), so a seed
         # goes idle during a long batch. refresh_recent must restore it.
         from evaluation import network_seed as ns
