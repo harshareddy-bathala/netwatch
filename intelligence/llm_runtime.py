@@ -109,7 +109,11 @@ def get_runtime(model: Optional[str] = None) -> Optional[OllamaRuntime]:
     caller treats None as "LLM investigations are off" rather than an
     error.
     """
-    runtime = OllamaRuntime(model=model or "llama3")
+    try:
+        from config import LLM_TIMEOUT_SECONDS as _timeout
+    except ImportError:          # config not importable (standalone use)
+        _timeout = 180.0
+    runtime = OllamaRuntime(model=model or "llama3", timeout=_timeout)
     if runtime.is_available():
         return runtime
     logger.info("No local Ollama runtime reachable — LLM investigations "

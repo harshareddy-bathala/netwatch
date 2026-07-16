@@ -779,6 +779,11 @@ LLM_MODEL = os.getenv('NETWATCH_LLM_MODEL', 'llama3')
 # cost and stops a confused model from looping forever.
 LLM_MAX_STEPS = int(os.getenv('NETWATCH_LLM_MAX_STEPS', '5'))
 
+# Seconds to wait on one local generation. An 8B model on CPU takes ~10s
+# for a short turn, and grows with the transcript as tool results are fed
+# back — 60s timed out mid-investigation on real hardware.
+LLM_TIMEOUT_SECONDS = float(os.getenv('NETWATCH_LLM_TIMEOUT', '180'))
+
 # =============================================================================
 # PERFORMANCE TUNING — Prevents NetWatch from degrading network performance
 # =============================================================================

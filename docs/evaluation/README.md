@@ -76,6 +76,19 @@ discussion point for multi-label detection.
 
 ## 2. Citation-faithfulness evaluation
 
+**The seeded network** (`evaluation/network_seed.py`). The evaluation runs
+against a deterministic seeded network (7 devices, ~600 traffic rows, a
+realistic HTTPS/DNS/HTTP mix) rather than the live database. This is a
+methodological necessity, not decoration: against an **idle** database the
+investigator can only truthfully answer *"the network is not active, 0
+devices, 0 bandwidth"* — an answer with no checkable facts in it, which
+scores `claim_support = 1.0` for free. The first live run did exactly
+that, scoring a flattering **1.000 on 2 facts across 5 questions**. A
+populated network forces the model to commit to counts, rates and
+addresses that the metric can actually verify — and that an ungrounded
+model must invent. Devices are placed in the host's detected subnet
+because the active-device query filters to the current subnet.
+
 **Metric** (`evaluation/faithfulness.py`): consumes the investigator's
 structured result (`answer`, `tool_calls`, `citations`) and computes, per
 investigation:
@@ -87,6 +100,16 @@ investigation:
   IPs, MACs) that appear in the concatenated tool results. An unsupported
   number in the answer is a hallucination.
 
+**Reading claim_support honestly.** An answer with nothing checkable in it
+("the network looks fine") scores `claim_support = 1.0` by definition —
+there is no claim to contradict. A macro mean over mostly fact-free
+answers therefore looks perfect while measuring almost nothing. The report
+exposes this rather than hiding it: `answers_with_facts` / `total_facts`
+give the coverage, and **`hallucination_rate`** is micro-averaged *over
+facts* (`unsupported_facts / total_facts`, `null` when there were no
+facts). The micro rate is the discriminating number and the one to quote;
+the macro mean is kept for continuity.
+
 **Ablation** — the same questions answered by (a) the tool-grounded
 investigator vs (b) the same model with no tools, scored against the same
 retrieved facts. Grounding is expected to raise claim support.
@@ -96,6 +119,7 @@ retrieved facts. Grounding is expected to raise claim support.
 ```
 ollama pull llama3
 python scripts/eval_faithfulness.py --out docs/evaluation/faithfulness.json
+python scripts/eval_faithfulness.py --no-seed    # against the live DB as-is
 ```
 
 The metric itself is fully covered by `tests/test_evaluation.py` using the
@@ -103,6 +127,35 @@ deterministic scripted runtime, so the pipeline is verified without a
 model; the script produces the real numbers once `llama3` is pulled.
 NetWatch talks only to a local Ollama server — the evaluation is entirely
 offline.
+
+### What the live model exposed
+
+Running the harness against real llama3 (rather than the scripted runtime)
+surfaced four defects that model-free tests structurally could not:
+
+1. **Non-string answers.** llama3 answers a yes/no question with a JSON
+   *boolean* (`{"answer": true}`). Everything downstream assumed a string;
+   this crashed the metric and would have 500'd `/api/investigate`. Fixed
+   by coercing the answer at the investigator boundary.
+2. **Ungrounded answers with fabricated citations.** The first live run
+   scored **grounded rate 0.000, citation validity 0.200** — the model
+   answered at step 0 with no data and cited `list_incidents` (and even
+   the string `"status=open"`) without ever calling anything. The cause
+   was our own prompt ("prefer the fewest tool calls"). Rewording alone
+   did *not* fix it; grounding is now **enforced in the loop** — an
+   attempt to answer with no tool calls is rejected once and the model is
+   told to retrieve first. Grounded rate went 0.000 → 1.000.
+3. **Timeout too short.** 60s was insufficient for an 8B model on CPU once
+   tool results lengthen the transcript, killing investigations mid-run.
+   Now `LLM_TIMEOUT_SECONDS` (default 180).
+4. **A metric that flattered itself.** See "Reading claim_support
+   honestly" above — fixed with fact-coverage fields and a micro-averaged
+   hallucination rate.
+
+Finding (2) is the substantive one: it shows that *prompting* a small
+local model to be faithful is insufficient, and that the tool-calling
+loop must enforce retrieval structurally. That is a defensible result in
+its own right.
 
 ---
 

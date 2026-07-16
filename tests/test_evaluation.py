@@ -235,3 +235,153 @@ class TestBatchAndAblation:
                           reference_tool_calls_fn=lambda q: ref)
         assert out["ungrounded_mean_claim_support"] < 1.0  # 512 unsupported
         assert out["delta"] >= 0.0
+        # Micro-averaged: the ungrounded run hallucinated its only fact.
+        assert out["ungrounded_facts"]["hallucination_rate"] == 1.0
+        assert out["grounded_facts"]["hallucination_rate"] == 0.0
+
+
+class TestFactCoverage:
+    """mean_claim_support is 1.0 for answers with nothing checkable, so the
+    report must expose how much it actually measured."""
+
+    def _inv(self, answer):
+        from intelligence.investigator import Investigator
+        from intelligence.llm_runtime import ScriptedRuntime
+        return Investigator(ScriptedRuntime([
+            json.dumps({"action": "tool", "tool": "query_metrics",
+                        "params": {}}),
+            json.dumps({"action": "answer", "answer": answer,
+                        "citations": ["query_metrics"]}),
+        ]))
+
+    def test_factless_answer_flagged_as_uncovered(self, initialized_db):
+        # A fact-free answer scores claim_support 1.0 by default — the
+        # coverage fields must make that visible rather than let it pass
+        # as a perfect score.
+        report = fa.evaluate_batch(self._inv("The network looks fine."),
+                                   ["How is it?"])
+        assert report.mean_claim_support == 1.0
+        assert report.answers_with_facts == 0
+        assert report.total_facts == 0
+        assert report.hallucination_rate is None   # nothing measured
+
+    def test_fact_bearing_answer_counted(self, initialized_db):
+        report = fa.evaluate_batch(self._inv("There are 99999 devices."),
+                                   ["How many?"])
+        assert report.answers_with_facts == 1
+        assert report.total_facts == 1
+        assert report.unsupported_facts == 1       # 99999 not in tool result
+        assert report.hallucination_rate == 1.0
+
+
+class TestFailedInvestigationsExcluded:
+    """A run that never completed has an empty answer, hence no checkable
+    facts, hence a free claim_support of 1.0. Scoring it would let a
+    degraded run report as perfect — it must be excluded and surfaced."""
+
+    class _DeadInvestigator:
+        def investigate(self, question):
+            return {"available": False, "question": question,
+                    "reason": "Ollama request failed: timed out",
+                    "answer": "", "citations": [], "tool_calls": [],
+                    "steps": 0}
+
+    def test_failed_runs_are_not_scored(self, initialized_db):
+        report = fa.evaluate_batch(self._DeadInvestigator(), ["q1", "q2"])
+        assert report.n == 0                 # nothing scored
+        assert len(report.failed) == 2
+        assert "timed out" in report.failed[0]["reason"]
+        # The bug this guards: mean_claim_support must NOT be a proud 1.0.
+        assert report.mean_claim_support == 0.0
+
+    def test_mixed_batch_scores_only_successes(self, initialized_db):
+        from intelligence.investigator import Investigator
+        from intelligence.llm_runtime import ScriptedRuntime
+
+        class _Flaky:
+            def __init__(self):
+                self._n = 0
+                self._real = Investigator(ScriptedRuntime([
+                    json.dumps({"action": "tool", "tool": "query_metrics",
+                                "params": {}}),
+                    json.dumps({"action": "answer", "answer": "All good.",
+                                "citations": ["query_metrics"]}),
+                ]))
+
+            def investigate(self, question):
+                self._n += 1
+                if self._n == 1:
+                    return {"available": False, "question": question,
+                            "reason": "timed out", "answer": "",
+                            "citations": [], "tool_calls": [], "steps": 0}
+                return self._real.investigate(question)
+
+        report = fa.evaluate_batch(_Flaky(), ["dies", "works"])
+        assert report.n == 1
+        assert len(report.failed) == 1
+        assert report.per_question[0]["question"] == "works"
+
+    def test_ablation_skips_failed_grounded_runs(self, initialized_db):
+        out = fa.ablation(self._DeadInvestigator(), lambda q: "42 devices.",
+                          ["q1"])
+        assert out["n"] == 0
+        assert len(out["failed"]) == 1
+        assert out["questions_asked"] == 1
+
+
+class TestNetworkSeed:
+    """The seeded network is what makes claim_support measurable — an idle
+    DB yields answers with no checkable facts in them."""
+
+    def test_seed_is_deterministic(self, initialized_db):
+        from evaluation import network_seed as ns
+        ns.clear_seed()
+        a = ns.seed_network(minutes=5)
+        ns.clear_seed()
+        b = ns.seed_network(minutes=5)
+        assert a["devices"] == b["devices"]
+        assert a["traffic_rows"] == b["traffic_rows"]
+        assert a["device_ips"] == b["device_ips"]
+
+    def test_seed_populates_metrics(self, initialized_db):
+        from evaluation import network_seed as ns
+        from intelligence.investigator_tools import run_tool
+        ns.clear_seed()
+        info = ns.seed_network(minutes=10)
+        metrics = run_tool("query_metrics", {})
+        # The whole point: the tool now returns facts to be checked.
+        assert metrics["current"]["active_devices"] == info["devices"]
+        assert metrics["current"]["bandwidth_mbps"] > 0
+        assert metrics["top_protocols"]
+
+    def test_seeded_answer_has_checkable_facts(self, initialized_db):
+        # An idle DB produced 2 facts across 5 questions; a seeded one must
+        # give the metric something to verify.
+        from evaluation import network_seed as ns
+        from intelligence.investigator_tools import run_tool
+        ns.clear_seed()
+        ns.seed_network(minutes=10)
+        blob = json.dumps(run_tool("query_metrics", {}), default=str)
+        assert len(fa.checkable_facts(blob)) > 5
+
+    def test_clear_seed_removes_only_its_own_rows(self, initialized_db):
+        from evaluation import network_seed as ns
+        from database.connection import get_connection
+        ns.clear_seed()
+        with get_connection() as c:
+            cur = c.cursor()
+            cur.execute("INSERT INTO traffic_summary (timestamp, source_ip, "
+                        "dest_ip, protocol, bytes_transferred, session_id) "
+                        "VALUES (datetime('now'), '10.0.0.1', '10.0.0.2', "
+                        "'TCP', 100, 'NOT-EVAL')")
+            c.commit()
+        ns.seed_network(minutes=3)
+        ns.clear_seed()
+        with get_connection() as c:
+            cur = c.cursor()
+            cur.execute("SELECT COUNT(*) AS n FROM traffic_summary "
+                        "WHERE session_id = 'NOT-EVAL'")
+            assert cur.fetchone()["n"] == 1        # untouched
+            cur.execute("SELECT COUNT(*) AS n FROM traffic_summary "
+                        "WHERE session_id = ?", (ns.SESSION_TAG,))
+            assert cur.fetchone()["n"] == 0        # all seed rows gone

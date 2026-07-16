@@ -1,0 +1,138 @@
+{
+  "model": "llama3",
+  "faithfulness": {
+    "n": 5,
+    "mean_citation_validity": 1.0,
+    "grounded_rate": 1.0,
+    "mean_claim_support": 1.0,
+    "answers_with_facts": 1,
+    "total_facts": 2,
+    "unsupported_facts": 0,
+    "hallucination_rate": 0.0,
+    "per_question": [
+      {
+        "question": "Are there any open incidents right now?",
+        "answer": "According to the query_metrics tool, there are currently no active devices and zero bandwidth usage.",
+        "citation_validity": 1.0,
+        "grounded": true,
+        "claim_support": 1.0,
+        "checkable_facts": 0,
+        "unsupported_facts": []
+      },
+      {
+        "question": "How much bandwidth is the network using and how many devices are active?",
+        "answer": "According to the current network metrics, the network is currently utilizing approximately 0 Mbps of bandwidth. Additionally, there are 0 active devices on the network.",
+        "citation_validity": 1.0,
+        "grounded": true,
+        "claim_support": 1.0,
+        "checkable_facts": 2,
+        "unsupported_facts": []
+      },
+      {
+        "question": "Which devices are talking to external hosts?",
+        "answer": "According to the current network metrics, there are no devices currently communicating with external hosts.",
+        "citation_validity": 1.0,
+        "grounded": true,
+        "claim_support": 1.0,
+        "checkable_facts": 0,
+        "unsupported_facts": []
+      },
+      {
+        "question": "Is anything suspicious happening on the network?",
+        "answer": "The network appears to be idle at the moment, with no active devices and zero bandwidth usage.",
+        "citation_validity": 1.0,
+        "grounded": true,
+        "claim_support": 1.0,
+        "checkable_facts": 0,
+        "unsupported_facts": []
+      },
+      {
+        "question": "Summarise the current state of the network in one sentence.",
+        "answer": "The network is currently inactive with no active devices and a bandwidth utilization rate of zero.",
+        "citation_validity": 1.0,
+        "grounded": true,
+        "claim_support": 1.0,
+        "checkable_facts": 0,
+        "unsupported_facts": []
+      }
+    ]
+  },
+  "ablation": {
+    "n": 5,
+    "grounded_mean_claim_support": 1.0,
+    "ungrounded_mean_claim_support": 0.92,
+    "delta": 0.08,
+    "grounded_facts": {
+      "answers_with_facts": 1,
+      "total_facts": 2,
+      "unsupported_facts": 0,
+      "hallucination_rate": 0.0
+    },
+    "ungrounded_facts": {
+      "answers_with_facts": 1,
+      "total_facts": 5,
+      "unsupported_facts": 2,
+      "hallucination_rate": 0.4
+    },
+    "per_question": [
+      {
+        "question": "Are there any open incidents right now?",
+        "grounded_claim_support": 1.0,
+        "ungrounded_claim_support": 1.0,
+        "grounded_facts": 0,
+        "ungrounded_facts": 0,
+        "grounded_unsupported": [],
+        "ungrounded_unsupported": [],
+        "grounded_answer": "Based on the current network metrics, there are no active devices and no bandwidth usage.",
+        "ungrounded_answer": "As I'm currently monitoring the network, I can confirm that we do have an ongoing incident with a minor outage affecting some users on the east coast, but our team is actively working to resolve it and restore services as soon as possible."
+      },
+      {
+        "question": "How much bandwidth is the network using and how many devices are active?",
+        "grounded_claim_support": 1.0,
+        "ungrounded_claim_support": 0.6,
+        "grounded_facts": 2,
+        "ungrounded_facts": 5,
+        "grounded_unsupported": [],
+        "ungrounded_unsupported": [
+          "85",
+          "250"
+        ],
+        "grounded_answer": "According to our current metrics, the network is utilizing approximately 0 Mbps of bandwidth and there are currently 0 active devices on the network.",
+        "ungrounded_answer": "Based on my monitoring tools, I can see that the network is currently utilizing around 70% of its available bandwidth, with a peak utilization rate of 85% during the morning hours. As for device activity, I'm seeing around 250 devices connected to the network at any given time, with an average of 15-20 devices actively transmitting data simultaneously."
+      },
+      {
+        "question": "Which devices are talking to external hosts?",
+        "grounded_claim_support": 1.0,
+        "ungrounded_claim_support": 1.0,
+        "grounded_facts": 0,
+        "ungrounded_facts": 0,
+        "grounded_unsupported": [],
+        "ungrounded_unsupported": [],
+        "grounded_answer": "I couldn't reach a grounded answer within the tool budget for this question.",
+        "ungrounded_answer": "As a network assistant, I can tell you that routers and firewalls typically communicate with external hosts on behalf of internal devices, while servers like DNS, DHCP, and web servers also interact with external hosts directly. Additionally, devices like VPN concentrators and proxy servers may also initiate or respond to connections with external hosts."
+      },
+      {
+        "question": "Is anything suspicious happening on the network?",
+        "grounded_claim_support": 1.0,
+        "ungrounded_claim_support": 1.0,
+        "grounded_facts": 0,
+        "ungrounded_facts": 0,
+        "grounded_unsupported": [],
+        "ungrounded_unsupported": [],
+        "grounded_answer": "The network appears to be inactive or not fully configured. The query_metrics tool shows no bandwidth usage and zero active devices. Additionally, the query_graph tool indicates that the digital twin is not running.",
+        "ungrounded_answer": "I've been monitoring the network traffic, and I haven't seen any unusual patterns or spikes that would indicate malicious activity. However, I did notice a few devices experiencing connectivity issues earlier today, but it seems to have resolved itself now."
+      },
+      {
+        "question": "Summarise the current state of the network in one sentence.",
+        "grounded_claim_support": 1.0,
+        "ungrounded_claim_support": 1.0,
+        "grounded_facts": 0,
+        "ungrounded_facts": 0,
+        "grounded_unsupported": [],
+        "ungrounded_unsupported": [],
+        "grounded_answer": "The network is currently idle with no active devices and zero bandwidth usage.",
+        "ungrounded_answer": "The network is currently stable and performing well, with all devices and services functioning as expected and no reported issues or outages."
+      }
+    ]
+  }
+}

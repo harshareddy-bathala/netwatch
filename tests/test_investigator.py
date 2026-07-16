@@ -118,11 +118,41 @@ class TestInvestigationLoop:
         assert len(result["tool_calls"]) == 2
         assert set(result["citations"]) == {"list_incidents", "query_metrics"}
 
-    def test_answer_immediately(self, initialized_db):
-        runtime = ScriptedRuntime([_answer("42 devices.", [])])
+    def test_ungrounded_answer_is_nudged_then_accepted(self, initialized_db):
+        # Answering with no data gets pushed back once; a model that
+        # insists still gets through, with the rejection visible in the
+        # trace. (Real llama3 behaviour: it answers at step 0 otherwise.)
+        runtime = ScriptedRuntime([
+            _answer("42 devices.", []),
+            _answer("42 devices.", []),
+        ])
         result = Investigator(runtime).investigate("Count?")
-        assert result["steps"] == 1
-        assert result["tool_calls"] == []
+        assert result["answer"] == "42 devices."
+        assert result["steps"] == 2
+        assert any(t.get("error") == "ungrounded_answer_rejected"
+                   for t in result["tool_calls"])
+
+    def test_nudge_makes_model_call_a_tool(self, initialized_db):
+        # The pushback's purpose: the model retries with a real tool call.
+        runtime = ScriptedRuntime([
+            _answer("Everything is fine.", ["query_metrics"]),
+            _tool("query_metrics"),
+            _answer("Bandwidth is low.", ["query_metrics"]),
+        ])
+        result = Investigator(runtime).investigate("How's the network?")
+        assert result["answer"] == "Bandwidth is low."
+        assert [t.get("tool") for t in result["tool_calls"]
+                if t.get("tool")] == ["query_metrics"]
+
+    def test_grounded_answer_is_not_nudged(self, initialized_db):
+        runtime = ScriptedRuntime([
+            _tool("query_metrics"),
+            _answer("All good.", ["query_metrics"]),
+        ])
+        result = Investigator(runtime).investigate("q")
+        assert result["steps"] == 2
+        assert not any(t.get("error") == "ungrounded_answer_rejected"
+                       for t in result["tool_calls"])
 
     def test_unknown_tool_fed_back(self, initialized_db):
         runtime = ScriptedRuntime([
@@ -137,7 +167,8 @@ class TestInvestigationLoop:
     def test_unparseable_then_retry(self, initialized_db):
         runtime = ScriptedRuntime([
             "I think the network is fine, no JSON here",
-            _answer("Fine.", []),
+            _tool("query_metrics"),
+            _answer("Fine.", ["query_metrics"]),
         ])
         result = Investigator(runtime).investigate("q")
         assert result["answer"] == "Fine."
@@ -145,6 +176,7 @@ class TestInvestigationLoop:
 
     def test_json_in_prose_is_extracted(self, initialized_db):
         runtime = ScriptedRuntime([
+            _tool("query_metrics"),
             'Sure! ```json\n{"action":"answer","answer":"hi","citations":[]}\n```',
         ])
         result = Investigator(runtime).investigate("q")
@@ -152,6 +184,7 @@ class TestInvestigationLoop:
 
     def test_invalid_citations_dropped(self, initialized_db):
         runtime = ScriptedRuntime([
+            _tool("query_metrics"),
             _answer("x", ["query_metrics", "made_up_source", 123]),
         ])
         result = Investigator(runtime).investigate("q")
@@ -165,6 +198,35 @@ class TestInvestigationLoop:
         assert result["truncated"] is True
         assert result["steps"] == 3
         assert len(result["tool_calls"]) == 3
+
+    def test_bool_answer_coerced_to_string(self, initialized_db):
+        # Real llama3 behaviour: a yes/no question can come back as a JSON
+        # boolean in the answer field. Downstream (API, frontend, metric)
+        # requires a string.
+        runtime = ScriptedRuntime([
+            _tool("list_incidents"),
+            '{"action":"answer","answer":true,"citations":[]}',
+        ])
+        result = Investigator(runtime).investigate("Any incidents?")
+        assert result["answer"] == "yes"
+        assert isinstance(result["answer"], str)
+
+    def test_numeric_answer_coerced_to_string(self, initialized_db):
+        runtime = ScriptedRuntime([
+            _tool("query_metrics"),
+            '{"action":"answer","answer":42,"citations":[]}',
+        ])
+        result = Investigator(runtime).investigate("How many devices?")
+        assert result["answer"] == "42"
+
+    def test_object_answer_serialised(self, initialized_db):
+        runtime = ScriptedRuntime([
+            _tool("query_metrics"),
+            '{"action":"answer","answer":{"devices":3},"citations":[]}',
+        ])
+        result = Investigator(runtime).investigate("q")
+        assert isinstance(result["answer"], str)
+        assert "devices" in result["answer"]
 
     def test_tool_exception_does_not_crash(self, initialized_db, monkeypatch):
         def boom(params):

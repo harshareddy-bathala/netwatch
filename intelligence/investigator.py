@@ -48,9 +48,16 @@ Rules:
 - To use a tool: {{"action": "tool", "tool": "<name>", "params": {{...}}}}
 - To answer: {{"action": "answer", "answer": "<text>", "citations": \
 ["<tool name you used>", ...]}}
+- You start with NO data about this network. You MUST call at least one \
+tool and read its result before you may answer. Answering before calling \
+a tool is always wrong, even for a yes/no question.
+- "answer" must be a STRING of prose — never a bare true/false or number.
+- "citations" must contain ONLY tool names you actually called, exactly as \
+spelled above. Never cite a tool you did not call, and never put \
+parameters in citations.
 - Base every factual claim on tool results you actually received. If the \
 tools do not contain the answer, say so plainly.
-- Prefer the fewest tool calls needed. When you have enough, answer.
+- Once you have the data you need, answer. Do not call tools needlessly.
 """
 
 
@@ -69,6 +76,7 @@ class Investigator:
             {"role": "user", "content": question},
         ]
         trace: List[Dict[str, Any]] = []
+        nudged_to_ground = False
 
         for step in range(self._max_steps):
             try:
@@ -104,10 +112,33 @@ class Investigator:
                 continue
 
             if action.get("action") == "answer":
+                # Grounding is enforced here, not just requested in the
+                # prompt: small instruct models will happily answer a
+                # network question at step 0 — citing tools they never
+                # called. Push back once; if the model still insists it
+                # has nothing to look up, let the answer through (some
+                # questions genuinely need no data) and let the trace show
+                # it was ungrounded.
+                if not nudged_to_ground and not self._called_a_tool(trace):
+                    nudged_to_ground = True
+                    trace.append({"step": step,
+                                  "error": "ungrounded_answer_rejected",
+                                  "raw": raw[:500]})
+                    messages.append({"role": "assistant", "content": raw})
+                    messages.append({
+                        "role": "user",
+                        "content": "You have not called any tool yet, so you "
+                                   "have no data about this network and "
+                                   "cannot answer or cite anything. Call a "
+                                   "tool now: respond with a single JSON "
+                                   'object {"action": "tool", "tool": '
+                                   '"<name>", "params": {}}.',
+                    })
+                    continue
                 return {
                     "available": True,
                     "question": question,
-                    "answer": action.get("answer", ""),
+                    "answer": self._coerce_answer(action.get("answer")),
                     "citations": self._valid_citations(action.get("citations")),
                     "tool_calls": trace,
                     "steps": step + 1,
@@ -182,6 +213,31 @@ class Investigator:
             return obj if isinstance(obj, dict) else None
         except json.JSONDecodeError:
             return None
+
+    @staticmethod
+    def _called_a_tool(trace: List[Dict[str, Any]]) -> bool:
+        """True once the investigation has actually run a tool."""
+        return any(entry.get("tool") for entry in trace)
+
+    @staticmethod
+    def _coerce_answer(answer: Any) -> str:
+        """The answer contract is a string. Instruct models occasionally
+        emit a bool/number/object for the ``answer`` field — coerce it so
+        no downstream consumer (API, frontend, faithfulness metric) sees a
+        non-string."""
+        if answer is None:
+            return ""
+        if isinstance(answer, str):
+            return answer
+        if isinstance(answer, bool):
+            return "yes" if answer else "no"
+        if isinstance(answer, (int, float)):
+            return str(answer)
+        # dict/list — serialise so the text is still inspectable.
+        try:
+            return json.dumps(answer, default=str)
+        except (TypeError, ValueError):
+            return str(answer)
 
     @staticmethod
     def _valid_citations(citations: Any) -> List[str]:

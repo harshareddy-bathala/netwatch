@@ -47,6 +47,8 @@ def checkable_facts(text: str) -> List[str]:
     """
     if not text:
         return []
+    if not isinstance(text, str):
+        text = str(text)
     facts: List[str] = []
     remaining = text
     for pattern in (_MAC, _IPV4):
@@ -106,20 +108,60 @@ def evaluate_faithfulness(result: Dict[str, Any]) -> Faithfulness:
     )
 
 
+def _fact_totals(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Micro-averaged fact statistics for a batch of scored answers.
+
+    ``claim_support`` is 1.0 by definition for an answer with nothing
+    checkable in it, so a macro mean over mostly fact-free answers looks
+    perfect while measuring almost nothing.  These totals expose how much
+    the metric actually bit on: ``hallucination_rate`` is computed over
+    *facts*, not answers, and is ``None`` when there were no facts at all.
+    """
+    total = sum(r["checkable_facts"] for r in rows)
+    unsupported = sum(len(r["unsupported_facts"]) for r in rows)
+    return {
+        "answers_with_facts": sum(1 for r in rows if r["checkable_facts"]),
+        "total_facts": total,
+        "unsupported_facts": unsupported,
+        "hallucination_rate": round(unsupported / total, 4) if total else None,
+    }
+
+
 @dataclass
 class FaithfulnessReport:
     n: int
     mean_citation_validity: float
     grounded_rate: float
     mean_claim_support: float
+    # Coverage of the claim-support measurement — see _fact_totals.
+    answers_with_facts: int
+    total_facts: int
+    unsupported_facts: int
+    hallucination_rate: Optional[float]
+    # Investigations that never completed — excluded from every score
+    # above, reported so a degraded run can't masquerade as a clean one.
+    failed: List[Dict[str, Any]]
     per_question: List[Dict[str, Any]]
 
 
 def evaluate_batch(investigator, questions: List[str]) -> FaithfulnessReport:
-    """Run *questions* through *investigator* and aggregate faithfulness."""
+    """Run *questions* through *investigator* and aggregate faithfulness.
+
+    Investigations that never completed (the runtime timed out or died —
+    ``available: False``) are **excluded from the scores** and counted in
+    ``failed`` instead.  Scoring them would be actively misleading: a
+    failed run has an empty answer, so it has no checkable facts, so it
+    would earn ``claim_support = 1.0`` — a perfect score for an
+    investigation that never happened.
+    """
     per: List[Dict[str, Any]] = []
+    failed: List[Dict[str, Any]] = []
     for q in questions:
         result = investigator.investigate(q)
+        if result.get("available") is False:
+            failed.append({"question": q,
+                           "reason": result.get("reason", "unavailable")})
+            continue
         f = evaluate_faithfulness(result)
         per.append({
             "question": q,
@@ -130,11 +172,17 @@ def evaluate_batch(investigator, questions: List[str]) -> FaithfulnessReport:
             "checkable_facts": f.checkable_facts,
             "unsupported_facts": f.unsupported_facts,
         })
+    totals = _fact_totals(per)
     return FaithfulnessReport(
         n=len(per),
         mean_citation_validity=round(mean(p["citation_validity"] for p in per), 4) if per else 0.0,
         grounded_rate=round(mean(1.0 if p["grounded"] else 0.0 for p in per), 4) if per else 0.0,
         mean_claim_support=round(mean(p["claim_support"] for p in per), 4) if per else 0.0,
+        answers_with_facts=totals["answers_with_facts"],
+        total_facts=totals["total_facts"],
+        unsupported_facts=totals["unsupported_facts"],
+        hallucination_rate=totals["hallucination_rate"],
+        failed=failed,
         per_question=per,
     )
 
@@ -162,10 +210,20 @@ def ablation(grounded_investigator, ungrounded_answer_fn,
     """
     grounded_scores: List[float] = []
     ungrounded_scores: List[float] = []
+    g_rows: List[Dict[str, Any]] = []
+    u_rows: List[Dict[str, Any]] = []
     rows: List[Dict[str, Any]] = []
+
+    failed: List[Dict[str, Any]] = []
 
     for q in questions:
         g_result = grounded_investigator.investigate(q)
+        if g_result.get("available") is False:
+            # Same rule as evaluate_batch: an investigation that never ran
+            # must not be scored (it would win on an empty answer).
+            failed.append({"question": q,
+                           "reason": g_result.get("reason", "unavailable")})
+            continue
         g_faith = evaluate_faithfulness(g_result)
         grounded_scores.append(g_faith.claim_support)
 
@@ -176,10 +234,19 @@ def ablation(grounded_investigator, ungrounded_answer_fn,
         u_faith = evaluate_faithfulness(u_result)
         ungrounded_scores.append(u_faith.claim_support)
 
+        g_rows.append({"checkable_facts": g_faith.checkable_facts,
+                       "unsupported_facts": g_faith.unsupported_facts})
+        u_rows.append({"checkable_facts": u_faith.checkable_facts,
+                       "unsupported_facts": u_faith.unsupported_facts})
+
         rows.append({
             "question": q,
             "grounded_claim_support": g_faith.claim_support,
             "ungrounded_claim_support": u_faith.claim_support,
+            "grounded_facts": g_faith.checkable_facts,
+            "ungrounded_facts": u_faith.checkable_facts,
+            "grounded_unsupported": g_faith.unsupported_facts,
+            "ungrounded_unsupported": u_faith.unsupported_facts,
             "grounded_answer": g_result.get("answer", ""),
             "ungrounded_answer": u_answer,
         })
@@ -187,9 +254,15 @@ def ablation(grounded_investigator, ungrounded_answer_fn,
     g_mean = round(mean(grounded_scores), 4) if grounded_scores else 0.0
     u_mean = round(mean(ungrounded_scores), 4) if ungrounded_scores else 0.0
     return {
-        "n": len(questions),
+        "n": len(rows),
+        "questions_asked": len(questions),
+        "failed": failed,
         "grounded_mean_claim_support": g_mean,
         "ungrounded_mean_claim_support": u_mean,
         "delta": round(g_mean - u_mean, 4),
+        # Micro-averaged over facts — the discriminating number. A fact-free
+        # answer can't inflate this the way the macro means above allow.
+        "grounded_facts": _fact_totals(g_rows),
+        "ungrounded_facts": _fact_totals(u_rows),
         "per_question": rows,
     }
