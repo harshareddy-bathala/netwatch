@@ -144,13 +144,36 @@ def _create_capture_engine(mode):
         "Creating Scapy/Npcap capture engine on '%s' (strategy=%s)",
         iface, type(strategy).__name__ if strategy else 'None',
     )
-    engine = CaptureEngine(mode, interface=iface, strategy=strategy)
+    engine = CaptureEngine(
+        mode, interface=iface, strategy=strategy,
+        dns_blocker=_create_dns_blocker(iface),
+    )
 
     # Register callbacks
     engine.on_packet(_passive_hostname_callback)
     engine.on_interface_lost(_on_interface_lost)
 
     return engine
+
+
+def _create_dns_blocker(iface):
+    """Build the DNS blocker for this capture mode and publish it on state.
+
+    Enforcement only works where we sit between the client and its resolver,
+    which in practice means hotspot mode (this host is the AP/NAT gateway).
+    The blocker is still created in other modes so the rules UI stays
+    readable and consistent; it simply won't see client queries there.
+    """
+    try:
+        from packet_capture.dns_blocker import DNSBlocker
+        blocker = DNSBlocker(iface=iface)
+        blocker.start()
+        state.dns_blocker = blocker
+        return blocker
+    except Exception as e:
+        logger.error("Could not start DNS blocker (blocking rules inactive): %s", e)
+        state.dns_blocker = None
+        return None
 
 
 def _on_interface_lost():

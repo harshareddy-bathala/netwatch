@@ -115,6 +115,33 @@ CREATE INDEX IF NOT EXISTS idx_incidents_status_updated
     ON incidents(status, updated_at);
 
 -- =============================================================================
+-- BLOCKING_RULES TABLE
+-- =============================================================================
+-- Admin policy for what connected clients may reach. Enforced by
+-- packet_capture.dns_blocker, which answers a matching client DNS query with
+-- NXDOMAIN before the real reply arrives. Added by migration 013.
+
+CREATE TABLE IF NOT EXISTS blocking_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    domain TEXT NOT NULL,
+    device_mac TEXT DEFAULT NULL,    -- NULL = every client
+    enabled INTEGER NOT NULL DEFAULT 1,
+    hit_count INTEGER NOT NULL DEFAULT 0,
+    last_hit TIMESTAMP DEFAULT NULL,
+    note TEXT DEFAULT NULL
+);
+
+-- COALESCE keeps the network-wide rule distinct from per-device ones: NULLs
+-- never compare equal, so a plain UNIQUE(domain, device_mac) would allow
+-- unlimited duplicate network-wide rules for the same domain.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_blocking_rules_unique
+    ON blocking_rules(domain, COALESCE(device_mac, ''));
+
+CREATE INDEX IF NOT EXISTS idx_blocking_rules_enabled
+    ON blocking_rules(enabled);
+
+-- =============================================================================
 -- BANDWIDTH_STATS TABLE
 -- =============================================================================
 -- Aggregated bandwidth statistics per minute for historical analysis.

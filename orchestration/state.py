@@ -30,6 +30,7 @@ twin_builder = None          # intelligence.twin.TwinBuilder
 behavior_analyzer = None     # intelligence.behavior.BehaviorAnalyzer
 threat_detector = None       # intelligence.threats.ThreatDetector
 incident_manager = None      # intelligence.incidents.IncidentManager
+dns_blocker = None           # packet_capture.dns_blocker.DNSBlocker
 
 app = None                   # Flask application instance
 logger = None                # Root application logger

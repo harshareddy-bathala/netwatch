@@ -678,6 +678,15 @@
   opacity: 0.9;
 }
 
+.btn--danger {
+  color: #fff;
+  background: var(--color-error);
+}
+
+.btn--danger:hover {
+  opacity: 0.9;
+}
+
 /* ═══════════════════════════════════════════════════════
    TOP DEVICES (Dashboard widget)
    ═══════════════════════════════════════════════════════ */
@@ -1782,4 +1791,81 @@
   font-size: var(--font-size-xs);
   font-style: italic;
   justify-content: flex-start;
+}
+
+/* Blocking ---------------------------------------------------------------- */
+
+.activity__hint--warn { color: var(--color-warning); }
+
+/* The Block button is revealed on hover/focus so a busy feed stays readable,
+   but it must stay reachable by keyboard — hence :focus-within. */
+.activity-domain__block {
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--color-error);
+  font-size: var(--font-size-xs);
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+.activity-domain:hover .activity-domain__block,
+.activity-domain:focus-within .activity-domain__block { opacity: 1; }
+.activity-domain__block:hover { text-decoration: underline; }
+.activity-domain__block:disabled { cursor: default; opacity: 0.5; }
+
+.activity-domain--blocked .activity-domain__name {
+  color: var(--color-text-tertiary);
+  text-decoration: line-through;
+}
+.activity-domain--blocked .activity-domain__time { color: var(--color-error); }
+
+.activity__rules {
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius);
+  padding: var(--spacing-md);
+  margin-bottom: var(--spacing-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+.activity-rules__form { display: flex; gap: var(--spacing-sm); }
+.activity-rules__form .activity__filter { flex: 1; }
+.activity-rules__error {
+  color: var(--color-error);
+  font-size: var(--font-size-xs);
+}
+.activity-rules__error:empty { display: none; }
+
+.activity-rules__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.activity-rule {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-xs) 0;
+  border-bottom: 1px solid var(--color-border);
+  font-size: var(--font-size-sm);
+  flex-wrap: wrap;
+}
+.activity-rule:last-child { border-bottom: none; }
+.activity-rule--off { opacity: 0.55; }
+.activity-rule__domain {
+  font-family: var(--font-mono);
+  word-break: break-all;
+  min-width: 0;
+  flex: 1;
+}
+.activity-rule__scope,
+.activity-rule__hits {
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
 }

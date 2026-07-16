@@ -133,6 +133,17 @@ const api = {
       timeout: 240000, retries: 0,
   }),
 
+  // Blocking — admin policy on what clients may reach
+  getBlockingRules: ()  => request('/blocking/rules'),
+  addBlockingRule:  (domain, deviceMac=null) => request('/blocking/rules', {
+      method: 'POST',
+      body: JSON.stringify({ domain, device_mac: deviceMac }),
+  }),
+  setBlockingRuleEnabled: (id, enabled) => request(`/blocking/rules/${id}`, {
+      method: 'PATCH', body: JSON.stringify({ enabled }),
+  }),
+  deleteBlockingRule: (id) => request(`/blocking/rules/${id}`, { method: 'DELETE' }),
+
   // Alerts
   getAlerts: (limit=50, severity=null, acknowledged=null) => {
     let url = `/alerts?limit=${limit}`;
