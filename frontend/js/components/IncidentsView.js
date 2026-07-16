@@ -210,25 +210,34 @@ export default class IncidentsView {
     header.appendChild(sev);
     panel.appendChild(header);
 
-    if (inc.summary) {
+    const alerts = inc.alerts || [];
+
+    // The summary is often a copy of an alert's message; showing it above a
+    // timeline that repeats the same text reads as duplication. Only show it
+    // when it actually adds something the alerts don't already say.
+    const norm = (s) => (s || '').trim().toLowerCase();
+    const alertMessages = new Set(alerts.map(a => norm(a.message)));
+    if (inc.summary && !alertMessages.has(norm(inc.summary))) {
       const summary = document.createElement('div');
       summary.className = 'incident-detail__summary';
       summary.textContent = inc.summary;
       panel.appendChild(summary);
     }
 
-    // Timeline of member alerts
+    // Timeline of member alerts. Consecutive alerts with an identical
+    // message (e.g. the same rogue-device notice re-firing) collapse into a
+    // single row with an occurrence count, so the timeline shows the story
+    // once instead of three near-identical lines.
     const timeline = document.createElement('div');
     timeline.className = 'incident-timeline';
-    const alerts = inc.alerts || [];
     if (!alerts.length) {
       const none = document.createElement('div');
       none.className = 'incidents__empty';
       none.textContent = 'No member alerts recorded.';
       timeline.appendChild(none);
     } else {
-      for (const alert of alerts) {
-        timeline.appendChild(this._timelineItem(alert));
+      for (const group of this._collapseAlerts(alerts)) {
+        timeline.appendChild(this._timelineItem(group.alert, group.count, group.lastTimestamp));
       }
     }
     panel.appendChild(timeline);
@@ -257,7 +266,26 @@ export default class IncidentsView {
     }
   }
 
-  _timelineItem(alert) {
+  /** Merge runs of consecutive alerts that share the same type + message
+   *  into one group, counting occurrences and tracking the latest time. */
+  _collapseAlerts(alerts) {
+    const groups = [];
+    for (const alert of alerts) {
+      const prev = groups[groups.length - 1];
+      const sameStory = prev
+        && (prev.alert.alert_type || '') === (alert.alert_type || '')
+        && (prev.alert.message || '') === (alert.message || '');
+      if (sameStory) {
+        prev.count += 1;
+        prev.lastTimestamp = alert.timestamp;
+      } else {
+        groups.push({ alert, count: 1, lastTimestamp: alert.timestamp });
+      }
+    }
+    return groups;
+  }
+
+  _timelineItem(alert, count = 1, lastTimestamp = null) {
     const item = document.createElement('div');
     item.className = 'incident-timeline__item';
 
@@ -271,10 +299,13 @@ export default class IncidentsView {
     top.className = 'incident-timeline__top';
     const type = document.createElement('span');
     type.className = 'incident-timeline__type';
-    type.textContent = alert.alert_type || 'alert';
+    type.textContent = (alert.alert_type || 'alert') + (count > 1 ? ` ×${count}` : '');
     const time = document.createElement('span');
     time.className = 'incident-timeline__time';
-    time.textContent = formatTimestamp(alert.timestamp);
+    // For a collapsed run, show when it started and last recurred.
+    time.textContent = count > 1 && lastTimestamp && lastTimestamp !== alert.timestamp
+      ? `${formatTimestamp(alert.timestamp)} → ${formatTimestamp(lastTimestamp)}`
+      : formatTimestamp(alert.timestamp);
     top.appendChild(type);
     top.appendChild(time);
 

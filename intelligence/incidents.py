@@ -115,7 +115,8 @@ class IncidentManager:
                 incident.get("severity") or "info", severity
             )
             if incident_queries.attach_alert(
-                incident["id"], alert_id, merged_severity, categories
+                incident["id"], alert_id, merged_severity, categories,
+                summary=message[:300] if message else None,
             ):
                 self.triaged_count += 1
                 logger.info(

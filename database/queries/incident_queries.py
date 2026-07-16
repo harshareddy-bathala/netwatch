@@ -53,8 +53,13 @@ def create_incident(title: str, severity: str,
 
 
 def attach_alert(incident_id: int, alert_id: int, severity: str,
-                 categories: List[str]) -> bool:
-    """Link *alert_id* to *incident_id* and refresh incident rollups."""
+                 categories: List[str], summary: Optional[str] = None) -> bool:
+    """Link *alert_id* to *incident_id* and refresh incident rollups.
+
+    When *summary* is given it replaces the incident summary so the
+    headline reflects the fused total (e.g. "3 alerts…") rather than a
+    stale copy of the first alert's message.
+    """
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
@@ -62,14 +67,26 @@ def attach_alert(incident_id: int, alert_id: int, severity: str,
                 "UPDATE alerts SET incident_id = ? WHERE id = ?",
                 (incident_id, alert_id),
             )
-            cursor.execute("""
-                UPDATE incidents
-                SET updated_at = ?,
-                    alert_count = alert_count + 1,
-                    severity = ?,
-                    categories = ?
-                WHERE id = ?
-            """, (_now(), severity, json.dumps(categories), incident_id))
+            if summary is not None:
+                cursor.execute("""
+                    UPDATE incidents
+                    SET updated_at = ?,
+                        alert_count = alert_count + 1,
+                        severity = ?,
+                        categories = ?,
+                        summary = ?
+                    WHERE id = ?
+                """, (_now(), severity, json.dumps(categories), summary,
+                      incident_id))
+            else:
+                cursor.execute("""
+                    UPDATE incidents
+                    SET updated_at = ?,
+                        alert_count = alert_count + 1,
+                        severity = ?,
+                        categories = ?
+                    WHERE id = ?
+                """, (_now(), severity, json.dumps(categories), incident_id))
             conn.commit()
             return cursor.rowcount > 0
     except sqlite3.Error as e:
