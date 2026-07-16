@@ -96,8 +96,16 @@ def main(argv=None) -> int:
               f"({exc}). Finish `ollama pull {model}` and re-run.")
         return 0
 
-    batch = evaluate_batch(investigator, QUESTIONS)
-    abl = ablation(investigator, ungrounded, QUESTIONS)
+    # The seeded network's "live" window ages out during a multi-minute
+    # local-model batch — refresh it before each question so every
+    # investigation sees the same steady-state network.
+    refresh = None
+    if not args.no_seed:
+        from evaluation.network_seed import refresh_recent
+        refresh = refresh_recent
+
+    batch = evaluate_batch(investigator, QUESTIONS, before_each=refresh)
+    abl = ablation(investigator, ungrounded, QUESTIONS, before_each=refresh)
 
     payload = {
         "model": model,
@@ -113,6 +121,7 @@ def main(argv=None) -> int:
             "unsupported_facts": batch.unsupported_facts,
             "hallucination_rate": batch.hallucination_rate,
             "failed": batch.failed,
+            "truncated": batch.truncated,
             "per_question": batch.per_question,
         },
         "ablation": abl,
@@ -136,6 +145,12 @@ def main(argv=None) -> int:
                   f"(excluded from scores)")
             for f in batch.failed:
                 print(f"       - {f['question'][:50]}: {f['reason'][:60]}")
+        if batch.truncated:
+            print(f"  !! TRUNCATED      : {len(batch.truncated)} gave up within "
+                  f"the tool budget (excluded from scores)")
+            for t in batch.truncated:
+                print(f"       - {t['question'][:50]} "
+                      f"({t['tool_calls']} tool calls)")
         print(f"  citation validity : {batch.mean_citation_validity:.3f}")
         print(f"  grounded rate     : {batch.grounded_rate:.3f}")
         print(f"  claim support     : {batch.mean_claim_support:.3f} "

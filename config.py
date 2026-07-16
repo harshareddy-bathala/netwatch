@@ -773,11 +773,22 @@ CAPTURE_IPC_PORT_FILE = os.getenv(
 # Local Ollama model name for "Ask NetWatch". The runtime talks only to a
 # local Ollama server (127.0.0.1:11434) — zero cloud. Investigations
 # degrade to "unavailable" when no local model is reachable.
-LLM_MODEL = os.getenv('NETWATCH_LLM_MODEL', 'llama3')
+#
+# Default is the 3B model, chosen on measured evidence rather than size:
+# NetWatch is local-first and must run on ordinary laptops. llama3 (8B,
+# 5.3 GB) does not fit in an 8 GB host alongside the app — ~0.7-1.5 GB of
+# weights stay paged out and generation slows ~2.5x (67.4s vs 26.8s on the
+# same question, same steps) while thrashing the disk. llama3.2:3b
+# (2.6 GB) stays resident, is faster, and scored no worse on faithfulness.
+LLM_MODEL = os.getenv('NETWATCH_LLM_MODEL', 'llama3.2:3b')
 
-# Max tool calls the investigator may make before it must answer — bounds
-# cost and stops a confused model from looping forever.
-LLM_MAX_STEPS = int(os.getenv('NETWATCH_LLM_MAX_STEPS', '5'))
+# Max **tool calls** the investigator may make before it must answer —
+# bounds cost and stops a confused model from looping forever. Protocol
+# corrections (a grounding nudge, a retry after unparseable output) are
+# NOT charged against this budget: on a 3B model those corrections are
+# common, and charging them starved real investigations of retrieval —
+# 2 of 8 evaluation questions exhausted the budget before answering.
+LLM_MAX_STEPS = int(os.getenv('NETWATCH_LLM_MAX_STEPS', '6'))
 
 # Seconds to wait on one local generation. An 8B model on CPU takes ~10s
 # for a short turn, and grows with the transcript as tool results are fed

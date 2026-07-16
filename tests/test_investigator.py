@@ -23,6 +23,37 @@ from intelligence.llm_runtime import ScriptedRuntime, OllamaRuntime, get_runtime
 # Grounding tools
 # ===================================================================
 
+class TestQuotableNumbers:
+    """Tools hand the model pre-converted units so it can quote instead of
+    compute. Live llama3.2:3b turned raw byte counts into '548.7 MB' and
+    Mbps into '864 kbps' — arithmetic it got wrong, producing numbers that
+    appear in no tool result (i.e. hallucinations)."""
+
+    def test_human_bytes_formatting(self):
+        assert tools._human_bytes(500) == "500 B"
+        assert tools._human_bytes(2048) == "2.0 KB"
+        assert tools._human_bytes(273821730).endswith(" MB")
+        assert tools._human_bytes(0) == "0 B"
+        assert tools._human_bytes(None) == "0 B"
+
+    def test_metrics_include_quotable_summary(self, initialized_db):
+        m = tools.run_tool("query_metrics", {})
+        assert "summary" in m
+        # Every number in the sentence must also be a real field value.
+        assert str(m["current"]["active_devices"]) in m["summary"]
+        assert "Mbps" in m["summary"]
+
+    def test_protocols_carry_human_units(self, initialized_db):
+        from evaluation.network_seed import seed_network, clear_seed
+        clear_seed()
+        seed_network(minutes=5)
+        m = tools.run_tool("query_metrics", {})
+        assert m["top_protocols"], "seeded network should have protocols"
+        for p in m["top_protocols"]:
+            assert "human" in p
+            assert p["human"] == tools._human_bytes(p["bytes"])
+
+
 class TestTools:
 
     def test_registry_shape(self):
@@ -192,12 +223,30 @@ class TestInvestigationLoop:
         assert result["citations"] == ["query_metrics"]
 
     def test_max_steps_truncation(self, initialized_db):
-        # Model loops forever calling tools, never answers.
+        # Model loops forever calling tools, never answers. The budget caps
+        # *tool calls* at 3; the iteration ceiling then stops the loop.
         runtime = ScriptedRuntime([_tool("query_metrics")] * 20)
         result = Investigator(runtime, max_steps=3).investigate("q")
         assert result["truncated"] is True
-        assert result["steps"] == 3
-        assert len(result["tool_calls"]) == 3
+        assert len([t for t in result["tool_calls"] if t.get("tool")]) == 3
+        assert result["steps"] <= 3 * 2 + 2
+        # Once the budget ran out it was told to answer, not silently cut off.
+        assert any(t.get("error") == "tool_budget_exhausted"
+                   for t in result["tool_calls"])
+
+    def test_budget_exhaustion_forces_an_answer(self, initialized_db):
+        # The real win: a model that would have been truncated now answers
+        # from what it already retrieved.
+        runtime = ScriptedRuntime([
+            _tool("query_metrics"),
+            _tool("list_incidents"),
+            _tool("query_graph"),               # over budget -> refused
+            _answer("Answered from what I had.", ["query_metrics"]),
+        ])
+        result = Investigator(runtime, max_steps=2).investigate("q")
+        assert result["answer"] == "Answered from what I had."
+        assert not result.get("truncated")
+        assert len([t for t in result["tool_calls"] if t.get("tool")]) == 2
 
     def test_bool_answer_coerced_to_string(self, initialized_db):
         # Real llama3 behaviour: a yes/no question can come back as a JSON
@@ -227,6 +276,96 @@ class TestInvestigationLoop:
         result = Investigator(runtime).investigate("q")
         assert isinstance(result["answer"], str)
         assert "devices" in result["answer"]
+
+    def test_nudge_does_not_consume_tool_budget(self, initialized_db):
+        # Regression: the grounding nudge used to cost a step, so on a 3B
+        # model (which needs nudging often) real investigations ran out of
+        # budget before retrieving anything — 2 of 8 eval questions did.
+        runtime = ScriptedRuntime([
+            _answer("Guessing.", []),        # nudged, must not cost budget
+            _tool("query_metrics"),
+            _tool("list_incidents"),
+            _answer("Grounded.", ["query_metrics", "list_incidents"]),
+        ])
+        result = Investigator(runtime, max_steps=2).investigate("q")
+        assert result["answer"] == "Grounded."
+        assert not result.get("truncated")
+
+    def test_unparseable_retry_does_not_consume_tool_budget(self, initialized_db):
+        runtime = ScriptedRuntime([
+            "not json at all",
+            _tool("query_metrics"),
+            _answer("Fine.", ["query_metrics"]),
+        ])
+        result = Investigator(runtime, max_steps=1).investigate("q")
+        assert result["answer"] == "Fine."
+
+    def test_budget_counts_tool_calls_not_iterations(self, initialized_db):
+        runtime = ScriptedRuntime([_tool("query_metrics")] * 20)
+        result = Investigator(runtime, max_steps=3).investigate("q")
+        assert result["truncated"] is True
+        assert len([t for t in result["tool_calls"] if t.get("tool")]) == 3
+
+    def test_unknown_tool_does_not_consume_budget(self, initialized_db):
+        runtime = ScriptedRuntime([
+            _tool("bogus_one"),
+            _tool("bogus_two"),
+            _tool("query_metrics"),
+            _answer("Recovered.", ["query_metrics"]),
+        ])
+        result = Investigator(runtime, max_steps=1).investigate("q")
+        assert result["answer"] == "Recovered."
+
+    def test_garbage_model_cannot_loop_forever(self, initialized_db):
+        # Protocol corrections are free, so a model emitting nothing but
+        # junk must still be stopped by the hard iteration ceiling.
+        runtime = ScriptedRuntime(["garbage"] * 500)
+        result = Investigator(runtime, max_steps=3).investigate("q")
+        assert result["truncated"] is True
+        assert result["steps"] <= 3 * 2 + 2
+
+    def test_tool_name_in_action_field_is_repaired(self, initialized_db):
+        # Real llama3.2:3b output: it puts the tool name in "action"
+        # instead of the literal "tool". Strictly rejecting this made it
+        # repeat the same malformed call 14 times, calling nothing and
+        # truncating the investigation.
+        runtime = ScriptedRuntime([
+            '{"action": "query_graph", "tool": "query_graph", '
+            '"params": {"max_edges": "1000"}}',
+            _answer("Graph inspected.", ["query_graph"]),
+        ])
+        result = Investigator(runtime).investigate("q")
+        assert result["answer"] == "Graph inspected."
+        assert [t.get("tool") for t in result["tool_calls"]
+                if t.get("tool")] == ["query_graph"]
+
+    def test_action_holds_tool_name_without_tool_field(self, initialized_db):
+        runtime = ScriptedRuntime([
+            '{"action": "query_metrics", "params": {}}',
+            _answer("Done.", ["query_metrics"]),
+        ])
+        result = Investigator(runtime).investigate("q")
+        assert result["tool_calls"][0]["tool"] == "query_metrics"
+
+    def test_repair_is_conservative(self, initialized_db):
+        # A verb that names no real tool must NOT be silently rewritten —
+        # guessing intent would be worse than asking the model to retry.
+        runtime = ScriptedRuntime([
+            '{"action": "do_something_weird", "tool": "not_a_tool"}',
+            _tool("query_metrics"),
+            _answer("Recovered.", ["query_metrics"]),
+        ])
+        result = Investigator(runtime).investigate("q")
+        assert any(t.get("error") == "unknown action"
+                   for t in result["tool_calls"])
+        assert result["answer"] == "Recovered."
+
+    def test_repair_does_not_touch_valid_actions(self, initialized_db):
+        assert Investigator._normalise_action(
+            {"action": "answer", "answer": "x"}) == {"action": "answer",
+                                                     "answer": "x"}
+        assert Investigator._normalise_action(
+            {"action": "tool", "tool": "query_metrics"})["tool"] == "query_metrics"
 
     def test_tool_exception_does_not_crash(self, initialized_db, monkeypatch):
         def boom(params):

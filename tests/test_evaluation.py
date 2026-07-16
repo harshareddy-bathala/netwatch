@@ -321,6 +321,20 @@ class TestFailedInvestigationsExcluded:
         assert len(report.failed) == 1
         assert report.per_question[0]["question"] == "works"
 
+    def test_truncated_runs_excluded_not_scored_as_unfaithful(self, initialized_db):
+        # A run that gave up within the tool budget asserts nothing, so it
+        # is neither faithful nor unfaithful. Scoring its absent citations
+        # as 0.0 would conflate "gave up" with "made things up".
+        from intelligence.investigator import Investigator
+        from intelligence.llm_runtime import ScriptedRuntime
+        inv = Investigator(ScriptedRuntime([
+            json.dumps({"action": "tool", "tool": "query_metrics",
+                        "params": {}})] * 20), max_steps=2)
+        report = fa.evaluate_batch(inv, ["q"])
+        assert report.n == 0
+        assert len(report.truncated) == 1
+        assert report.truncated[0]["tool_calls"] == 2
+
     def test_ablation_skips_failed_grounded_runs(self, initialized_db):
         out = fa.ablation(self._DeadInvestigator(), lambda q: "42 devices.",
                           ["q1"])
@@ -363,6 +377,48 @@ class TestNetworkSeed:
         ns.seed_network(minutes=10)
         blob = json.dumps(run_tool("query_metrics", {}), default=str)
         assert len(fa.checkable_facts(blob)) > 5
+
+    def test_refresh_recent_revives_a_decayed_seed(self, initialized_db):
+        # The live window is 10s (bandwidth) / 5min (devices), so a seed
+        # goes idle during a long batch. refresh_recent must restore it.
+        from evaluation import network_seed as ns
+        from intelligence.investigator_tools import run_tool
+        from database.connection import get_connection
+        ns.clear_seed()
+        ns.seed_network(minutes=5)
+
+        # Simulate time passing: age every seeded row well past both windows.
+        with get_connection() as c:
+            cur = c.cursor()
+            cur.execute("UPDATE traffic_summary SET timestamp = "
+                        "datetime(timestamp, '-2 hours') WHERE session_id = ?",
+                        (ns.SESSION_TAG,))
+            cur.execute("UPDATE devices SET last_seen = "
+                        "datetime(last_seen, '-2 hours')")
+            c.commit()
+        ns._invalidate_caches()
+        decayed = run_tool("query_metrics", {})
+        assert decayed["current"]["bandwidth_mbps"] == 0
+        assert decayed["current"]["active_devices"] == 0
+
+        ns.refresh_recent()
+        revived = run_tool("query_metrics", {})
+        assert revived["current"]["bandwidth_mbps"] > 0
+        assert revived["current"]["active_devices"] == len(ns._FLEET)
+
+    def test_refresh_is_idempotent_not_compounding(self, initialized_db):
+        # Repeated refreshes must not stack bandwidth ever higher, or the
+        # network the model sees drifts across the batch.
+        from evaluation import network_seed as ns
+        from intelligence.investigator_tools import run_tool
+        ns.clear_seed()
+        ns.seed_network(minutes=5)
+        ns.refresh_recent()
+        first = run_tool("query_metrics", {})["current"]["bandwidth_mbps"]
+        for _ in range(3):
+            ns.refresh_recent()
+        later = run_tool("query_metrics", {})["current"]["bandwidth_mbps"]
+        assert later == pytest.approx(first, rel=0.5)
 
     def test_clear_seed_removes_only_its_own_rows(self, initialized_db):
         from evaluation import network_seed as ns

@@ -157,6 +157,41 @@ local model to be faithful is insufficient, and that the tool-calling
 loop must enforce retrieval structurally. That is a defensible result in
 its own right.
 
+### Model choice is an evaluation finding, not a footnote
+
+NetWatch is local-first, so the model must run on an ordinary laptop.
+Measured on an 8 GB host (7.35 GB usable):
+
+| model | size | resident | same question | outcome |
+|---|---|---|---|---|
+| llama3 (8B) | 5.3 GB | 86% (0.7–1.5 GB paged out) | **67.4s** | correct |
+| **llama3.2:3b** | 2.6 GB | ~100% | **26.8s** | correct |
+
+llama3 does not fit alongside the application: `llama-server` showed
+Private 5.08 GB against a 3.55 GB working set — 1.5 GB of weights evicted
+to disk — with sustained 12k–115k hard page-faults/sec at ~130 MB free.
+Generation is ~2.5x slower purely from paging, which is what caused the
+60s timeouts, *not* CPU speed. `llama3.2:3b` is the default for this
+reason; `NETWATCH_LLM_MODEL` overrides it on larger hosts.
+
+### Optimising for a 3B model
+
+The 3B model's measured failure modes drove concrete changes, each of
+which is a general lesson for grounding small local models:
+
+- **It cannot do arithmetic reliably.** Asked for protocol byte counts it
+  converted raw bytes into `548.7 MB` / `320.8 MB` / `191.9 MB` — numbers
+  present in no tool result, i.e. hallucinations by construction. The
+  tools now return pre-converted `human` and `summary` fields so the model
+  **quotes instead of computes**, and the prompt forbids unit conversion.
+- **Protocol corrections starved retrieval.** The grounding nudge and
+  unparseable-retry each consumed a step of the tool budget, so 2 of 8
+  questions gave up before answering. The budget now counts *tool calls*
+  only; corrections are free, bounded by a separate iteration ceiling.
+- **Giving up is worse than answering partially.** Exhausting the budget
+  used to return "I couldn't reach a grounded answer". It now forces a
+  final answer from whatever was already retrieved.
+
 ---
 
 ## Reproducing

@@ -37,6 +37,23 @@ def _provenance(source: str, **extra) -> Dict[str, Any]:
     return {"source": source, "read_at": _now_iso(), **extra}
 
 
+def _human_bytes(n: int) -> str:
+    """Render a byte count the way a person would state it ('261.1 MB').
+
+    Tools hand the model pre-formatted units on purpose.  A small local
+    model asked for "how many bytes" will happily convert 273821730 into
+    "548.7 MB" — arithmetic it cannot reliably do, and a number that
+    appears in no tool result, i.e. a hallucination.  Supplying the
+    converted value means the model can quote instead of compute.
+    """
+    n = float(n or 0)
+    for unit in ("B", "KB", "MB", "GB"):
+        if abs(n) < 1024.0 or unit == "GB":
+            return f"{n:.1f} {unit}" if unit != "B" else f"{int(n)} B"
+        n /= 1024.0
+    return f"{n:.1f} GB"
+
+
 # ---------------------------------------------------------------------------
 # Tool: query_metrics
 # ---------------------------------------------------------------------------
@@ -53,13 +70,25 @@ def query_metrics(params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         from database.queries.stats_queries import get_realtime_stats
         stats = get_realtime_stats() or {}
         result["current"] = {
-            "bandwidth_mbps": stats.get("bandwidth_mbps", 0),
-            "download_mbps": stats.get("download_mbps", 0),
-            "upload_mbps": stats.get("upload_mbps", 0),
+            "bandwidth_mbps": round(float(stats.get("bandwidth_mbps") or 0), 2),
+            "download_mbps": round(float(stats.get("download_mbps") or 0), 2),
+            "upload_mbps": round(float(stats.get("upload_mbps") or 0), 2),
             "active_devices": stats.get("active_devices", 0),
             "packets_per_second": stats.get("packets_per_second", 0),
             "timestamp": stats.get("timestamp"),
         }
+        # A ready-made sentence of the same facts. Small models restate
+        # rates in their own units ("864 kbps", "86.43 Mbps") and get the
+        # conversion wrong; giving them the phrasing to quote removes the
+        # arithmetic entirely.
+        cur = result["current"]
+        result["summary"] = (
+            f"{cur['active_devices']} active devices; "
+            f"bandwidth {cur['bandwidth_mbps']} Mbps "
+            f"(download {cur['download_mbps']} Mbps, "
+            f"upload {cur['upload_mbps']} Mbps); "
+            f"{cur['packets_per_second']} packets per second."
+        )
     except Exception as exc:
         logger.warning("query_metrics: stats unavailable: %s", exc)
         result["current"] = {}
@@ -69,7 +98,9 @@ def query_metrics(params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         dist = get_protocol_distribution(hours=1) or []
         result["top_protocols"] = [
             {"protocol": d.get("protocol") or d.get("name"),
-             "bytes": d.get("bytes") or d.get("total_bytes") or 0}
+             "bytes": d.get("bytes") or d.get("total_bytes") or 0,
+             # Pre-converted so the model quotes rather than computes.
+             "human": _human_bytes(d.get("bytes") or d.get("total_bytes") or 0)}
             for d in dist[:5]
         ]
     except Exception:

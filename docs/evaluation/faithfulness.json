@@ -1,27 +1,48 @@
 {
-  "model": "llama3",
+  "model": "llama3.2:3b",
+  "network": {
+    "devices": 7,
+    "traffic_rows": 626,
+    "subnet": "10.36.11.0/24",
+    "device_ips": [
+      "10.36.11.11",
+      "10.36.11.12",
+      "10.36.11.13",
+      "10.36.11.14",
+      "10.36.11.15",
+      "10.36.11.16",
+      "10.36.11.17"
+    ]
+  },
   "faithfulness": {
-    "n": 5,
+    "n": 7,
     "mean_citation_validity": 1.0,
     "grounded_rate": 1.0,
-    "mean_claim_support": 1.0,
-    "answers_with_facts": 1,
-    "total_facts": 2,
-    "unsupported_facts": 0,
-    "hallucination_rate": 0.0,
+    "mean_claim_support": 0.9286,
+    "answers_with_facts": 7,
+    "total_facts": 19,
+    "unsupported_facts": 1,
+    "hallucination_rate": 0.0526,
+    "failed": [],
+    "truncated": [
+      {
+        "question": "Which devices are talking to external hosts?",
+        "tool_calls": 0
+      }
+    ],
     "per_question": [
       {
         "question": "Are there any open incidents right now?",
-        "answer": "According to the query_metrics tool, there are currently no active devices and zero bandwidth usage.",
+        "answer": "There are currently 17 open security incidents in the network.",
         "citation_validity": 1.0,
         "grounded": true,
         "claim_support": 1.0,
-        "checkable_facts": 0,
+        "checkable_facts": 1,
         "unsupported_facts": []
       },
       {
         "question": "How much bandwidth is the network using and how many devices are active?",
-        "answer": "According to the current network metrics, the network is currently utilizing approximately 0 Mbps of bandwidth. Additionally, there are 0 active devices on the network.",
+        "answer": "The current network is utilizing a minimal amount of bandwidth, with a total of 0.0 Mbps being used. There are currently 7 active devices connected to the network.",
         "citation_validity": 1.0,
         "grounded": true,
         "claim_support": 1.0,
@@ -29,109 +50,159 @@
         "unsupported_facts": []
       },
       {
-        "question": "Which devices are talking to external hosts?",
-        "answer": "According to the current network metrics, there are no devices currently communicating with external hosts.",
+        "question": "How many active devices are there? Give the exact number.",
+        "answer": "There are currently 7 active devices on the network.",
         "citation_validity": 1.0,
         "grounded": true,
         "claim_support": 1.0,
-        "checkable_facts": 0,
+        "checkable_facts": 1,
+        "unsupported_facts": []
+      },
+      {
+        "question": "What are the top protocols on the network and how many bytes has each moved?",
+        "answer": "The network has 7 active devices and no bandwidth usage. The top protocols on the network are HTTPS, DNS, and HTTP, with 519.8 MB, 294.6 MB, and 170.8 MB of bytes moved respectively.",
+        "citation_validity": 1.0,
+        "grounded": true,
+        "claim_support": 1.0,
+        "checkable_facts": 4,
+        "unsupported_facts": []
+      },
+      {
+        "question": "What is the current download and upload rate in Mbps?",
+        "answer": "The network is currently utilizing a bandwidth of 86 Mbps for downloads and 0 Mbps for uploads, with 7 active devices and an average of 0.8 packets per second.",
+        "citation_validity": 1.0,
+        "grounded": true,
+        "claim_support": 1.0,
+        "checkable_facts": 4,
         "unsupported_facts": []
       },
       {
         "question": "Is anything suspicious happening on the network?",
-        "answer": "The network appears to be idle at the moment, with no active devices and zero bandwidth usage.",
+        "answer": "The current network metrics show 7 active devices with no bandwidth usage, and a total of 905.8 MB of data transferred through HTTPS, DNS, and HTTP protocols.",
         "citation_validity": 1.0,
         "grounded": true,
-        "claim_support": 1.0,
-        "checkable_facts": 0,
-        "unsupported_facts": []
+        "claim_support": 0.5,
+        "checkable_facts": 2,
+        "unsupported_facts": [
+          "905.8"
+        ]
       },
       {
-        "question": "Summarise the current state of the network in one sentence.",
-        "answer": "The network is currently inactive with no active devices and a bandwidth utilization rate of zero.",
+        "question": "Summarise the current state of the network in one sentence, with numbers.",
+        "answer": "The current network is experiencing low bandwidth usage of 0 Mbps, supported by 7 active devices, with the top protocols being HTTPS, DNS, and HTTP, accounting for 497.4 MB, 282.0 MB, and 169.6 MB of bytes respectively.",
         "citation_validity": 1.0,
         "grounded": true,
         "claim_support": 1.0,
-        "checkable_facts": 0,
+        "checkable_facts": 5,
         "unsupported_facts": []
       }
     ]
   },
   "ablation": {
-    "n": 5,
+    "n": 7,
+    "questions_asked": 8,
+    "failed": [
+      {
+        "question": "Which devices are talking to external hosts?",
+        "reason": "tool budget exhausted"
+      }
+    ],
     "grounded_mean_claim_support": 1.0,
-    "ungrounded_mean_claim_support": 0.92,
-    "delta": 0.08,
+    "ungrounded_mean_claim_support": 0.7143,
+    "delta": 0.2857,
     "grounded_facts": {
-      "answers_with_facts": 1,
-      "total_facts": 2,
+      "answers_with_facts": 7,
+      "total_facts": 24,
       "unsupported_facts": 0,
       "hallucination_rate": 0.0
     },
     "ungrounded_facts": {
-      "answers_with_facts": 1,
-      "total_facts": 5,
+      "answers_with_facts": 2,
+      "total_facts": 2,
       "unsupported_facts": 2,
-      "hallucination_rate": 0.4
+      "hallucination_rate": 1.0
     },
     "per_question": [
       {
         "question": "Are there any open incidents right now?",
         "grounded_claim_support": 1.0,
         "ungrounded_claim_support": 1.0,
-        "grounded_facts": 0,
+        "grounded_facts": 3,
         "ungrounded_facts": 0,
         "grounded_unsupported": [],
         "ungrounded_unsupported": [],
-        "grounded_answer": "Based on the current network metrics, there are no active devices and no bandwidth usage.",
-        "ungrounded_answer": "As I'm currently monitoring the network, I can confirm that we do have an ongoing incident with a minor outage affecting some users on the east coast, but our team is actively working to resolve it and restore services as soon as possible."
+        "grounded_answer": "There are currently 17 open security incidents on the network. The devices involved include 28:d0:43:a5:22:70, 42:fe:35:f3:62:65, and others.",
+        "ungrounded_answer": "I'm not aware of any real-time information about current network incidents, but I can suggest checking our incident management portal or contacting our support team to get an up-to-date status on any ongoing issues."
       },
       {
         "question": "How much bandwidth is the network using and how many devices are active?",
         "grounded_claim_support": 1.0,
-        "ungrounded_claim_support": 0.6,
-        "grounded_facts": 2,
-        "ungrounded_facts": 5,
-        "grounded_unsupported": [],
-        "ungrounded_unsupported": [
-          "85",
-          "250"
-        ],
-        "grounded_answer": "According to our current metrics, the network is utilizing approximately 0 Mbps of bandwidth and there are currently 0 active devices on the network.",
-        "ungrounded_answer": "Based on my monitoring tools, I can see that the network is currently utilizing around 70% of its available bandwidth, with a peak utilization rate of 85% during the morning hours. As for device activity, I'm seeing around 250 devices connected to the network at any given time, with an average of 15-20 devices actively transmitting data simultaneously."
-      },
-      {
-        "question": "Which devices are talking to external hosts?",
-        "grounded_claim_support": 1.0,
         "ungrounded_claim_support": 1.0,
-        "grounded_facts": 0,
+        "grounded_facts": 2,
         "ungrounded_facts": 0,
         "grounded_unsupported": [],
         "ungrounded_unsupported": [],
-        "grounded_answer": "I couldn't reach a grounded answer within the tool budget for this question.",
-        "ungrounded_answer": "As a network assistant, I can tell you that routers and firewalls typically communicate with external hosts on behalf of internal devices, while servers like DNS, DHCP, and web servers also interact with external hosts directly. Additionally, devices like VPN concentrators and proxy servers may also initiate or respond to connections with external hosts."
+        "grounded_answer": "The current network is utilizing a minimal amount of bandwidth, with a rate of 0 Mbps for both download and upload. There are currently 7 active devices connected to the network.",
+        "ungrounded_answer": "I can check the current bandwidth usage and device activity on our network, but I don't have real-time access to this information as a text-based AI assistant. However, I can suggest that you check your network management software or portal for up-to-date information on bandwidth usage and device activity."
+      },
+      {
+        "question": "How many active devices are there? Give the exact number.",
+        "grounded_claim_support": 1.0,
+        "ungrounded_claim_support": 0.0,
+        "grounded_facts": 1,
+        "ungrounded_facts": 1,
+        "grounded_unsupported": [],
+        "ungrounded_unsupported": [
+          "8.4"
+        ],
+        "grounded_answer": "There are currently 7 active devices on the network.",
+        "ungrounded_answer": "I don't have access to real-time information, but according to recent estimates, there are approximately 8.4 billion active devices connected to the internet worldwide."
+      },
+      {
+        "question": "What are the top protocols on the network and how many bytes has each moved?",
+        "grounded_claim_support": 1.0,
+        "ungrounded_claim_support": 1.0,
+        "grounded_facts": 4,
+        "ungrounded_facts": 0,
+        "grounded_unsupported": [],
+        "ungrounded_unsupported": [],
+        "grounded_answer": "The network has 7 active devices, with no bandwidth usage reported in Mbps. The top protocols on the network are HTTPS, DNS, and HTTP, moving a total of 469.5 MB, 274.4 MB, and 162.6 MB of data respectively.",
+        "ungrounded_answer": "I don't have real-time access to current network activity, but I can tell you that common network protocols include TCP (Transmission Control Protocol), UDP (User Datagram Protocol), ICMP (Internet Control Message Protocol), and DNS (Domain Name System). However, I wouldn't be able to provide information on the exact number of bytes each protocol has moved."
+      },
+      {
+        "question": "What is the current download and upload rate in Mbps?",
+        "grounded_claim_support": 1.0,
+        "ungrounded_claim_support": 1.0,
+        "grounded_facts": 4,
+        "ungrounded_facts": 0,
+        "grounded_unsupported": [],
+        "ungrounded_unsupported": [],
+        "grounded_answer": "The network is currently utilizing a bandwidth of 0.86 Mbps for downloads and 0.0 Mbps for uploads, with 7 active devices and an average of 0.8 packets per second.",
+        "ungrounded_answer": "I don't have real-time access to current internet speeds, but I can tell you that typical download and upload rates vary depending on the location, network provider, and type of connection (e.g., fiber, cable, DSL)."
       },
       {
         "question": "Is anything suspicious happening on the network?",
         "grounded_claim_support": 1.0,
         "ungrounded_claim_support": 1.0,
-        "grounded_facts": 0,
+        "grounded_facts": 6,
         "ungrounded_facts": 0,
         "grounded_unsupported": [],
         "ungrounded_unsupported": [],
-        "grounded_answer": "The network appears to be inactive or not fully configured. The query_metrics tool shows no bandwidth usage and zero active devices. Additionally, the query_graph tool indicates that the digital twin is not running.",
-        "ungrounded_answer": "I've been monitoring the network traffic, and I haven't seen any unusual patterns or spikes that would indicate malicious activity. However, I did notice a few devices experiencing connectivity issues earlier today, but it seems to have resolved itself now."
+        "grounded_answer": "The current network metrics show a total of 7 active devices, with a bandwidth of 0.42 Mbps (download and upload speeds are nearly identical), and an average of 0.4 packets per second. The top protocols used on the network are HTTPS, DNS, and HTTP, accounting for approximately 454 MB, 266 MB, and 158 MB of data respectively.",
+        "ungrounded_answer": "I've noticed some unusual login attempts coming from an unknown IP address, and I'm running a scan to check for any malware or unauthorized access points. The results will be available in my report shortly."
       },
       {
-        "question": "Summarise the current state of the network in one sentence.",
+        "question": "Summarise the current state of the network in one sentence, with numbers.",
         "grounded_claim_support": 1.0,
-        "ungrounded_claim_support": 1.0,
-        "grounded_facts": 0,
-        "ungrounded_facts": 0,
+        "ungrounded_claim_support": 0.0,
+        "grounded_facts": 4,
+        "ungrounded_facts": 1,
         "grounded_unsupported": [],
-        "ungrounded_unsupported": [],
-        "grounded_answer": "The network is currently idle with no active devices and zero bandwidth usage.",
-        "ungrounded_answer": "The network is currently stable and performing well, with all devices and services functioning as expected and no reported issues or outages."
+        "ungrounded_unsupported": [
+          "2023"
+        ],
+        "grounded_answer": "The current network has 7 active devices, with the top protocols being HTTPS, DNS, and HTTP, accounting for 451.3 MB, 264.6 MB, and 155.3 MB of data respectively.",
+        "ungrounded_answer": "I'm not aware of any real-time network information, but I can tell you that my training data is up to date until December 2023."
       }
     ]
   }

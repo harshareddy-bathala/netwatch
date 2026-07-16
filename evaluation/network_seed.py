@@ -217,6 +217,62 @@ def seed_network(conn=None, minutes: int = 60) -> Dict[str, object]:
     }
 
 
+def refresh_recent(conn=None) -> None:
+    """Re-stamp the *live* part of the seeded network to "now".
+
+    The seed decays: ``get_realtime_stats`` derives bandwidth from the
+    trailing **10 seconds** and ``get_active_device_count`` from the last
+    **5 minutes**.  An evaluation batch takes many minutes to run against
+    a local model, so without this the network silently goes idle partway
+    through — question 1 sees 7 devices and zero-bandwidth by question 8,
+    which is both wrong and irreproducible.
+
+    Call before each investigation to hold the network in a steady state.
+    """
+    from database.connection import get_connection
+
+    rng = random.Random(SEED)
+    prefix = _subnet_prefix()
+    now = datetime.now()
+    utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    macs = [(f"{suffix}", mac) for suffix, mac, _, _, _ in _FLEET]
+
+    def _refresh(cursor):
+        # Devices stay "active".
+        cursor.execute(
+            f"UPDATE devices SET last_seen = ? WHERE mac_address IN "
+            f"({','.join('?' * len(macs))})",
+            [utc] + [m for _, m in macs])
+        # Drop the previous live burst so bandwidth doesn't compound, then
+        # lay down a fresh one in the trailing 10 seconds.
+        cursor.execute("DELETE FROM traffic_summary WHERE session_id = ? "
+                       "AND timestamp >= ?",
+                       (SESSION_TAG,
+                        (now - timedelta(seconds=90)).strftime("%Y-%m-%d %H:%M:%S")))
+        for sec in range(10):
+            ts = (now - timedelta(seconds=sec)).strftime("%Y-%m-%d %H:%M:%S")
+            for suffix, mac in macs[:4]:
+                nbytes = rng.randint(60_000, 200_000)
+                cursor.execute("""
+                    INSERT INTO traffic_summary
+                        (timestamp, source_ip, dest_ip, source_mac,
+                         source_port, dest_port, protocol, bytes_transferred,
+                         packets_count, direction, is_control, session_id)
+                    VALUES (?, '142.250.196.68', ?, ?, 443, ?, 'HTTPS', ?, ?,
+                            'download', 0, ?)
+                """, (ts, f"{prefix}{suffix}", mac, rng.randint(40000, 65000),
+                      nbytes, max(1, nbytes // 1400), SESSION_TAG))
+
+    if conn is not None:
+        _refresh(conn.cursor())
+        conn.commit()
+    else:
+        with get_connection() as c:
+            _refresh(c.cursor())
+            c.commit()
+    _invalidate_caches()
+
+
 def clear_seed(conn=None) -> int:
     """Remove only the rows this module inserted."""
     from database.connection import get_connection

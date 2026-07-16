@@ -138,14 +138,23 @@ class FaithfulnessReport:
     total_facts: int
     unsupported_facts: int
     hallucination_rate: Optional[float]
-    # Investigations that never completed — excluded from every score
-    # above, reported so a degraded run can't masquerade as a clean one.
+    # Investigations that never completed (runtime died) or gave up
+    # without answering (tool budget exhausted). Both are excluded from
+    # every score above and reported, so a degraded run cannot
+    # masquerade as a clean one.
     failed: List[Dict[str, Any]]
+    truncated: List[Dict[str, Any]]
     per_question: List[Dict[str, Any]]
 
 
-def evaluate_batch(investigator, questions: List[str]) -> FaithfulnessReport:
+def evaluate_batch(investigator, questions: List[str],
+                   before_each: Optional[Callable[[], None]] = None
+                   ) -> FaithfulnessReport:
     """Run *questions* through *investigator* and aggregate faithfulness.
+
+    *before_each* runs before every investigation — used to hold the
+    evaluated network in a steady state, since a local-model batch takes
+    long enough for "current" network data to age out mid-run.
 
     Investigations that never completed (the runtime timed out or died —
     ``available: False``) are **excluded from the scores** and counted in
@@ -156,11 +165,23 @@ def evaluate_batch(investigator, questions: List[str]) -> FaithfulnessReport:
     """
     per: List[Dict[str, Any]] = []
     failed: List[Dict[str, Any]] = []
+    truncated: List[Dict[str, Any]] = []
     for q in questions:
+        if before_each:
+            before_each()
         result = investigator.investigate(q)
         if result.get("available") is False:
             failed.append({"question": q,
                            "reason": result.get("reason", "unavailable")})
+            continue
+        if result.get("truncated"):
+            # Ran out of tool budget without answering. It asserts nothing,
+            # so it is neither faithful nor unfaithful — scoring its absent
+            # citations as 0.0 would conflate "gave up" with "made things
+            # up". Counted separately as a capability failure instead.
+            truncated.append({"question": q,
+                              "tool_calls": len([t for t in result.get("tool_calls", [])
+                                                 if t.get("tool")])})
             continue
         f = evaluate_faithfulness(result)
         per.append({
@@ -183,6 +204,7 @@ def evaluate_batch(investigator, questions: List[str]) -> FaithfulnessReport:
         unsupported_facts=totals["unsupported_facts"],
         hallucination_rate=totals["hallucination_rate"],
         failed=failed,
+        truncated=truncated,
         per_question=per,
     )
 
@@ -193,7 +215,8 @@ def evaluate_batch(investigator, questions: List[str]) -> FaithfulnessReport:
 
 def ablation(grounded_investigator, ungrounded_answer_fn,
              questions: List[str],
-             reference_tool_calls_fn: Optional[Callable[[str], List[dict]]] = None
+             reference_tool_calls_fn: Optional[Callable[[str], List[dict]]] = None,
+             before_each: Optional[Callable[[], None]] = None
              ) -> Dict[str, Any]:
     """Compare grounded vs ungrounded answers on the same questions.
 
@@ -217,12 +240,16 @@ def ablation(grounded_investigator, ungrounded_answer_fn,
     failed: List[Dict[str, Any]] = []
 
     for q in questions:
+        if before_each:
+            before_each()
         g_result = grounded_investigator.investigate(q)
-        if g_result.get("available") is False:
+        if g_result.get("available") is False or g_result.get("truncated"):
             # Same rule as evaluate_batch: an investigation that never ran
-            # must not be scored (it would win on an empty answer).
+            # (or gave up) must not be scored — it would win on an empty
+            # answer, and there is nothing to compare the ablation against.
             failed.append({"question": q,
-                           "reason": g_result.get("reason", "unavailable")})
+                           "reason": g_result.get("reason")
+                           or "tool budget exhausted"})
             continue
         g_faith = evaluate_faithfulness(g_result)
         grounded_scores.append(g_faith.claim_support)

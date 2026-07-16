@@ -54,9 +54,15 @@ a tool is always wrong, even for a yes/no question.
 - "answer" must be a STRING of prose — never a bare true/false or number.
 - "citations" must contain ONLY tool names you actually called, exactly as \
 spelled above. Never cite a tool you did not call, and never put \
-parameters in citations.
+parameters in citations. Always cite the tools you used.
+- Quote numbers EXACTLY as they appear in the tool result. Do NOT convert \
+units, do not turn bytes into MB, do not turn Mbps into kbps, do not add \
+up numbers yourself. If a result gives a "human" or "summary" field, use \
+its wording. A number you calculated is not evidence.
 - Base every factual claim on tool results you actually received. If the \
 tools do not contain the answer, say so plainly.
+- If a tool reports it is unavailable, do NOT call it again — say that \
+part is unavailable and answer with what you do have.
 - Once you have the data you need, answer. Do not call tools needlessly.
 """
 
@@ -77,8 +83,17 @@ class Investigator:
         ]
         trace: List[Dict[str, Any]] = []
         nudged_to_ground = False
+        tool_calls_made = 0
+        step = 0
+        # The budget counts *tool calls*. Protocol corrections (grounding
+        # nudge, unparseable retry, unknown-tool feedback) are common on
+        # small models and must not eat the retrieval budget — but they
+        # still need a hard ceiling so a model that never emits valid JSON
+        # cannot loop forever.
+        max_iterations = self._max_steps * 2 + 2
 
-        for step in range(self._max_steps):
+        while step < max_iterations:
+            step += 1
             try:
                 raw = self._runtime.generate(messages)
             except LLMUnavailable as exc:
@@ -141,16 +156,35 @@ class Investigator:
                     "answer": self._coerce_answer(action.get("answer")),
                     "citations": self._valid_citations(action.get("citations")),
                     "tool_calls": trace,
-                    "steps": step + 1,
+                    "steps": step,
                 }
 
             if action.get("action") == "tool":
                 name = action.get("tool")
                 params = action.get("params") or {}
+                if tool_calls_made >= self._max_steps:
+                    # Budget spent. Don't just give up — the model has real
+                    # results in hand, so require it to answer from them.
+                    trace.append({"step": step,
+                                  "error": "tool_budget_exhausted",
+                                  "raw": raw[:500]})
+                    messages.append({"role": "assistant", "content": raw})
+                    messages.append({
+                        "role": "user",
+                        "content": "You have used your entire tool budget. "
+                                   "Answer now using only the tool results "
+                                   "you already received, and cite them. If "
+                                   "they do not cover the question, say so.",
+                    })
+                    continue
                 if name not in TOOLS:
+                    # A protocol error, not retrieval — feed the real tool
+                    # names back without charging the budget (max_iterations
+                    # still bounds it).
                     result = {"error": f"unknown tool '{name}'",
                               "available_tools": list(TOOLS)}
                 else:
+                    tool_calls_made += 1
                     try:
                         result = run_tool(name, params)
                     except Exception as exc:  # tool must never crash the loop
@@ -166,14 +200,21 @@ class Investigator:
                 })
                 continue
 
-            # Unknown action verb — nudge and continue.
+            # Unknown action verb — show the exact shape rather than just
+            # naming the rule; a 3B model repeats its mistake otherwise.
             trace.append({"step": step, "error": "unknown action",
                           "raw": raw[:500]})
             messages.append({"role": "assistant", "content": raw})
-            messages.append({"role": "user",
-                             "content": "action must be 'tool' or 'answer'."})
+            messages.append({
+                "role": "user",
+                "content": '"action" must be the literal string "tool" or '
+                           '"answer" — not a tool name. To call a tool: '
+                           '{"action": "tool", "tool": "query_graph", '
+                           '"params": {}}. Try again.',
+            })
 
-        # Ran out of steps without a final answer.
+        # Ran out of budget without a final answer. The trace still holds
+        # everything retrieved, so the caller can show its work.
         return {
             "available": True,
             "question": question,
@@ -181,7 +222,7 @@ class Investigator:
                       "budget for this question.",
             "citations": [],
             "tool_calls": trace,
-            "steps": self._max_steps,
+            "steps": step,
             "truncated": True,
         }
 
@@ -191,8 +232,8 @@ class Investigator:
         return "\n".join(f"- {t['name']}: {t['description']}"
                          for t in tool_schema())
 
-    @staticmethod
-    def _parse_action(raw: str) -> Optional[Dict[str, Any]]:
+    @classmethod
+    def _parse_action(cls, raw: str) -> Optional[Dict[str, Any]]:
         """Extract the first JSON object from the model's text."""
         if not raw:
             return None
@@ -200,7 +241,7 @@ class Investigator:
         # Fast path: whole response is JSON.
         try:
             obj = json.loads(raw)
-            return obj if isinstance(obj, dict) else None
+            return cls._normalise_action(obj) if isinstance(obj, dict) else None
         except json.JSONDecodeError:
             pass
         # Fallback: find the first {...} block (models often wrap in prose
@@ -210,9 +251,42 @@ class Investigator:
             return None
         try:
             obj = json.loads(match.group(0))
-            return obj if isinstance(obj, dict) else None
+            return cls._normalise_action(obj) if isinstance(obj, dict) else None
         except json.JSONDecodeError:
             return None
+
+    @staticmethod
+    def _normalise_action(obj: Dict[str, Any]) -> Dict[str, Any]:
+        """Repair near-miss protocol deviations from small models.
+
+        llama3.2:3b reliably emits the *tool name* in the ``action`` field
+        instead of the literal "tool"::
+
+            {"action": "query_graph", "tool": "query_graph", "params": {...}}
+
+        The intent is unambiguous — it names a real tool — but a strict
+        reading calls this an unknown verb, and the model repeats the same
+        malformed call every turn (observed: 14 iterations, zero tool calls,
+        investigation truncated). Rewriting the verb is strictly better than
+        rejecting a request whose meaning is certain.
+
+        Only unambiguous repairs are made: the value must name a registered
+        tool. Anything else is left alone for the loop to reject.
+        """
+        verb = obj.get("action")
+        if verb in ("tool", "answer") or not isinstance(verb, str):
+            return obj
+        if verb in TOOLS:
+            # "action" holds a tool name. Trust an explicit "tool" field if
+            # it also names a real tool; otherwise the verb *is* the tool.
+            named = obj.get("tool")
+            obj = dict(obj)
+            obj["tool"] = named if named in TOOLS else verb
+            obj["action"] = "tool"
+        elif "answer" in obj and verb.lower() in ("respond", "reply", "final"):
+            obj = dict(obj)
+            obj["action"] = "answer"
+        return obj
 
     @staticmethod
     def _called_a_tool(trace: List[Dict[str, Any]]) -> bool:

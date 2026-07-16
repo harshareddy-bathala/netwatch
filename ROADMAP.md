@@ -152,16 +152,38 @@ harness (Phase 4).
   0.000**; documented multi-label overlap (admin-port sweeps)
 - [x] **P4.3** Citation-faithfulness metric + tool-grounding ablation
   (`evaluation/faithfulness.py`, `scripts/eval_faithfulness.py`):
-  citation_validity / grounded / claim_support; model-free in CI via the
-  scripted runtime, real numbers against local llama3
+  citation_validity / grounded / claim_support + fact coverage and a
+  micro-averaged hallucination rate; model-free in CI via the scripted
+  runtime, real numbers against a local model
+- [x] **P4.3b** Deterministic seeded network (`evaluation/network_seed.py`):
+  subnet-aware, refreshed per question. Against an idle DB the model can
+  only truthfully say "0 devices" — an answer with no checkable facts, so
+  the metric measured nothing (a flattering 1.000 over 2 facts)
 - [x] **P4.4** Thesis material: `docs/evaluation/` (README + published
-  dataset + detector report JSON)
+  dataset + detector report JSON + faithfulness JSON)
 - [ ] **P4.5** Installer updates (models ship beside `models/`) — remaining
 
 *Exit (evaluation):* reproducible precision/recall table + a
-faithfulness/ablation harness, all offline. Also fixed a robustness gap the
-eval surfaced: the investigator now degrades gracefully when the Ollama
-server is up but the model isn't pulled (was an unhandled mid-loop error).
+faithfulness/ablation harness, all offline.
+
+**Robustness gaps the live-model evaluation surfaced** (each now fixed and
+regression-tested — none were reachable with the scripted runtime):
+
+1. Investigator degrades gracefully when Ollama is up but the model isn't
+   pulled (was an unhandled mid-loop error).
+2. llama3 returns a JSON **boolean** for `answer` on yes/no questions;
+   downstream assumed a string. Coerced at the investigator boundary.
+3. **Prompting a small local model to be faithful is not sufficient.** The
+   first live run scored grounded-rate 0.000 / citation-validity 0.200 —
+   it answered with no data and cited tools it never called. Rewording the
+   prompt did not fix it; the loop now *enforces* retrieval. 0.000 -> 1.000.
+4. Failed investigations were scored as perfect (empty answer -> no
+   checkable facts -> free claim_support 1.0). Now excluded and surfaced.
+
+*Hardware note:* llama3 (8B, 5.3 GB) thrashes on an 8 GB host — ~0.7-1.5 GB
+of weights stay paged out and generation slows ~2.5x (67.4s vs 26.8s on the
+same question, same 3 steps). `llama3.2:3b` fits in RAM and is the better
+local-first default; `NETWATCH_LLM_MODEL` / `NETWATCH_LLM_TIMEOUT` tune both.
 
 ---
 
