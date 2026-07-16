@@ -28,6 +28,9 @@ export default class AskView {
     this._destroyed = false;
     this._busy = false;
     this._history = [];   // {role: 'user'|'assistant', ...}
+    this._available = null;   // null = unknown, true/false once checked
+    this._offlineReason = '';
+    this._model = '';
   }
 
   render() {
@@ -81,14 +84,18 @@ export default class AskView {
     const resp = await api.getInvestigateStatus();
     if (this._destroyed) return;
     const data = (resp && resp.data) || {};
+    this._available = !!data.available;
+    this._offlineReason = data.reason || '';
+    this._model = data.model || '';
     if (data.available) {
       statusEl.className = 'ask__status ask__status--ok';
-      statusEl.textContent = 'Local model ready · answers grounded in ' +
-        (data.tools || []).join(', ');
+      statusEl.textContent =
+        `Local model ready${this._model ? ` (${this._model})` : ''} — ` +
+        'answers are grounded in live network data and cite their sources.';
     } else {
       statusEl.className = 'ask__status ask__status--off';
-      statusEl.textContent =
-        'No local model running. Install Ollama and run `ollama pull llama3` ' +
+      statusEl.textContent = this._offlineReason ||
+        'No local model running. Install Ollama and run `ollama pull llama3.2:3b` ' +
         'to enable Ask NetWatch — everything stays on this machine.';
     }
   }
@@ -100,9 +107,18 @@ export default class AskView {
     if (!question) return;
 
     input.value = '';
+    this._appendUser(question);
+
+    // Known-offline: answer instantly instead of a doomed slow round-trip,
+    // and re-check in the background in case Ollama just came up.
+    if (this._available === false) {
+      this._appendNotice(this._offlineReason || 'Investigations are unavailable.');
+      this._checkStatus();
+      return;
+    }
+
     this._busy = true;
     this._setSending(true);
-    this._appendUser(question);
     const thinking = this._appendThinking();
 
     try {
@@ -121,6 +137,9 @@ export default class AskView {
       } else {
         const data = (resp && resp.data) || {};
         if (data.available === false) {
+          this._available = false;
+          this._offlineReason = data.reason || '';
+          this._checkStatus();
           this._appendNotice(data.reason || 'Investigations are unavailable.');
         } else {
           this._appendAnswer(data);
@@ -166,10 +185,26 @@ export default class AskView {
     row.className = 'ask-msg ask-msg--assistant';
     const bubble = document.createElement('div');
     bubble.className = 'ask-msg__bubble ask-msg__bubble--thinking';
-    bubble.textContent = 'Investigating…';
+    const label = this._model ? `Investigating with ${this._model}…` : 'Investigating…';
+    bubble.textContent = label;
     row.appendChild(bubble);
     this._thread().appendChild(row);
     this._scroll();
+
+    // Elapsed-time ticker: a local model legitimately takes tens of
+    // seconds — show that it is working, not hung.
+    const started = Date.now();
+    const timer = setInterval(() => {
+      const secs = Math.round((Date.now() - started) / 1000);
+      if (secs >= 5) bubble.textContent = `${label} ${secs}s`;
+      if (secs >= 30) {
+        bubble.textContent =
+          `${label} ${secs}s — the model is retrieving and reasoning over ` +
+          'live data; slower machines can take a minute or two.';
+      }
+    }, 1000);
+    const origRemove = row.remove.bind(row);
+    row.remove = () => { clearInterval(timer); origRemove(); };
     return row;
   }
 

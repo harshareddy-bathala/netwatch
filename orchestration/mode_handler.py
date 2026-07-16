@@ -631,6 +631,28 @@ def _on_mode_change_locked(old_mode, new_mode):
         except Exception as e:
             logger.warning("Could not update subnet for new mode: %s", e)
 
+        # 4b. Re-anchor the intelligence layer on the new network: the twin
+        # must re-role self/gateway nodes, and the threat detector must
+        # never score our own interfaces / the gateway as attackers.
+        try:
+            _gw_ip = (new_mode.interface.ip_address if is_hotspot
+                      else (getattr(new_mode.interface, 'gateway', None) or ''))
+            if state.twin_builder:
+                state.twin_builder.set_context(
+                    our_mac=our_mac,
+                    our_ip=new_mode.interface.ip_address or '',
+                    gateway_mac=gw_mac_for_state,
+                    gateway_ip=_gw_ip or '',
+                    mode=new_name,
+                )
+            if state.threat_detector:
+                state.threat_detector.set_context(
+                    local_macs=get_all_local_macs(),
+                    gateway_mac=gw_mac_for_state,
+                )
+        except Exception as e:
+            logger.debug("Intelligence context not updated: %s", e)
+
         # 5. Register known IPs/MACs to prevent false alerts
         try:
             from alerts import get_shared_engine as _get_shared_engine

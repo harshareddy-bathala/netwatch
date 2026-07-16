@@ -209,6 +209,41 @@ fixed — the P0.7 CSP overclaim above, and a test-isolation bug where the
 seeder tests read host subnet state that other test modules mutate (they
 passed alone, failed in the full suite; now pinned via a hermetic fixture).
 
+**Live hotspot field test (2026-07-16, two real clients).** Running the app
+against a real hotspot (a phone on Instagram, a tablet on YouTube) surfaced
+six defects the synthetic suites couldn't see; all fixed + regression-tested
+(`tests/test_false_positive_guards.py`, `tests/test_tls_sni.py`):
+
+1. **Threat FPs from the capture host itself** — NetWatch's ping sweep and
+   NAT return traffic alerted as "port scans" from our own/gateway MACs;
+   browsing a dozen CDN edges on 443 alerted as a "network sweep"; Instagram
+   keepalives (~51s, 3-4% jitter) alerted as C2 beaconing. Detector now
+   exempts self/gateway MACs, ignores ephemeral destination ports (vertical),
+   counts only internal targets (horizontal), and demands ≤2% jitter on
+   common keepalive ports. Detector eval unchanged: macro-F1 1.000, benign
+   FP-rate 0.000.
+2. **Twin lied about liveness** — DB seeding stamped every node "seen now"
+   (44 ghost nodes at startup), mode changes kept the previous network's
+   graph, and node IPs flapped to `fe80::`/external addresses (the capture
+   host rendered as a Microsoft IP). Seeds keep stored timestamps, the graph
+   resets on mode change, display IPs only upgrade (context-pinned for
+   self/gateway).
+3. **Activity feed was resolver noise** — the host's own `*.in-addr.arpa`
+   burst dominated; clients on Private DNS (DoH) showed nothing. Reverse-DNS/
+   mDNS/WPAD filtered at ingest **and** TLS ClientHello SNI extracted on
+   443/8443, so encrypted-DNS clients' sites still appear (tagged `tls`).
+4. **Incident fusion bugs** — device alerts stored `mac` while triage read
+   `device_mac` (device incidents lost their anchor), and MAC-less alerts
+   fused across categories (High CPU joined a security incident). Both fixed;
+   MAC-less fusion is now category-scoped.
+5. **Ask NetWatch UX** — with no Ollama the UI POSTed into a 240s timeout;
+   now `/api/investigate/status` is cached, offline questions answer
+   instantly with model-correct setup steps (`llama3.2:3b`), and the
+   thinking bubble shows elapsed time.
+6. **UI clarity** — Alerts vs Incidents explained + cross-linked
+   (alert → its incident), topology external endpoints capped/toggleable
+   with an honest legend.
+
 ---
 
 ## Research contributions (capstone-defensible)

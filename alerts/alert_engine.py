@@ -107,7 +107,11 @@ class AlertEngine:
         if self.incident_manager is None:
             return
         try:
-            device_mac = (metadata or {}).get("device_mac")
+            # Alert creators are inconsistent about the key ("device_mac"
+            # vs "mac"); accept both so device alerts fuse per-device
+            # instead of piling into one network-wide incident.
+            meta = metadata or {}
+            device_mac = meta.get("device_mac") or meta.get("mac")
             self.incident_manager.triage(
                 alert_id=alert_id,
                 alert_type=alert_type,

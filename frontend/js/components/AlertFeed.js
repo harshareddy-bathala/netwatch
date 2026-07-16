@@ -21,6 +21,12 @@ export default class AlertFeed {
 
   render() {
     this.container.innerHTML = `
+      <div class="view-explainer">
+        Every individual detection, newest first. Related alerts are grouped
+        into <a href="#/incidents">Incidents</a> — triage there, use this feed
+        for the raw stream and custom rules.
+      </div>
+
       <div id="alert-rules-container"></div>
 
       <div class="alert-controls">
@@ -107,6 +113,12 @@ export default class AlertFeed {
       }
     }));
 
+    // "Incident #N" chip: remember which incident to open on the other view.
+    this._unsubs.push(delegate(listEl, 'click', '.alert-item__incident', (_e, link) => {
+      const id = parseInt(link.dataset.incident, 10);
+      if (id) sessionStorage.setItem('netwatch-incident-focus', String(id));
+    }));
+
     this._unsubs.push(delegate(listEl, 'click', '.btn-resolve', async (_e, btn) => {
       btn.disabled = true;
       btn.textContent = '…';
@@ -158,6 +170,7 @@ export default class AlertFeed {
           <div class="alert-item__meta">
             ${a.source_ip ? `<span>Source: ${escapeHtml(a.source_ip)}</span>` : ''}
             ${a.alert_type ? `<span>Type: ${escapeHtml(a.alert_type)}</span>` : ''}
+            ${a.incident_id ? `<a class="alert-item__incident" href="#/incidents" data-incident="${parseInt(a.incident_id, 10)}">Incident #${parseInt(a.incident_id, 10)}</a>` : ''}
           </div>
           <div class="alert-item__actions">
             ${!a.acknowledged ? `<button class="btn btn--ghost btn-ack" data-id="${a.id}">Acknowledge</button>` : ''}

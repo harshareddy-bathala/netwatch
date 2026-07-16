@@ -102,13 +102,23 @@ class TestIncidentFusion:
                                 device_mac="aa:bb:cc:00:00:05")
         assert first != second
 
-    def test_network_wide_alerts_fuse_together(self, initialized_db):
+    def test_network_wide_alerts_fuse_within_category(self, initialized_db):
         manager = IncidentManager()
         first = manager.triage(_make_alert("bandwidth"), "bandwidth", "warning")
-        second = manager.triage(_make_alert("health"), "health", "warning")
+        second = manager.triage(_make_alert("bandwidth"), "bandwidth", "warning")
         assert first == second
         incident = incident_queries.get_incident(first)
         assert incident["device_mac"] is None
+
+    def test_network_wide_alerts_do_not_fuse_across_categories(
+            self, initialized_db):
+        # Without a device to anchor on, category is the only evidence two
+        # alerts tell the same story: a health alert must not join an
+        # unrelated security/bandwidth incident (live-observed defect).
+        manager = IncidentManager()
+        first = manager.triage(_make_alert("bandwidth"), "bandwidth", "warning")
+        second = manager.triage(_make_alert("health"), "health", "warning")
+        assert first != second
 
     def test_network_wide_does_not_fuse_with_device(self, initialized_db):
         manager = IncidentManager()

@@ -99,9 +99,15 @@ def attach_alert(incident_id: int, alert_id: int, severity: str,
 # ---------------------------------------------------------------------------
 
 def find_open_incident(device_mac: Optional[str],
-                       updated_since: str) -> Optional[dict]:
+                       updated_since: str,
+                       category: Optional[str] = None) -> Optional[dict]:
     """Most recent open incident for *device_mac* touched after
-    *updated_since* (``NULL`` mac matches only network-wide incidents)."""
+    *updated_since* (``NULL`` mac matches only network-wide incidents).
+
+    Network-wide (NULL-mac) incidents additionally require a *category*
+    match when one is given: without a device to anchor on, category is
+    the only evidence two alerts tell the same story — a health alert
+    must not fuse into an unrelated security incident."""
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
@@ -112,6 +118,14 @@ def find_open_incident(device_mac: Optional[str],
                       AND updated_at >= ?
                     ORDER BY updated_at DESC LIMIT 1
                 """, (device_mac, updated_since))
+            elif category:
+                cursor.execute("""
+                    SELECT * FROM incidents
+                    WHERE status = 'open' AND device_mac IS NULL
+                      AND updated_at >= ?
+                      AND categories LIKE ?
+                    ORDER BY updated_at DESC LIMIT 1
+                """, (updated_since, f'%"{category}"%'))
             else:
                 cursor.execute("""
                     SELECT * FROM incidents

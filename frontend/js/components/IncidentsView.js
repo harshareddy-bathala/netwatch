@@ -29,6 +29,11 @@ export default class IncidentsView {
   render() {
     this.el.innerHTML = `
       <div class="incidents">
+        <div class="view-explainer">
+          One incident = one story: related <a href="#/alerts">alerts</a> from
+          the same device and time window, fused so you triage a case instead
+          of a wall of repeats.
+        </div>
         <div class="incidents__toolbar">
           <div class="incidents__summary" id="incidents-summary"></div>
           <div class="incidents__filter" role="tablist">
@@ -58,6 +63,17 @@ export default class IncidentsView {
         this._load();
       });
     });
+
+    // Arriving from an alert's "Incident #N" chip: open that incident.
+    const focus = parseInt(sessionStorage.getItem('netwatch-incident-focus'), 10);
+    if (focus) {
+      sessionStorage.removeItem('netwatch-incident-focus');
+      this._status = 'all';
+      this.el.querySelectorAll('.incidents__filter-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.status === 'all'));
+      this._selectedId = focus;
+      this._loadDetail(focus);
+    }
 
     this._load();
     this._timer = setInterval(() => this._load(), REFRESH_MS);

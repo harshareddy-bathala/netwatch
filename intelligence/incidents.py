@@ -103,7 +103,9 @@ class IncidentManager:
         mac = device_mac.lower() if device_mac else None
         window_start = (datetime.now() - self._window).strftime(_TS_FMT)
 
-        incident = incident_queries.find_open_incident(mac, window_start)
+        incident = incident_queries.find_open_incident(
+            mac, window_start, category=None if mac else alert_type,
+        )
         if incident:
             categories = incident.get("categories")
             if not isinstance(categories, list):  # defensive: always decoded

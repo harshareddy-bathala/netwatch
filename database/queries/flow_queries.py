@@ -170,6 +170,11 @@ def get_recent_activity(minutes: int = 5, limit: int = 300,
     if mac:
         clauses.append("LOWER(q.source_mac) = LOWER(?)")
         params.append(mac)
+    # Resolver plumbing is filtered at capture now, but older rows (and any
+    # other writer) must not resurface as "activity".
+    clauses.append("q.qname NOT LIKE '%.arpa'")
+    clauses.append("q.qname NOT LIKE '%.local'")
+    clauses.append("q.qname NOT LIKE 'wpad%'")
     where = "WHERE " + " AND ".join(clauses)
     try:
         with get_connection() as conn:
@@ -182,6 +187,7 @@ def get_recent_activity(minutes: int = 5, limit: int = 300,
                     q.source_mac                           AS source_mac,
                     q.qname                                AS qname,
                     q.qtype                                AS qtype,
+                    q.protocol                             AS protocol,
                     COALESCE(NULLIF(d.hostname, ''),
                              NULLIF(d.device_name, ''))    AS device_name
                 FROM dns_queries q

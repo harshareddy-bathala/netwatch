@@ -110,12 +110,13 @@ def get_runtime(model: Optional[str] = None) -> Optional[OllamaRuntime]:
     error.
     """
     try:
-        from config import LLM_TIMEOUT_SECONDS as _timeout
+        from config import LLM_TIMEOUT_SECONDS as _timeout, LLM_MODEL as _model
     except ImportError:          # config not importable (standalone use)
-        _timeout = 180.0
-    runtime = OllamaRuntime(model=model or "llama3", timeout=_timeout)
+        _timeout, _model = 180.0, "llama3.2:3b"
+    runtime = OllamaRuntime(model=model or _model, timeout=_timeout)
     if runtime.is_available():
         return runtime
     logger.info("No local Ollama runtime reachable — LLM investigations "
-                "unavailable (install Ollama + pull a model to enable).")
+                "unavailable (install Ollama + pull '%s' to enable).",
+                model or _model)
     return None

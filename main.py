@@ -480,6 +480,18 @@ def main():
             "Threat detector started (port-scan, beaconing, DNS-tunneling, "
             "rogue-device, lateral-movement)"
         )
+        # Our own interfaces and the gateway are never attackers — without
+        # this, NetWatch's discovery sweeps read as port scans from itself.
+        try:
+            from orchestration.discovery_manager import get_all_local_macs
+            mode = state.interface_manager.get_current_mode() if state.interface_manager else None
+            gw_ip = getattr(mode.interface, 'gateway', None) or "" if mode else ""
+            state.threat_detector.set_context(
+                local_macs=get_all_local_macs(),
+                gateway_mac=resolve_gateway_mac(gw_ip) if gw_ip else '',
+            )
+        except Exception as e:
+            logger.debug("Threat context not set: %s", e)
 
     # Start system health monitor
     health_started = start_health_monitor(alert_engine)

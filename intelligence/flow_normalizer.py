@@ -49,6 +49,16 @@ except ImportError:
 _TS_FMT = "%Y-%m-%d %H:%M:%S"
 
 
+def _is_noise_qname(qname: str) -> bool:
+    """Resolver plumbing, not user activity: reverse-DNS lookups (the
+    capture host's own hostname resolver emits bursts of these), mDNS
+    service discovery, and WPAD probes.  They drowned the Activity feed —
+    one host card was 67 ``*.in-addr.arpa`` rows and zero real sites."""
+    q = qname.lower().rstrip(".")
+    return (q.endswith(".arpa") or q.endswith(".local")
+            or q in ("wpad", "localhost") or q.startswith("wpad."))
+
+
 def _ts_str(value) -> str:
     """Normalize datetime/str/epoch to the project's timestamp string."""
     if isinstance(value, datetime):
@@ -247,7 +257,7 @@ class FlowNormalizer:
             flow.packets_total += 1
 
             qname = p.get("dns_qname")
-            if qname:
+            if qname and not _is_noise_qname(qname):
                 dns_row = {
                     "timestamp": _ts_str(p.get("timestamp")),
                     "source_ip": p.get("source_ip"),
@@ -258,6 +268,23 @@ class FlowNormalizer:
                 }
                 self._dns_buffer.append(dns_row)
                 self._bus.publish("dns.query", dns_row)
+
+            # TLS SNI names the destination site directly — the only name
+            # signal we get from clients whose DNS is encrypted (Private
+            # DNS / DoH). Stored beside DNS rows so the Activity feed and
+            # the twin see one unified "device → site" stream.
+            sni = p.get("tls_sni")
+            if sni and not _is_noise_qname(sni):
+                sni_row = {
+                    "timestamp": _ts_str(p.get("timestamp")),
+                    "source_ip": p.get("source_ip"),
+                    "source_mac": p.get("source_mac"),
+                    "qname": sni,
+                    "qtype": None,
+                    "protocol": "TLS",
+                }
+                self._dns_buffer.append(sni_row)
+                self._bus.publish("dns.query", sni_row)
 
     def flush(self, force: bool = False) -> int:
         """Persist expired flows (all flows when *force*) and DNS buffer.

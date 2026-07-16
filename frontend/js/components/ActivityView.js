@@ -132,7 +132,7 @@ export default class ActivityView {
       const dom = (r.qname || '').replace(/\.$/, '');
       if (dom && !g.seen.has(dom)) {
         g.seen.add(dom);
-        g.domains.push({ qname: dom, timestamp: r.timestamp });
+        g.domains.push({ qname: dom, timestamp: r.timestamp, protocol: r.protocol });
       }
     }
     // Rows arrive newest-first, so each device's domains are already newest
@@ -164,8 +164,9 @@ export default class ActivityView {
         hint.className = 'activity__hint activity__hint--warn';
       } else if (totalLookups === 0) {
         hint.textContent =
-          'No DNS lookups captured yet. In hotspot mode this fills as clients ' +
-          'browse; on other networks only this host\'s own lookups are visible.';
+          'No activity captured yet. In hotspot mode this fills as clients browse ' +
+          '(from their DNS lookups and TLS connections); on other networks only ' +
+          'this host\'s own activity is visible.';
         hint.className = 'activity__hint';
       } else {
         hint.textContent = '';
@@ -261,6 +262,14 @@ export default class ActivityView {
     const dom = document.createElement('span');
     dom.className = 'activity-domain__name';
     dom.textContent = d.qname;
+    if (d.protocol === 'TLS') {
+      const chip = document.createElement('span');
+      chip.className = 'activity-domain__chip';
+      chip.textContent = 'tls';
+      chip.title = 'Seen in the TLS connection itself (this client hides its ' +
+        'DNS lookups with Private DNS, but the sites it connects to are still visible)';
+      dom.appendChild(chip);
+    }
 
     const t = document.createElement('span');
     t.className = 'activity-domain__time';

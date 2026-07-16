@@ -75,6 +75,44 @@ except Exception:
     _orch_state = None
 
 
+# TLS ports where a ClientHello SNI is worth extracting.  SNI names the
+# site a client is connecting to even when the client uses encrypted DNS
+# (DoH/DoT "Private DNS"), which hides its lookups from the DNS feed.
+_TLS_SNI_PORTS = {443, 8443}
+
+
+def extract_tls_sni(payload: bytes) -> Optional[str]:
+    """Server Name Indication from a TLS ClientHello, or None.
+
+    Minimal, bounds-checked parse of the first record: record header →
+    handshake header → skip version/random/session/ciphers/compression →
+    walk extensions for type 0 (server_name).
+    """
+    try:
+        if len(payload) < 46 or payload[0] != 0x16 or payload[5] != 0x01:
+            return None
+        i = 9                                   # record(5) + hs type(1)+len(3)
+        i += 2 + 32                             # client version + random
+        i += 1 + payload[i]                     # session id
+        i += 2 + int.from_bytes(payload[i:i + 2], "big")   # cipher suites
+        i += 1 + payload[i]                     # compression methods
+        ext_end = i + 2 + int.from_bytes(payload[i:i + 2], "big")
+        i += 2
+        while i + 4 <= min(ext_end, len(payload)):
+            ext_type = int.from_bytes(payload[i:i + 2], "big")
+            ext_len = int.from_bytes(payload[i + 2:i + 4], "big")
+            i += 4
+            if ext_type == 0:                   # server_name
+                # list len(2) + name type(1) + name len(2) + name
+                name_len = int.from_bytes(payload[i + 3:i + 5], "big")
+                name = payload[i + 5:i + 5 + name_len].decode("ascii", "replace")
+                return name.rstrip(".").lower() or None
+            i += ext_len
+    except (IndexError, ValueError):
+        pass
+    return None
+
+
 # =============================================================================
 # DATA CLASSES
 # =============================================================================
@@ -131,6 +169,8 @@ class PacketData:
         if "dns_qname" in self.extra:
             d["dns_qname"] = self.extra["dns_qname"]
             d["dns_qtype"] = self.extra.get("dns_qtype")
+        if "tls_sni" in self.extra:
+            d["tls_sni"] = self.extra["tls_sni"]
         return d
 
 
@@ -312,6 +352,13 @@ class PacketProcessor:
                             extra["dns_qtype"] = int(_q.qtype or 0)
                 except Exception:
                     pass
+            # TLS SNI: names the destination site even when the client's
+            # DNS is encrypted (Private DNS / DoH) and invisible to us.
+            if (dst_port in _TLS_SNI_PORTS and packet.haslayer(TCP)
+                    and packet.haslayer(Raw)):
+                _sni = extract_tls_sni(bytes(packet[Raw].load))
+                if _sni:
+                    extra["tls_sni"] = _sni
             if is_transition_packet:
                 extra["transition_phase"] = transition_phase
                 extra["is_transition_packet"] = True

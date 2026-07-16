@@ -24,11 +24,18 @@ logger = logging.getLogger(__name__)
 
 investigate_bp = Blueprint('investigate', __name__)
 
-_UNAVAILABLE = {
-    "available": False,
-    "reason": "No local LLM runtime is reachable. Install Ollama and pull a "
-              "model (e.g. `ollama pull llama3`) to enable Ask NetWatch.",
-}
+def _unavailable():
+    try:
+        from config import LLM_MODEL
+    except ImportError:
+        LLM_MODEL = "llama3.2:3b"
+    return {
+        "available": False,
+        "reason": ("No local AI model is running. Install Ollama "
+                   "(ollama.com), run `ollama pull " + LLM_MODEL + "`, and "
+                   "make sure Ollama is running — then Ask NetWatch works "
+                   "fully offline."),
+    }
 
 
 def _build_investigator():
@@ -49,10 +56,19 @@ def get_tools():
 def get_status():
     """Report whether a local LLM backend is currently reachable."""
     available = _build_investigator() is not None
-    return success_detail({
+    payload = {
         "available": available,
         "tools": [t["name"] for t in tool_schema()],
-    })
+    }
+    if available:
+        try:
+            from config import LLM_MODEL
+            payload["model"] = LLM_MODEL
+        except ImportError:
+            pass
+    else:
+        payload["reason"] = _unavailable()["reason"]
+    return success_detail(payload)
 
 
 @investigate_bp.route('/api/investigate', methods=['POST'])
@@ -70,7 +86,7 @@ def investigate():
 
     investigator = _build_investigator()
     if investigator is None:
-        return success_detail({**_UNAVAILABLE, "question": question})
+        return success_detail({**_unavailable(), "question": question})
 
     result = investigator.investigate(question)
     return success_detail(result)

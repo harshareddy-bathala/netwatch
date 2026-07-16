@@ -90,8 +90,9 @@ class _Node:
                  "first_seen", "last_seen", "bytes_in", "bytes_out",
                  "packets", "protocols", "recent_dns")
 
-    def __init__(self, node_id: str, node_type: str, mac: str = "", ip: str = ""):
-        now = time.time()
+    def __init__(self, node_id: str, node_type: str, mac: str = "", ip: str = "",
+                 seen: Optional[float] = None):
+        now = seen if seen is not None else time.time()
         self.node_id = node_id
         self.node_type = node_type      # device | gateway | self | external
         self.mac = mac
@@ -128,8 +129,8 @@ class _Edge:
     __slots__ = ("source", "target", "first_seen", "last_seen",
                  "bytes", "packets", "protocols")
 
-    def __init__(self, source: str, target: str):
-        now = time.time()
+    def __init__(self, source: str, target: str, seen: Optional[float] = None):
+        now = seen if seen is not None else time.time()
         self.source = source
         self.target = target
         self.first_seen = now
@@ -193,11 +194,15 @@ class TwinBuilder:
             self._gateway_ip = gateway_ip or ""
             if mode:
                 self._mode = mode
-            # Re-role any existing nodes
+            # Re-role any existing nodes and pin authoritative addresses
             for node in self._nodes.values():
                 node_role = self._role_for(node.mac, node.ip)
                 if node_role and node.node_type != node_role:
                     node.node_type = node_role
+                if node.node_type == "self" and self._our_ip:
+                    node.ip = self._our_ip
+                elif node.node_type == "gateway" and self._gateway_ip:
+                    node.ip = self._gateway_ip
 
     def _role_for(self, mac: str, ip: str) -> Optional[str]:
         """Return special role for a local node, or None for plain device."""
@@ -270,8 +275,28 @@ class TwinBuilder:
     #  Seeding from durable storage
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _parse_ts(value) -> Optional[float]:
+        """DB timestamp (str/datetime) → epoch seconds, or None."""
+        if isinstance(value, datetime):
+            return value.timestamp()
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str) and value:
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+                try:
+                    return datetime.strptime(value[:19], fmt).timestamp()
+                except ValueError:
+                    continue
+        return None
+
     def _seed(self) -> None:
-        """Rebuild nodes/edges from the devices table + recent flows."""
+        """Rebuild nodes/edges from the devices table + recent flows.
+
+        Seeded nodes keep their *stored* last_seen: stamping them "now"
+        would make every device from the last 24h render as live for the
+        first TWIN_ACTIVE_SECONDS after a restart.
+        """
         from database.queries.device_queries import get_all_devices
         from database.queries.flow_queries import get_recent_flows
 
@@ -285,6 +310,11 @@ class TwinBuilder:
                 continue
             node.hostname = d.get("hostname") or d.get("device_name") or ""
             node.vendor = d.get("vendor") or ""
+            seen = self._parse_ts(d.get("last_seen"))
+            if seen:
+                node.last_seen = seen
+                node.first_seen = min(
+                    node.first_seen, self._parse_ts(d.get("first_seen")) or seen)
 
         since = (datetime.now() - timedelta(hours=NODE_STALE_HOURS)).strftime(
             "%Y-%m-%d %H:%M:%S")
@@ -299,6 +329,7 @@ class TwinBuilder:
                 npackets=int(f.get("packets_total") or 0),
                 touch_liveness=False,
                 direction=f.get("direction") or "",
+                seen_at=self._parse_ts(f.get("last_seen")),
             )
 
     # ------------------------------------------------------------------ #
@@ -333,38 +364,77 @@ class TwinBuilder:
 
     def ingest_mode_change(self, event: dict) -> None:
         with self._lock:
-            self._mode = event.get("new_mode") or self._mode
+            old = self._mode
+            new = event.get("new_mode") or self._mode
+            self._mode = new
             self._mode_timeline.append(dict(event))
+            # A mode change means a different network (new subnet/gateway).
+            # Keeping the old graph would draw last network's devices and
+            # endpoints on top of this one, so start clean; the mode
+            # handler re-sets self/gateway context right after.
+            if old != new and old != "unknown":
+                self._nodes.clear()
+                self._edges.clear()
+                logger.info("Twin reset for mode change %s -> %s", old, new)
 
     # ------------------------------------------------------------------ #
     #  Graph mutation (caller holds lock unless seeding single-threaded)
     # ------------------------------------------------------------------ #
 
-    def _get_or_create_local(self, mac: str, ip: str) -> Optional[_Node]:
+    def _get_or_create_local(self, mac: str, ip: str,
+                             seen_at: Optional[float] = None) -> Optional[_Node]:
         node_id = f"mac:{mac}"
         node = self._nodes.get(node_id)
         if node is None:
             if len(self._nodes) >= MAX_NODES:
                 return None
             role = self._role_for(mac, ip) or "device"
-            node = _Node(node_id, role, mac=mac, ip=ip)
+            node = _Node(node_id, role, mac=mac, ip="", seen=seen_at)
             self._nodes[node_id] = node
-        if ip:
-            node.ip = ip
+        self._update_node_ip(node, ip)
         return node
 
-    def _get_or_create_external(self, ip: str) -> Optional[_Node]:
+    def _update_node_ip(self, node: _Node, ip: str) -> None:
+        """Adopt *ip* as the node's display address only when it is an
+        improvement.  Every packet used to overwrite it, so a device
+        flapped between IPv4 and fe80::… labels, and one mis-attributed
+        packet could relabel the capture host with an external IP."""
+        if not ip or ip == node.ip:
+            return
+        # self/gateway addresses are authoritative context, not inferred.
+        if node.node_type == "self" and self._our_ip:
+            node.ip = self._our_ip
+            return
+        if node.node_type == "gateway" and self._gateway_ip:
+            node.ip = self._gateway_ip
+            return
+        if not node.ip:
+            node.ip = ip
+            return
+        is_v4 = "." in ip and ":" not in ip
+        had_v4 = "." in node.ip and ":" not in node.ip
+        if had_v4 and not is_v4:
+            return                       # never replace IPv4 with IPv6
+        if ip.lower().startswith(("fe80:", "169.254.")):
+            return                       # never adopt link-local over anything
+        if had_v4 and is_v4 and is_private_ip(node.ip) and not is_private_ip(ip):
+            return                       # keep the private address for local nodes
+        node.ip = ip
+
+    def _get_or_create_external(self, ip: str,
+                                seen_at: Optional[float] = None) -> Optional[_Node]:
         node_id = f"ip:{ip}"
         node = self._nodes.get(node_id)
         if node is None:
             if len(self._nodes) >= MAX_NODES:
                 return None
-            node = _Node(node_id, "external", ip=ip)
+            node = _Node(node_id, "external", ip=ip, seen=seen_at)
             self._nodes[node_id] = node
         return node
 
     def _endpoint_node(self, mac: str, ip: str,
-                       local_hint: bool = False) -> Optional[_Node]:
+                       local_hint: bool = False,
+                       seen_at: Optional[float] = None) -> Optional[_Node]:
         """Resolve one side of a communication to a twin node.
 
         Role (self/gateway MAC) and *local_hint* (from the packet's
@@ -376,11 +446,11 @@ class TwinBuilder:
         if not _is_excluded_mac(mac) and (
             local_hint or self._role_for(mac, "") is not None
         ):
-            return self._get_or_create_local(mac, ip)
+            return self._get_or_create_local(mac, ip, seen_at=seen_at)
         if ip and not is_private_ip(ip):
-            return self._get_or_create_external(ip)
+            return self._get_or_create_external(ip, seen_at=seen_at)
         if not _is_excluded_mac(mac):
-            return self._get_or_create_local(mac, ip)
+            return self._get_or_create_local(mac, ip, seen_at=seen_at)
         return None
 
     def _fold_communication(self, src_mac: str, dst_mac: str,
@@ -389,13 +459,16 @@ class TwinBuilder:
                             device_name: Optional[str] = None,
                             vendor: Optional[str] = None,
                             touch_liveness: bool = True,
-                            direction: str = "") -> None:
+                            direction: str = "",
+                            seen_at: Optional[float] = None) -> None:
         # Direction identifies the local side even when its IP is a
         # global IPv6 address: upload → source is local, download → dest.
         src = self._endpoint_node(src_mac, src_ip,
-                                  local_hint=(direction == "upload"))
+                                  local_hint=(direction == "upload"),
+                                  seen_at=seen_at)
         dst = self._endpoint_node(dst_mac, dst_ip,
-                                  local_hint=(direction == "download"))
+                                  local_hint=(direction == "download"),
+                                  seen_at=seen_at)
         if src is None or dst is None or src.node_id == dst.node_id:
             return
 
@@ -418,7 +491,7 @@ class TwinBuilder:
         if edge is None:
             if len(self._edges) >= MAX_EDGES:
                 return
-            edge = _Edge(*key)
+            edge = _Edge(*key, seen=seen_at if not touch_liveness else None)
             self._edges[key] = edge
         edge.bytes += nbytes
         edge.packets += npackets
