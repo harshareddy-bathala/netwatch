@@ -151,11 +151,17 @@ export default class ActivityView {
         entry.protocol = r.protocol;
       }
     }
-    // Newest-active device first; within a device, newest site first.
+    // Within a device, newest site first (a feed). But the device CARDS keep
+    // a STABLE order (by name, then IP) so a card doesn't jump around as its
+    // traffic ebbs — critical once there are many devices to scan.
     for (const g of byDevice.values()) {
       g.domains.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
     }
-    return [...byDevice.values()].sort((a, b) => (a.latest < b.latest ? 1 : -1));
+    return [...byDevice.values()].sort((a, b) => {
+      const an = (a.name || a.ip || a.key).toLowerCase();
+      const bn = (b.name || b.ip || b.key).toLowerCase();
+      return an < bn ? -1 : an > bn ? 1 : 0;
+    });
   }
 
   _renderSummary() {
@@ -427,7 +433,16 @@ export default class ActivityView {
 
     const list = document.createElement('ul');
     list.className = 'activity-rules__list';
-    for (const r of this._rules) list.appendChild(this._ruleRow(r));
+    // Collapse rules that block the same domain for the same scope (a phone
+    // can raise two rows via two MACs) so the list doesn't show instagram.com
+    // twice. Keep the first (its id drives disable/remove).
+    const seen = new Set();
+    for (const r of this._rules) {
+      const key = `${(r.domain || '').toLowerCase()}|${(r.device_name || r.device_mac || 'all').toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      list.appendChild(this._ruleRow(r));
+    }
     panel.appendChild(list);
   }
 

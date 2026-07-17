@@ -53,6 +53,30 @@ class TestDedupeByHostname:
         assert len(_dedupe_by_hostname(devs)) == 2
 
 
+class TestDropHostRows:
+
+    def test_host_dropped_by_ip_and_mac(self, monkeypatch):
+        from backend.blueprints.devices_bp import _drop_host_rows
+
+        class FakeState:
+            def get_host_identity(self):
+                return {"macs": {"2e:d0:43:a5:22:70"}, "ips": {"192.168.137.1"}}
+        import utils.realtime_state as rs
+        monkeypatch.setattr(rs, "dashboard_state", FakeState())
+
+        rows = [
+            {"mac_address": "2e:d0:43:a5:22:70", "ip_address": "192.168.137.1",
+             "hostname": "HarshaReddy"},                       # host by MAC+IP
+            {"mac_address": "AA:BB:CC:00:00:01", "ip_address": "192.168.137.1",
+             "hostname": "spoofed"},                            # host by IP only
+            {"mac_address": "22:5e:3e:1a:d0:f3", "ip_address": "192.168.137.142",
+             "hostname": "Nothing-Phone"},                      # real client
+        ]
+        out = _drop_host_rows(rows)
+        names = [d["hostname"] for d in out]
+        assert names == ["Nothing-Phone"]
+
+
 class TestHostExclusionSql:
 
     def test_hotspot_clause_excludes_host(self, monkeypatch):

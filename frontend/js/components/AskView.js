@@ -22,6 +22,10 @@ const SUGGESTIONS = [
   'Summarise the current state of the network.',
 ];
 
+// Persist the conversation across view remounts (navigating away and back)
+// so Ask NetWatch doesn't start fresh every time. Session-scoped, in-memory.
+let _savedThreadHTML = null;
+
 export default class AskView {
   constructor(el) {
     this.el = el;
@@ -71,11 +75,26 @@ export default class AskView {
       this._submit();
     });
 
+    // Restore a prior conversation if the user navigated away and back.
+    if (_savedThreadHTML) {
+      const thread = this._thread();
+      if (thread) {
+        thread.innerHTML = _savedThreadHTML;
+        this._scroll();
+      }
+    }
+
     this._checkStatus();
   }
 
   destroy() {
     this._destroyed = true;
+    // Save the conversation (unless it's just the intro) so it survives a
+    // remount. Cheap: the thread is small text.
+    const thread = this._thread();
+    if (thread && !thread.querySelector('.ask__intro')) {
+      _savedThreadHTML = thread.innerHTML;
+    }
   }
 
   async _checkStatus() {
