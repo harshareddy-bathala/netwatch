@@ -278,8 +278,9 @@ export default class ActivityView {
     li.appendChild(dom);
     li.appendChild(t);
 
-    // Org-inferred rows name a company, not a resolvable domain — no block.
-    if (!blocked && g.mac && d.protocol !== 'ORG') {
+    // Org-/VPN-inferred rows name a company or tunnel, not a resolvable
+    // domain — no block button.
+    if (!blocked && g.mac && d.protocol !== 'ORG' && d.protocol !== 'VPN') {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'activity-domain__block';
@@ -316,6 +317,10 @@ export default class ActivityView {
         return { label: 'via IP', title: 'Inferred from the destination IP ' +
           "address's owner — exact site is encrypted (ECH/VPN), so only the " +
           'operator is known.' };
+      case 'VPN':
+        return { label: 'vpn', title: 'This device is tunneling through a VPN. ' +
+          'The provider and volume are visible; the sites inside the tunnel are ' +
+          'encrypted and cannot be seen passively.' };
       default:
         return null;
     }

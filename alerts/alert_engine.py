@@ -76,6 +76,7 @@ ALERT_DEVICE_COUNT = "device_count"
 ALERT_HEALTH = "health"
 ALERT_NEW_DEVICE = "new_device"
 ALERT_SECURITY = "security"
+ALERT_CONNECTION = "connection"
 ALERT_CUSTOM = "custom"
 
 
@@ -726,6 +727,35 @@ class AlertEngine:
                 "detector": "threat_pack",
             },
             dedup_key=f"threat:{threat_type}:{mac.lower()}",
+        )
+
+    def create_vpn_alert(
+        self,
+        mac: str,
+        message: str,
+        evidence: list,
+        confidence: float,
+        severity: str = "low",
+    ) -> Optional[int]:
+        """Create a VPN-usage alert (W3).
+
+        Filed under the ``connection`` category (a VPN is a connection
+        characteristic, not a security threat) so it never fuses into a
+        security incident or reads as an attack. Deduped per device.
+        """
+        return self._create_alert_with_dedup(
+            alert_type=ALERT_CONNECTION,
+            severity=severity,
+            title="VPN / Encrypted Tunnel Detected",
+            message=message,
+            metadata={
+                "threat_type": "vpn",
+                "device_mac": mac,
+                "confidence": round(confidence, 4),
+                "evidence": evidence,
+                "detector": "vpn_detector",
+            },
+            dedup_key=f"vpn:{mac.lower()}",
         )
 
     def create_anomaly_alert(

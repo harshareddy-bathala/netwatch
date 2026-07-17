@@ -54,6 +54,11 @@ def _get_threats():
     return getattr(state, 'threat_detector', None)
 
 
+def _get_vpn():
+    from orchestration import state
+    return getattr(state, 'vpn_detector', None)
+
+
 def _get_incidents():
     from orchestration import state
     return getattr(state, 'incident_manager', None)
@@ -84,11 +89,13 @@ def get_twin_stats():
         bus_stats = event_bus.get_stats()
     except Exception:
         bus_stats = {}
+    vpn = _get_vpn()
     return jsonify({'data': {
         'twin': twin.get_stats() if twin else {'running': False},
         'behavior': behavior.get_stats() if behavior else {'running': False},
         'threats': threats.get_stats() if threats else {'running': False},
         'incidents': incidents.get_stats() if incidents else {'running': False},
+        'vpn': vpn.get_stats() if vpn else {'running': False},
         'event_bus': bus_stats,
     }})
 
@@ -134,8 +141,36 @@ def get_activity_recent():
         minutes=minutes, limit=limit, mac=mac,
         exclude_macs=exclude_macs, exclude_ips=exclude_ips)
     rows.extend(_org_fallback_rows(minutes, exclude_macs, exclude_ips, mac))
+    rows.extend(_vpn_rows(mac))
     rows.sort(key=lambda r: r.get("timestamp") or "", reverse=True)
     return jsonify({'data': rows})
+
+
+def _vpn_rows(mac):
+    """One synthetic activity row per device currently using a VPN, so the
+    Activity feed shows the tunnel (provider + the honest 'contents hidden'
+    note) alongside whatever plaintext names remain."""
+    vpn = _get_vpn()
+    if vpn is None:
+        return []
+    import time as _t
+    out = []
+    for dmac, badge in list(getattr(vpn, 'active_vpns', {}).items()):
+        if mac and dmac.lower() != mac.lower():
+            continue
+        label = badge.get("protocol") or "encrypted tunnel"
+        if badge.get("provider") and badge["provider"] != "unknown provider":
+            label += f" → {badge['provider']}"
+        out.append({
+            "timestamp": _t.strftime("%Y-%m-%d %H:%M:%S"),
+            "source_ip": None,
+            "source_mac": dmac,
+            "qname": f"VPN: {label} (contents hidden)",
+            "qtype": None,
+            "protocol": "VPN",
+            "device_name": None,
+        })
+    return out
 
 
 def _org_fallback_rows(minutes, exclude_macs, exclude_ips, mac):

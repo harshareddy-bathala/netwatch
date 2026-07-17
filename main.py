@@ -65,7 +65,7 @@ from orchestration.background_tasks import (
     start_anomaly_detector, start_cleanup_task,
     start_health_monitor, start_thread_watchdog,
     start_flow_normalizer, start_twin_builder, start_behavior_analyzer,
-    start_threat_detector,
+    start_threat_detector, start_vpn_detector,
 )
 
 # Hostname resolver functions
@@ -501,6 +501,20 @@ def main():
             )
         except Exception as e:
             logger.debug("Threat context not set: %s", e)
+
+    # Start VPN / encrypted-tunnel detector (W3)
+    if capture_started and start_vpn_detector(alert_engine):
+        logger.info("VPN detector started (tunnel detection + provider classification)")
+        try:
+            from orchestration.discovery_manager import get_all_local_macs
+            mode = state.interface_manager.get_current_mode() if state.interface_manager else None
+            gw_ip = getattr(mode.interface, 'gateway', None) or "" if mode else ""
+            state.vpn_detector.set_context(
+                local_macs=get_all_local_macs(),
+                gateway_mac=resolve_gateway_mac(gw_ip) if gw_ip else '',
+            )
+        except Exception as e:
+            logger.debug("VPN context not set: %s", e)
 
     # Start system health monitor
     health_started = start_health_monitor(alert_engine)

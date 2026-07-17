@@ -120,6 +120,21 @@ def start_threat_detector(alert_engine):
         return False
 
 
+def start_vpn_detector(alert_engine):
+    """Start VPN/encrypted-tunnel detection (event-bus consumer, W3)."""
+    from intelligence.vpn_detector import VpnDetector
+
+    try:
+        state.vpn_detector = VpnDetector(
+            alert_engine=alert_engine,
+            shutdown_event=state.shutdown_event,
+        )
+        return state.vpn_detector.start()
+    except Exception as e:
+        logger.error("Failed to start VPN detector: %s", e)
+        return False
+
+
 # =========================================================================
 # Health monitor
 # =========================================================================

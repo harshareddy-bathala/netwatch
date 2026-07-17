@@ -29,6 +29,7 @@ flow_normalizer = None       # intelligence.flow_normalizer.FlowNormalizer
 twin_builder = None          # intelligence.twin.TwinBuilder
 behavior_analyzer = None     # intelligence.behavior.BehaviorAnalyzer
 threat_detector = None       # intelligence.threats.ThreatDetector
+vpn_detector = None          # intelligence.vpn_detector.VpnDetector
 incident_manager = None      # intelligence.incidents.IncidentManager
 dns_blocker = None           # packet_capture.dns_blocker.DNSBlocker
 

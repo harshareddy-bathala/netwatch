@@ -711,6 +711,20 @@ THREAT_LATERAL_WINDOW_SECONDS = int(os.getenv('THREAT_LATERAL_WINDOW_SECONDS', '
 THREAT_LATERAL_HOST_THRESHOLD = int(os.getenv('THREAT_LATERAL_HOST_THRESHOLD', '3'))
 
 # =============================================================================
+# VPN / ENCRYPTED-TUNNEL DETECTION (W3) — detect & classify, never decrypt
+# =============================================================================
+
+# Bytes to one external peer within the window before a "commercial VPN /
+# encrypted proxy" heuristic fires (protocol-signature VPNs fire immediately).
+VPN_MIN_TUNNEL_BYTES = int(os.getenv('VPN_MIN_TUNNEL_BYTES', str(2_000_000)))
+# Rolling window (seconds) over which a device's tunnel volume/duration is
+# accumulated for the heuristic and reporting.
+VPN_WINDOW_SECONDS = int(os.getenv('VPN_WINDOW_SECONDS', '600'))
+# Minimum tunnel duration (seconds) before the volume heuristic reports, so a
+# brief large transfer to a CDN isn't mislabeled as a VPN.
+VPN_MIN_TUNNEL_SECONDS = int(os.getenv('VPN_MIN_TUNNEL_SECONDS', '120'))
+
+# =============================================================================
 # FORECASTING (Phase 2, AI-first) — bandwidth saturation + device-count trend
 # =============================================================================
 

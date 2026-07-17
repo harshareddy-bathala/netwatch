@@ -655,6 +655,11 @@ def _on_mode_change_locked(old_mode, new_mode):
                     local_macs=get_all_local_macs(),
                     gateway_mac=gw_mac_for_state,
                 )
+            if getattr(state, 'vpn_detector', None):
+                state.vpn_detector.set_context(
+                    local_macs=get_all_local_macs(),
+                    gateway_mac=gw_mac_for_state,
+                )
         except Exception as e:
             logger.debug("Intelligence context not updated: %s", e)
 
