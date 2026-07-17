@@ -109,6 +109,17 @@ export default class BehaviorView {
     title.textContent = METRIC_LABELS[metric] || metric;
     card.appendChild(title);
 
+    // Maturity note: one sample means std is 0 and the baseline isn't yet
+    // trustworthy — say so instead of showing a lone bar with "±0".
+    const totalSamples = entries.reduce((s, e) => s + (e.samples || 0), 0);
+    const mature = entries.some(e => (e.samples || 0) >= 3);
+    const note = document.createElement('div');
+    note.className = 'behavior-card__note';
+    note.textContent = mature
+      ? `${entries.length} hour-of-week baseline${entries.length === 1 ? '' : 's'} learned · ${totalSamples} samples`
+      : `Still learning (${totalSamples} sample${totalSamples === 1 ? '' : 's'}) — the band tightens as this device is seen across more hours.`;
+    card.appendChild(note);
+
     const isBytes = metric === 'bytes';
     const maxMean = Math.max(1, ...entries.map(e => e.mean || 0));
 
