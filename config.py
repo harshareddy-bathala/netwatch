@@ -51,6 +51,32 @@ IS_LINUX = sys.platform.startswith('linux')
 IS_MACOS = sys.platform == 'darwin'
 PLATFORM_NAME = platform.system()
 
+# ---------------------------------------------------------------------------
+# Frozen (PyInstaller) awareness — separate READ-ONLY bundled assets from
+# WRITABLE runtime state. Under a onefile build, __file__-relative paths point
+# into a temp extraction dir that is read-only and vanishes on exit, so logs
+# and retrained models must go to a per-machine writable directory instead.
+# ---------------------------------------------------------------------------
+IS_FROZEN = bool(getattr(sys, 'frozen', False))
+_BUNDLE_DIR = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+
+
+def resource_path(*parts):
+    """Absolute path to a bundled read-only asset (frontend, schema, data)."""
+    return os.path.join(_BUNDLE_DIR, *parts)
+
+
+def _writable_state_dir():
+    """Per-machine writable dir for logs / retrained models when frozen."""
+    override = os.getenv('NETWATCH_DATA_DIR')
+    if override:
+        return override
+    if IS_WINDOWS:
+        return os.path.join(os.environ.get('PROGRAMDATA', 'C:\\ProgramData'), 'NetWatch')
+    if IS_MACOS:
+        return os.path.expanduser('~/Library/Application Support/NetWatch')
+    return '/var/lib/netwatch'
+
 # Debug mode (disable in production)
 DEBUG_MODE = APP_ENV == 'development'
 
@@ -238,8 +264,17 @@ PROTOCOL_PORTS = {
 # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 
+# Log directory: env override, else a writable per-machine dir when frozen
+# (the bundle dir is read-only/ephemeral), else the source tree in dev.
+if os.getenv('NETWATCH_LOG_DIR'):
+    LOG_DIR = os.getenv('NETWATCH_LOG_DIR')
+elif IS_FROZEN or IS_PRODUCTION:
+    LOG_DIR = os.path.join(_writable_state_dir(), 'logs')
+else:
+    LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+
 # Log file path (set automatically for production; None = console only in dev)
-LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "netwatch.log") if APP_ENV == 'production' else None
+LOG_FILE = os.path.join(LOG_DIR, "netwatch.log") if APP_ENV == 'production' else None
 
 # Log format string (used by fallback logger)
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -247,9 +282,6 @@ LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 # Rotating log file settings
 LOG_FILE_MAX_SIZE = 50 * 1024 * 1024   # 50 MB per file
 LOG_FILE_BACKUP_COUNT = 5              # keep 5 rotated copies
-
-# Log directory for production structured logs (JSON)
-LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 
 # =============================================================================
 # CORS CONFIGURATION

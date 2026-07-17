@@ -41,7 +41,21 @@ from config import (
 )
 
 import os as _os
-_MODEL_DIR = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), 'models')
+# Retrained models are written back at runtime, so the model dir must be
+# WRITABLE. Under a frozen (PyInstaller) build the source-relative dir is the
+# read-only bundle, so use config's per-machine writable state dir instead.
+try:
+    from config import IS_FROZEN as _IS_FROZEN, _writable_state_dir as _wsd
+except Exception:
+    _IS_FROZEN, _wsd = False, None
+if _IS_FROZEN and _wsd:
+    _MODEL_DIR = _os.path.join(_wsd(), 'models')
+    try:
+        _os.makedirs(_MODEL_DIR, exist_ok=True)
+    except OSError:
+        pass
+else:
+    _MODEL_DIR = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), 'models')
 _MODEL_PATH = _os.path.join(_MODEL_DIR, 'anomaly_model.joblib')
 _SCALER_PATH = _os.path.join(_MODEL_DIR, 'anomaly_scaler.joblib')
 

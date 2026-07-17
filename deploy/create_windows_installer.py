@@ -77,7 +77,12 @@ a = Analysis(
         (os.path.join(project_root, 'database', 'schema.sql'), os.path.join('database')),
         (os.path.join(project_root, 'database', 'migrations'), os.path.join('database', 'migrations')),
         (os.path.join(project_root, 'config.py'), '.'),
-    ],
+        (os.path.join(project_root, 'VERSION'), '.'),
+        # W2/W4 runtime data: the offline IP->org map. models/ is a warm-start
+        # cache (retrained if absent) but ship it when present.
+        (os.path.join(project_root, 'data'), 'data'),
+    ] + ([(os.path.join(project_root, 'models'), 'models')]
+         if os.path.isdir(os.path.join(project_root, 'models')) else []),
     hiddenimports=[
         'scapy.all',
         'scapy.layers.inet',
@@ -89,6 +94,13 @@ a = Analysis(
         'numpy',
         'flask',
         'flask_cors',
+        # AI-first layer + QUIC-SNI crypto (statically imported, but list the
+        # dynamically-referenced ones so PyInstaller bundles them).
+        'cryptography',
+        'cryptography.hazmat.primitives.ciphers',
+        'intelligence',
+        'utils',
+        'orchestration',
     ],
     hookspath=[],
     hooksconfig={{}},
@@ -213,6 +225,11 @@ echo ============================================
 echo   Installation complete!
 echo   Run {APP_NAME} from your Desktop shortcut.
 echo   (Run as Administrator for packet capture)
+echo.
+echo   Optional — enable "Ask NetWatch" (offline AI):
+echo     1. Install Ollama from https://ollama.com
+echo     2. Run: ollama pull llama3.2:3b
+echo   Everything stays on this machine; no model is bundled.
 echo ============================================
 pause
 """)

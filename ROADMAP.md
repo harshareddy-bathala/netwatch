@@ -161,7 +161,16 @@ harness (Phase 4).
   the metric measured nothing (a flattering 1.000 over 2 facts)
 - [x] **P4.4** Thesis material: `docs/evaluation/` (README + published
   dataset + detector report JSON + faithfulness JSON)
-- [ ] **P4.5** Installer updates (models ship beside `models/`) — remaining
+- [x] **P4.5** Installer updates (2026-07-17): the `.deb`/`.app` installers
+  shipped only a subset of the tree and **omitted the entire AI-first layer**
+  (`intelligence/`, `utils/`, `orchestration/`) plus `models/`, `data/`, and
+  `VERSION` — a broken package. All three installers now bundle the full
+  runtime; the Windows spec adds `models/`/`data/`/`VERSION` + `cryptography`.
+  Added frozen (PyInstaller `_MEIPASS`) awareness in `config.py`
+  (`resource_path`, `_writable_state_dir`, `NETWATCH_LOG_DIR`/`NETWATCH_DATA_DIR`)
+  so logs + retrained models resolve to a writable per-machine dir instead of
+  the read-only bundle. Ollama stays external (documented in the installer's
+  post-install notes: `ollama pull llama3.2:3b`).
 
 *Exit (evaluation):* reproducible precision/recall table + a
 faithfulness/ablation harness, all offline.
@@ -243,6 +252,35 @@ six defects the synthetic suites couldn't see; all fixed + regression-tested
 6. **UI clarity** — Alerts vs Incidents explained + cross-linked
    (alert → its incident), topology external endpoints capped/toggleable
    with an honest legend.
+
+**Production-readiness build (2026-07-17).** Seven workstreams beyond the
+field-test fixes, each regression-tested:
+
+- **W1 Hotspot attribution** — Topology/Activity/Dashboard now share one
+  host/gateway exclusion (`dashboard_state.get_host_identity()`); the host's
+  leftover Wi-Fi adapter is no longer a phantom "2nd device", the Activity feed
+  no longer shows a bogus "this host" card, and out-of-subnet nodes are dropped.
+- **W2 Real client visibility** — passive **QUIC Initial SNI** decryption
+  (RFC 9001, `packet_capture/quic_sni.py`) recovers Instagram/YouTube (HTTP/3)
+  names even with encrypted DNS; an **offline IP→org map**
+  (`intelligence/ip_org.py` + `data/ip_org_ranges.json`) labels the rest
+  ("→ Meta"); transition-window DNS is no longer dropped. Adds `cryptography`.
+- **W3 VPN detection & classification** (`intelligence/vpn_detector.py`) —
+  protocol signatures + tunnel-shape heuristic + provider classification;
+  honest "contents unavailable inside the tunnel".
+- **W4 Auto device identification** (`intelligence/device_fingerprint.py`) —
+  vendor/hostname/DHCP → device type + friendly name; rogue-device alerts
+  softened for recognized consumer vendors.
+- **W5 Parental controls / quotas** (`device_policies`, migration 014,
+  `parental_bp`, `ParentalView`) — pause / daily cap / bedtime windows enforced
+  via the DNS sinkhole at device level (hotspot-only, stated plainly).
+- **W6 Standalone Threats / Forecast / Behavior views** — first-class pages
+  over existing intelligence APIs (+ `/api/threats/recent`).
+- **W7 Packaging (P4.5)** — see above.
+
+*Honest limits (unchanged, cryptographic):* sites inside a full VPN tunnel and
+ECH-protected SNI are unrecoverable passively; QUIC-SNI + IP→org cover the
+common case. No payload inspection is added anywhere.
 
 ---
 

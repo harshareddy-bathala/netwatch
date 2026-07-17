@@ -128,8 +128,14 @@ def setup_logging(log_level=None, log_file=None):
     level = log_level or LOG_LEVEL
 
     if _HAS_PRODUCTION_LOGGING:
+        # Use config.LOG_DIR so a frozen build logs to a writable per-machine
+        # dir instead of the read-only bundle (see config._writable_state_dir).
+        try:
+            from config import LOG_DIR as _cfg_log_dir
+        except Exception:
+            _cfg_log_dir = os.path.join(PROJECT_ROOT, 'logs')
         root = _production_setup_logging(
-            log_dir=os.path.join(PROJECT_ROOT, 'logs'),
+            log_dir=_cfg_log_dir,
             log_level=level,
             enable_console=True,
             enable_json_file=True,
