@@ -637,13 +637,18 @@ def _on_mode_change_locked(old_mode, new_mode):
         try:
             _gw_ip = (new_mode.interface.ip_address if is_hotspot
                       else (getattr(new_mode.interface, 'gateway', None) or ''))
+            _host_ip = new_mode.interface.ip_address or ''
+            _subnet_prefix = '.'.join(_host_ip.split('.')[:3]) if _host_ip.count('.') == 3 else ''
             if state.twin_builder:
                 state.twin_builder.set_context(
                     our_mac=our_mac,
-                    our_ip=new_mode.interface.ip_address or '',
+                    our_ip=_host_ip,
                     gateway_mac=gw_mac_for_state,
                     gateway_ip=_gw_ip or '',
                     mode=new_name,
+                    host_macs=get_all_local_macs(),
+                    host_ips=set(get_all_local_ips()),
+                    subnet=_subnet_prefix,
                 )
             if state.threat_detector:
                 state.threat_detector.set_context(

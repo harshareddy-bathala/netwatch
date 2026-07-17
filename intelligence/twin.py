@@ -169,6 +169,14 @@ class TwinBuilder:
         self._our_ip = ""
         self._gateway_mac = ""
         self._gateway_ip = ""
+        # Full set of the host's own adapter MACs / IPs — so the host's
+        # *other* interfaces (e.g. the pre-hotspot Wi-Fi adapter at
+        # 192.168.1.68) are recognized as "self", not counted as devices.
+        self._host_macs: set = set()
+        self._host_ips: set = set()
+        # Current monitored subnet prefix (e.g. "192.168.137"); device
+        # nodes whose IPv4 is outside it are stale from a previous network.
+        self._subnet_prefix = ""
         self._mode = "unknown"
         self._mode_timeline: deque = deque(maxlen=100)
 
@@ -185,13 +193,27 @@ class TwinBuilder:
 
     def set_context(self, our_mac: str = "", our_ip: str = "",
                     gateway_mac: str = "", gateway_ip: str = "",
-                    mode: str = "") -> None:
-        """Identify self/gateway so their nodes get the right roles."""
+                    mode: str = "", host_macs=None, host_ips=None,
+                    subnet: str = "") -> None:
+        """Identify self/gateway so their nodes get the right roles.
+
+        *host_macs* / *host_ips* are the monitoring machine's full adapter
+        sets (from ``get_all_local_macs`` / ``get_all_local_ips``) so every
+        host interface — not just the capture one — is treated as "self".
+        *subnet* is the current monitored /24 prefix ("192.168.137") used to
+        drop device nodes left over from a previous network.
+        """
         with self._lock:
             self._our_mac = _norm_mac(our_mac)
             self._our_ip = our_ip or ""
             self._gateway_mac = _norm_mac(gateway_mac)
             self._gateway_ip = gateway_ip or ""
+            if host_macs is not None:
+                self._host_macs = {_norm_mac(m) for m in host_macs if m}
+            if host_ips is not None:
+                self._host_ips = {ip for ip in host_ips if ip}
+            if subnet:
+                self._subnet_prefix = subnet
             if mode:
                 self._mode = mode
             # Re-role any existing nodes and pin authoritative addresses
@@ -209,6 +231,12 @@ class TwinBuilder:
         if mac and mac == self._our_mac:
             return "self"
         if ip and ip == self._our_ip:
+            return "self"
+        # Any of the host's *other* adapters (e.g. the leftover Wi-Fi NIC in
+        # hotspot mode) is still "self", never a client device.
+        if mac and mac in self._host_macs:
+            return "self"
+        if ip and ip in self._host_ips:
             return "self"
         if mac and mac == self._gateway_mac:
             return "gateway"
@@ -540,9 +568,22 @@ class TwinBuilder:
         with self._lock:
             active_cutoff = time.time() - TWIN_ACTIVE_SECONDS
 
+            def _out_of_subnet(node) -> bool:
+                # A device node whose IPv4 is outside the monitored subnet is
+                # a leftover from a previous network (e.g. the host's own
+                # 192.168.1.68 Wi-Fi adapter while the hotspot is 192.168.137).
+                if not self._subnet_prefix or node.node_type != "device":
+                    return False
+                ip = node.ip or ""
+                if not ip or ":" in ip:      # no IPv4 to judge → keep
+                    return False
+                return not ip.startswith(self._subnet_prefix + ".")
+
             def _is_live(node) -> bool:
                 if node.node_type in ("self", "gateway"):
                     return True
+                if _out_of_subnet(node):
+                    return False
                 return node.last_seen >= active_cutoff
 
             live_ids = {
@@ -573,6 +614,7 @@ class TwinBuilder:
             device_count = sum(
                 1 for n in self._nodes.values()
                 if n.node_type == "device" and n.last_seen >= active_cutoff
+                and not _out_of_subnet(n)
             )
             external_count = sum(
                 1 for n in self._nodes.values()

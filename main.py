@@ -462,12 +462,21 @@ def main():
             mode = state.interface_manager.get_current_mode() if state.interface_manager else None
             if mode and state.twin_builder:
                 gw_ip = getattr(mode.interface, 'gateway', None) or ""
+                _host_ip = mode.interface.ip_address or ''
+                _is_hotspot = mode.get_mode_name().value == 'hotspot'
+                _subnet_prefix = '.'.join(_host_ip.split('.')[:3]) if _host_ip.count('.') == 3 else ''
+                from orchestration.discovery_manager import get_all_local_macs, get_all_local_ips
                 state.twin_builder.set_context(
                     our_mac=getattr(mode.interface, 'mac_address', '') or '',
-                    our_ip=mode.interface.ip_address or '',
-                    gateway_mac=resolve_gateway_mac(gw_ip) if gw_ip else '',
-                    gateway_ip=gw_ip,
+                    our_ip=_host_ip,
+                    # In hotspot the host IS the gateway (its own IP/MAC).
+                    gateway_mac=(getattr(mode.interface, 'mac_address', '') or '')
+                                if _is_hotspot else (resolve_gateway_mac(gw_ip) if gw_ip else ''),
+                    gateway_ip=_host_ip if _is_hotspot else gw_ip,
                     mode=mode.get_mode_name().value,
+                    host_macs=get_all_local_macs(),
+                    host_ips=set(get_all_local_ips()),
+                    subnet=_subnet_prefix,
                 )
         except Exception as e:
             logger.debug("Twin context not set: %s", e)

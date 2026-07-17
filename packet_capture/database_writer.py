@@ -250,10 +250,17 @@ class DatabaseWriter:
                     if count > 0:
                         try:
                             dashboard_batch = [p for p in batch if not _is_transition_packet(p)]
+                            # Dashboard/usage counters must exclude transition
+                            # traffic. The event bus must NOT: the flow
+                            # normalizer derives DNS/SNI activity from it, and
+                            # dropping transition packets meant the first
+                            # seconds after a hotspot switch produced no
+                            # activity rows. The twin has its own mode-reset +
+                            # subnet guard, so publishing the full batch is safe.
                             if dashboard_batch:
                                 dashboard_state.update_from_batch(dashboard_batch)
-                                if event_bus is not None:
-                                    event_bus.publish("packet.batch", dashboard_batch)
+                            if event_bus is not None and batch:
+                                event_bus.publish("packet.batch", batch)
                         except Exception as exc2:
                             logger.debug("DatabaseWriter: state update error: %s", exc2)
                     else:

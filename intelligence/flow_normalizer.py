@@ -281,7 +281,9 @@ class FlowNormalizer:
                     "source_mac": p.get("source_mac"),
                     "qname": sni,
                     "qtype": None,
-                    "protocol": "TLS",
+                    # "TLS" (TCP ClientHello) or "QUIC" (HTTP/3 Initial) so the
+                    # Activity feed can show where the name came from.
+                    "protocol": p.get("tls_sni_proto") or "TLS",
                 }
                 self._dns_buffer.append(sni_row)
                 self._bus.publish("dns.query", sni_row)

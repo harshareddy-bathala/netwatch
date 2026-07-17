@@ -262,12 +262,12 @@ export default class ActivityView {
     const dom = document.createElement('span');
     dom.className = 'activity-domain__name';
     dom.textContent = d.qname;
-    if (d.protocol === 'TLS') {
+    const chipInfo = this._sourceChip(d.protocol);
+    if (chipInfo) {
       const chip = document.createElement('span');
       chip.className = 'activity-domain__chip';
-      chip.textContent = 'tls';
-      chip.title = 'Seen in the TLS connection itself (this client hides its ' +
-        'DNS lookups with Private DNS, but the sites it connects to are still visible)';
+      chip.textContent = chipInfo.label;
+      chip.title = chipInfo.title;
       dom.appendChild(chip);
     }
 
@@ -278,7 +278,8 @@ export default class ActivityView {
     li.appendChild(dom);
     li.appendChild(t);
 
-    if (!blocked && g.mac) {
+    // Org-inferred rows name a company, not a resolvable domain — no block.
+    if (!blocked && g.mac && d.protocol !== 'ORG') {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'activity-domain__block';
@@ -297,6 +298,27 @@ export default class ActivityView {
       li.appendChild(btn);
     }
     return li;
+  }
+
+  /** Map a row's evidence source to a small chip. Plain DNS gets none
+   *  (it's the default); encrypted-DNS-recovered sources are labelled so
+   *  the user understands how a name was seen without a DNS lookup. */
+  _sourceChip(protocol) {
+    switch (protocol) {
+      case 'QUIC':
+        return { label: 'quic', title: 'Recovered from the QUIC (HTTP/3) ' +
+          'connection itself — this client hides its DNS, but the site it ' +
+          'connected to is still visible.' };
+      case 'TLS':
+        return { label: 'tls', title: 'Seen in the TLS connection itself — ' +
+          'this client hides its DNS lookups, but the site is still visible.' };
+      case 'ORG':
+        return { label: 'via IP', title: 'Inferred from the destination IP ' +
+          "address's owner — exact site is encrypted (ECH/VPN), so only the " +
+          'operator is known.' };
+      default:
+        return null;
+    }
   }
 
   _renderRules() {

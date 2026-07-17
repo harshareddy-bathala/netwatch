@@ -247,6 +247,26 @@ class InMemoryDashboardState:
             self._host_macs, self._gateway_macs,
         )
 
+    def get_host_identity(self) -> dict:
+        """Return the host/gateway identity used to exclude the monitoring
+        machine from device tracking, so other subsystems (twin, activity
+        feed) can apply the **same** exclusion the dashboard does instead of
+        each reinventing a narrower one.
+
+        ``macs`` is every local adapter MAC plus the gateway MAC; ``ips`` is
+        the capture-interface IP (in hotspot the host IS the gateway). All
+        lower-case, ``:``-separated.
+        """
+        with self._lock:
+            # NB: deliberately excludes _allowed_macs. In own-traffic
+            # (public_network) mode the host itself is the monitored subject
+            # and its MAC lives in _allowed_macs — it must stay visible. In
+            # hotspot mode _host_macs already contains every adapter MAC and
+            # our_mac is NOT in _allowed_macs, so the host is fully excluded.
+            macs = set(self._host_macs) | set(self._gateway_macs)
+            ips = {self._our_ip} if self._our_ip else set()
+            return {"macs": macs, "ips": ips}
+
     def set_device_active_window(self, seconds: int) -> None:
         """Configure the time window for considering a device 'active'.
 
