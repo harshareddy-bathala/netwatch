@@ -45,6 +45,36 @@ def _to_int(value) -> int:
         return 0
 
 
+def _drop_host_rows(devices: list) -> list:
+    """Remove the monitoring host / gateway from the final device list.
+
+    The DB query excludes it, but the hotspot realtime-merge
+    (_merge_hotspot_realtime_devices) can re-add it from in-memory state, and
+    the hotspot virtual-adapter MAC is sometimes invisible to psutil — so the
+    host reappears with usage == the sum of every client's NAT-forwarded
+    traffic. Filter by BOTH MAC and IP (our_ip catches it even when the MAC
+    isn't detected), from the same identity the dashboard uses."""
+    try:
+        from utils.realtime_state import dashboard_state
+        ident = dashboard_state.get_host_identity()
+        macs = {m.lower() for m in (ident.get("macs") or set())}
+        ips = set(ident.get("ips") or set())
+    except Exception:
+        return devices
+    if not macs and not ips:
+        return devices
+    out = []
+    for d in devices:
+        mac = str(d.get("mac_address") or "").lower().replace("-", ":")
+        ip = str(d.get("ip_address") or "").strip()
+        if mac and mac in macs:
+            continue
+        if ip and ip in ips:
+            continue
+        out.append(d)
+    return out
+
+
 def _dedupe_by_hostname(devices: list) -> list:
     """Collapse rows that are the same physical device seen under two MACs.
 
@@ -190,6 +220,7 @@ def get_devices():
         limit=limit,
         offset=offset,
     )
+    devices = _drop_host_rows(devices)
     devices = _dedupe_by_hostname(devices)
     devices = devices[offset:offset + limit]
 

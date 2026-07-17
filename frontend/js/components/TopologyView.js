@@ -35,11 +35,32 @@ export default class TopologyView {
     this._destroyed = false;
     this._showExternal = localStorage.getItem('netwatch-topo-external') !== 'off';
     this._twin = null;
-    // Pan/zoom viewport + per-node drag offsets, persisted across the 10s
-    // refresh so a graph the user arranged doesn't snap back.
+    // Pan/zoom viewport + per-node drag offsets. Persisted to localStorage so
+    // a graph the user arranged survives both the 10s refresh AND navigating
+    // away and back (previously reset on remount).
     this._view = { tx: 0, ty: 0, scale: 1 };
     this._dragOffsets = new Map();
     this._dragging = false;
+    this._loadLayout();
+  }
+
+  _loadLayout() {
+    try {
+      const raw = localStorage.getItem('netwatch-topo-layout');
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+      if (saved.view) this._view = saved.view;
+      if (saved.offsets) this._dragOffsets = new Map(Object.entries(saved.offsets));
+    } catch (_) { /* ignore corrupt layout */ }
+  }
+
+  _saveLayout() {
+    try {
+      localStorage.setItem('netwatch-topo-layout', JSON.stringify({
+        view: this._view,
+        offsets: Object.fromEntries(this._dragOffsets),
+      }));
+    } catch (_) { /* quota / disabled — non-fatal */ }
   }
 
   render() {
@@ -88,6 +109,7 @@ export default class TopologyView {
     this._destroyed = true;
     if (this._timer) clearInterval(this._timer);
     this._timer = null;
+    this._saveLayout();
   }
 
   async _load() {
@@ -316,6 +338,7 @@ export default class TopologyView {
       };
       const up = () => {
         this._dragging = false;
+        this._saveLayout();          // persist the arranged position
         document.removeEventListener('mousemove', move);
         document.removeEventListener('mouseup', up);
       };
@@ -359,11 +382,17 @@ export default class TopologyView {
 
   _nodeTooltip(node) {
     const lines = [];
-    lines.push(node.hostname ? `${node.hostname}` : (node.ip || node.mac));
-    if (node.hostname && node.ip) lines.push(`IP: ${node.ip}`);
+    // Lead with a friendly name: hostname, or a role label for host/gateway.
+    const roleName = node.type === 'self' ? 'This host'
+      : node.type === 'gateway' ? 'Gateway (this host)' : null;
+    const name = node.hostname || roleName || node.ip || node.mac;
+    lines.push(name);
+    if (name !== node.ip && node.ip) lines.push(`IP: ${node.ip}`);
     if (node.mac) lines.push(`MAC: ${node.mac}`);
     if (node.vendor) lines.push(`Vendor: ${node.vendor}`);
-    lines.push(`Type: ${node.type}`);
+    const typeLabel = { self: 'This host', gateway: 'Gateway', device: 'Device',
+                        external: 'Internet endpoint' }[node.type] || node.type;
+    lines.push(`Type: ${typeLabel}`);
     lines.push(`In: ${formatBytes(node.bytes_in || 0)} · Out: ${formatBytes(node.bytes_out || 0)}`);
     if (node.protocols?.length) lines.push(`Protocols: ${node.protocols.join(', ')}`);
     if (node.recent_dns?.length) {

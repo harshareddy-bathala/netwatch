@@ -934,6 +934,12 @@ STALE_DEVICE_PRUNE_INTERVAL = int(os.getenv('STALE_DEVICE_PRUNE_INTERVAL', '300'
 STALE_DEVICE_TIMEOUT_HOURS = int(os.getenv('STALE_DEVICE_TIMEOUT_HOURS', '2'))
 MAX_IN_MEMORY_DEVICES = int(os.getenv('MAX_IN_MEMORY_DEVICES', '10000'))
 
+# Active probing in hotspot mode. Off by default: in hotspot we see every
+# client passively (their traffic crosses our adapter), so ARP-scanning /
+# ping-sweeping all 254 host IPs is redundant and adds load that can degrade
+# client forwarding. Set true only if passive discovery misses clients.
+HOTSPOT_ACTIVE_PROBING = os.getenv('HOTSPOT_ACTIVE_PROBING', 'false').lower() == 'true'
+
 # Hotspot realtime presence tuning.
 # Lower values remove disconnected clients faster from the dashboard; too low
 # makes an idle-but-connected device flicker out between its sparse packets.
