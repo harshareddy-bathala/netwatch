@@ -103,6 +103,34 @@ def _is_excluded_mac(mac: str) -> bool:
     return not mac or mac.startswith(_EXCLUDED_MAC_PREFIXES)
 
 
+_oui_cache: Dict[str, str] = {}
+
+
+def _oui_vendor(mac: str) -> str:
+    """Best-effort OUI → vendor (cached, lazy, never raises)."""
+    if not mac:
+        return ""
+    if mac in _oui_cache:
+        return _oui_cache[mac]
+    vendor = ""
+    try:
+        from mac_vendor_lookup import MacLookup
+        vendor = MacLookup().lookup(mac)
+    except Exception:
+        vendor = ""
+    if len(_oui_cache) < 4096:
+        _oui_cache[mac] = vendor
+    return vendor
+
+
+def _is_known_consumer_vendor(vendor: str) -> bool:
+    try:
+        from intelligence.device_fingerprint import is_known_consumer_vendor
+        return is_known_consumer_vendor(vendor)
+    except Exception:
+        return False
+
+
 def _shannon_entropy(text: str) -> float:
     if not text:
         return 0.0
@@ -497,19 +525,29 @@ class ThreatDetector:
         src_ip = flow.get("source_ip") or ""
         if src_ip and not is_private_ip(src_ip):
             return
+        # W4: a recognized consumer device (phone/laptop by OUI) joining is
+        # expected — especially on a hotspot, where every client is "new".
+        # Keep the visibility but drop the severity so it doesn't read as an
+        # intruder and doesn't open a warning-level incident.
+        vendor = _oui_vendor(src)
+        known = _is_known_consumer_vendor(vendor)
         self._raise(
             "rogue_device", src, key=src,
-            severity="warning",
+            severity="info" if known else "warning",
             message=(
-                f"Unrecognized device joined the network: {src}"
-                f"{f' ({src_ip})' if src_ip else ''} has no history here."
+                (f"New device joined: {vendor} device {src}"
+                 f"{f' ({src_ip})' if src_ip else ''}."
+                 if known else
+                 f"Unrecognized device joined the network: {src}"
+                 f"{f' ({src_ip})' if src_ip else ''} has no history here.")
             ),
             evidence=[{
                 "signal": "never_seen_mac", "mac": src, "ip": src_ip,
+                "vendor": vendor,
                 "first_flow_protocol": flow.get("protocol"),
                 "first_flow_destination": flow.get("dest_ip"),
             }],
-            confidence=0.5,
+            confidence=0.3 if known else 0.5,
         )
 
     def _check_lateral(self, now: float, src: str, dst_ip: str,

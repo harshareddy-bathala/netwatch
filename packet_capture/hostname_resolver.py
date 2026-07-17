@@ -803,6 +803,14 @@ class HostnameResolver:
                 self._process_resolution_queue()
                 self._resolve_null_hostnames_in_db()
 
+                # W4: auto-identify device type / friendly name from the
+                # vendor + hostname we've now learned. Idempotent + cheap.
+                try:
+                    from database.queries.device_queries import classify_and_update_devices
+                    classify_and_update_devices()
+                except Exception:
+                    pass
+
                 # Every 5 minutes: evict expired entries from passive cache
                 now = time.monotonic()
                 if now - _last_passive_eviction >= 300:

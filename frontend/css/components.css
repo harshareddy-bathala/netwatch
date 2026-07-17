@@ -1831,6 +1831,14 @@
 }
 .alert-item__incident:hover { text-decoration: underline; }
 
+.device-row__type-icon {
+  display: inline-block;
+  margin-right: 6px;
+  font-size: 0.95em;
+  cursor: default;
+  opacity: 0.85;
+}
+
 /* Blocking ---------------------------------------------------------------- */
 
 .activity__hint--warn { color: var(--color-warning); }

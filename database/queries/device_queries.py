@@ -697,6 +697,7 @@ def get_active_devices(minutes: int = 5, limit: int = 100, include_control: bool
                         COALESCE(hostname, device_name) AS hostname,
                         COALESCE(hostname, device_name) AS device_name,
                         vendor,
+                        COALESCE(device_type, 'unknown') AS device_type,
                         total_packets AS packet_count,
                         total_bytes_sent AS bytes_sent,
                         total_bytes_received AS bytes_received,
@@ -1239,6 +1240,72 @@ def get_device_by_mac(mac_address: str) -> Optional[dict]:
     except sqlite3.Error as e:
         logger.error("get_device_by_mac error: %s", e)
         return None
+
+
+def classify_and_update_devices(limit: int = 500) -> int:
+    """Auto-identify devices from their passive signals (W4).
+
+    Reads each device's vendor + hostname, runs the deterministic
+    ``device_fingerprint.classify_device`` classifier, and fills
+    ``device_type`` (when still 'unknown'/NULL) and ``device_name`` (when
+    empty) with a friendly guess. Only *raises* certainty — a name a device
+    advertised for itself, or an operator set, is never overwritten.
+
+    Returns the number of rows updated. Cheap and idempotent; called from
+    the background hostname-resolution loop.
+    """
+    try:
+        from intelligence.device_fingerprint import classify_device
+    except Exception:
+        return 0
+    updated = 0
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT mac_address, vendor, hostname, device_name, device_type
+                FROM devices
+                WHERE (device_type IS NULL OR device_type = '' OR device_type = 'unknown'
+                       OR device_name IS NULL OR device_name = '')
+                  AND (vendor IS NOT NULL AND vendor != ''
+                       OR hostname IS NOT NULL AND hostname != '')
+                LIMIT ?
+                """,
+                (int(limit),),
+            )
+            rows = [dict(zip([c[0] for c in cursor.description], r))
+                    for r in cursor.fetchall()]
+            for d in rows:
+                result = classify_device(
+                    vendor=d.get("vendor"), hostname=d.get("hostname"),
+                    mac=d.get("mac_address"))
+                new_type = result["device_type"]
+                cur_type = (d.get("device_type") or "unknown")
+                set_type = (new_type != "unknown"
+                            and cur_type in ("", "unknown", None)
+                            and result["confidence"] >= 0.4)
+                # Only fill device_name from the label when we have nothing
+                # better already stored (hostname wins if present).
+                set_name = (not (d.get("device_name") or "").strip()
+                            and bool(result["label"]))
+                if not set_type and not set_name:
+                    continue
+                sets, params = [], []
+                if set_type:
+                    sets.append("device_type = ?"); params.append(new_type)
+                if set_name:
+                    sets.append("device_name = ?"); params.append(result["label"])
+                params.append(d["mac_address"])
+                cursor.execute(
+                    f"UPDATE devices SET {', '.join(sets)} WHERE mac_address = ?",
+                    params,
+                )
+                updated += cursor.rowcount
+            conn.commit()
+    except sqlite3.Error as e:
+        logger.debug("classify_and_update_devices error: %s", e)
+    return updated
 
 
 def update_device_name(ip_address: str, new_name: str) -> bool:
