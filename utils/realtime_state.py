@@ -265,7 +265,20 @@ class InMemoryDashboardState:
             # our_mac is NOT in _allowed_macs, so the host is fully excluded.
             macs = set(self._host_macs) | set(self._gateway_macs)
             ips = {self._our_ip} if self._our_ip else set()
-            return {"macs": macs, "ips": ips}
+            hostname = self._our_hostname or ""
+        # Add every local IP incl. IPv6 link-local — the host's own service
+        # lookups can arrive over fe80::… with no Ether MAC, which otherwise
+        # slips past a MAC/IPv4-only exclusion and shows as a phantom device.
+        try:
+            import psutil
+            for _n, addrs in psutil.net_if_addrs().items():
+                for a in addrs:
+                    fam = getattr(a.family, "name", "")
+                    if fam in ("AF_INET", "AF_INET6") and a.address:
+                        ips.add(a.address.split("%")[0])   # strip zone id
+        except Exception:
+            pass
+        return {"macs": macs, "ips": ips, "hostname": hostname}
 
     def set_device_active_window(self, seconds: int) -> None:
         """Configure the time window for considering a device 'active'.

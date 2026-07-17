@@ -142,8 +142,27 @@ def get_activity_recent():
         exclude_macs=exclude_macs, exclude_ips=exclude_ips)
     rows.extend(_org_fallback_rows(minutes, exclude_macs, exclude_ips, mac))
     rows.extend(_vpn_rows(mac))
+    _annotate_sites(rows)
     rows.sort(key=lambda r: r.get("timestamp") or "", reverse=True)
     return jsonify({'data': rows})
+
+
+def _annotate_sites(rows):
+    """Add friendly site/app/org to each row from its domain, so the feed can
+    show 'Instagram'/'Meta' (works with plain DNS too, not just IP→org)."""
+    try:
+        from intelligence.app_catalog import classify_site
+    except Exception:
+        return
+    for r in rows:
+        if r.get("app") or r.get("protocol") == "VPN":
+            continue
+        site = classify_site(r.get("qname") or "")
+        r["site"] = site["domain"]
+        if site["app"]:
+            r["app"] = site["app"]
+        if site["org"] and not r.get("org"):
+            r["org"] = site["org"]
 
 
 def _vpn_rows(mac):

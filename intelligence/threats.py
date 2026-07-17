@@ -94,6 +94,15 @@ _MAX_TRACKED_KEYS = 5000      # global guard for per-detector dicts
 
 _EXCLUDED_MAC_PREFIXES = ("ff:ff:ff", "01:00:5e", "33:33", "01:80:c2")
 
+# Registered domains that legitimately emit long, high-entropy subdomain
+# bursts (carrier IMS/VoWiFi, some CDNs) — exempt from DNS-tunnel scoring.
+_BENIGN_LONG_QNAME_DOMAINS = {
+    "3gppnetwork.org",   # ePDG / VoWiFi / IMS APNs
+    "aaplimg.com",       # Apple CDN
+    "akadns.net",        # Akamai
+    "akamaiedge.net",
+}
+
 
 def _norm_mac(mac: Optional[str]) -> str:
     return (mac or "").lower().replace("-", ":").strip()
@@ -477,6 +486,12 @@ class ThreatDetector:
             return
         domain = _registered_domain(qname)
         if not domain:
+            return
+        # Carrier VoWiFi/IMS (epdg.epc.mncNNN.mccNNN.pub.3gppnetwork.org) and a
+        # few other infra domains legitimately emit bursts of long, high-entropy
+        # subdomains — they are not tunneling. Real phone on the hotspot tripped
+        # this (3gppnetwork.org).
+        if domain in _BENIGN_LONG_QNAME_DOMAINS:
             return
         key = (src, domain)
         win = self._dns.get(key)

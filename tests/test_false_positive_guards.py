@@ -169,6 +169,31 @@ class TestBeaconKeepaliveGuard:
         assert len(beacons) == 1
 
 
+class TestDnsTunnelBenignDomains:
+
+    def test_carrier_vowifi_not_tunneling(self, detector, engine):
+        # epdg.epc.mncNNN.mccNNN.pub.3gppnetwork.org — real phone tripped this.
+        detector._known_macs.add("22:5e:3e:1a:d0:f3")
+        for i in range(30):
+            detector.ingest_dns({
+                "source_mac": "22:5e:3e:1a:d0:f3", "source_ip": "192.168.137.142",
+                "qname": f"epdg.epc.mnc086.mcc404.pub.{i}.3gppnetwork.org",
+            })
+        assert [a for a in engine.alerts
+                if a["threat_type"] == "dns_tunneling"] == []
+
+    def test_real_tunneling_still_fires(self, detector, engine):
+        detector._known_macs.add("22:5e:3e:1a:d0:f3")
+        for i in range(30):
+            label = "".join("0123456789abcdef"[(i * 7 + j) % 16] for j in range(56))
+            detector.ingest_dns({
+                "source_mac": "22:5e:3e:1a:d0:f3", "source_ip": "192.168.137.142",
+                "qname": f"{label}.exfil.evil.com",
+            })
+        assert [a for a in engine.alerts
+                if a["threat_type"] == "dns_tunneling"]
+
+
 class TestTwinLivenessAndReset:
 
     def _twin(self, **ctx):

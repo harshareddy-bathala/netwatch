@@ -1288,7 +1288,10 @@
   width: 100%;
   height: auto;
   display: block;
+  cursor: grab;              /* empty space pans */
+  touch-action: none;
 }
+.topology__svg:active { cursor: grabbing; }
 
 .topology__empty {
   position: absolute;
@@ -1779,6 +1782,22 @@
   font-family: var(--font-mono);
   word-break: break-all;
   min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.activity-domain__label {
+  color: var(--color-text-primary);
+  font-family: var(--font-primary, inherit);
+}
+.activity-domain__count {
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
+}
+.activity-domain__sub {
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
 }
 .activity-domain__time {
   color: var(--color-text-tertiary);
