@@ -144,13 +144,36 @@ def _create_capture_engine(mode):
         "Creating Scapy/Npcap capture engine on '%s' (strategy=%s)",
         iface, type(strategy).__name__ if strategy else 'None',
     )
-    engine = CaptureEngine(mode, interface=iface, strategy=strategy)
+    engine = CaptureEngine(
+        mode, interface=iface, strategy=strategy,
+        dns_blocker=_create_dns_blocker(iface),
+    )
 
     # Register callbacks
     engine.on_packet(_passive_hostname_callback)
     engine.on_interface_lost(_on_interface_lost)
 
     return engine
+
+
+def _create_dns_blocker(iface):
+    """Build the DNS blocker for this capture mode and publish it on state.
+
+    Enforcement only works where we sit between the client and its resolver,
+    which in practice means hotspot mode (this host is the AP/NAT gateway).
+    The blocker is still created in other modes so the rules UI stays
+    readable and consistent; it simply won't see client queries there.
+    """
+    try:
+        from packet_capture.dns_blocker import DNSBlocker
+        blocker = DNSBlocker(iface=iface)
+        blocker.start()
+        state.dns_blocker = blocker
+        return blocker
+    except Exception as e:
+        logger.error("Could not start DNS blocker (blocking rules inactive): %s", e)
+        state.dns_blocker = None
+        return None
 
 
 def _on_interface_lost():
@@ -607,6 +630,38 @@ def _on_mode_change_locked(old_mode, new_mode):
             )
         except Exception as e:
             logger.warning("Could not update subnet for new mode: %s", e)
+
+        # 4b. Re-anchor the intelligence layer on the new network: the twin
+        # must re-role self/gateway nodes, and the threat detector must
+        # never score our own interfaces / the gateway as attackers.
+        try:
+            _gw_ip = (new_mode.interface.ip_address if is_hotspot
+                      else (getattr(new_mode.interface, 'gateway', None) or ''))
+            _host_ip = new_mode.interface.ip_address or ''
+            _subnet_prefix = '.'.join(_host_ip.split('.')[:3]) if _host_ip.count('.') == 3 else ''
+            if state.twin_builder:
+                state.twin_builder.set_context(
+                    our_mac=our_mac,
+                    our_ip=_host_ip,
+                    gateway_mac=gw_mac_for_state,
+                    gateway_ip=_gw_ip or '',
+                    mode=new_name,
+                    host_macs=get_all_local_macs(),
+                    host_ips=set(get_all_local_ips()),
+                    subnet=_subnet_prefix,
+                )
+            if state.threat_detector:
+                state.threat_detector.set_context(
+                    local_macs=get_all_local_macs(),
+                    gateway_mac=gw_mac_for_state,
+                )
+            if getattr(state, 'vpn_detector', None):
+                state.vpn_detector.set_context(
+                    local_macs=get_all_local_macs(),
+                    gateway_mac=gw_mac_for_state,
+                )
+        except Exception as e:
+            logger.debug("Intelligence context not updated: %s", e)
 
         # 5. Register known IPs/MACs to prevent false alerts
         try:

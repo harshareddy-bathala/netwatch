@@ -124,11 +124,22 @@ class CaptureEngine(CaptureProcessorMixin):
         batch_timeout: Optional[float] = None,
         bandwidth_window: Optional[int] = None,
         strategy=None,
+        db_writer=None,
+        dns_blocker=None,
     ):
         # Mode & interface
         self._mode = mode
         self._interface = interface or mode.interface.name
         self._strategy = strategy  # optional CaptureStrategy (setup/teardown NIC)
+        # Optional DNSBlocker — enforces admin blocking rules by answering a
+        # blocked client's DNS query before the real reply arrives. Inspected
+        # on the capture thread, so it must stay cheap when no rules exist.
+        self._dns_blocker = dns_blocker
+        # Phase 2.5: an injected sink (any object exposing enqueue/start/stop)
+        # replaces the built-in DatabaseWriter — the capture daemon passes a
+        # socket-publishing adapter here so the same capture stack streams
+        # batches to the unprivileged process instead of writing the DB.
+        self._injected_writer = db_writer
 
         # Components
         self._filter_mgr = FilterManager(mode)
@@ -185,7 +196,7 @@ class CaptureEngine(CaptureProcessorMixin):
         except (ImportError, AttributeError):
             pass
 
-        self._db_writer = DatabaseWriter(
+        self._db_writer = self._injected_writer or DatabaseWriter(
             max_queue_size=_db_queue_size,
             stats_lock=self._stats_lock,
             mode_transition_lock=_mtl,
@@ -265,6 +276,15 @@ class CaptureEngine(CaptureProcessorMixin):
 
         # Stop the DB writer thread (drains remaining batches)
         self._db_writer.stop(timeout=timeout)
+
+        # Blocking rules only apply while we are capturing, so the blocker's
+        # life is tied to the engine's — this covers mode switches and
+        # disconnects as well as shutdown.
+        if self._dns_blocker is not None:
+            try:
+                self._dns_blocker.stop()
+            except Exception as exc:
+                logger.warning("DNS blocker stop failed: %s", exc)
 
         # Run capture strategy teardown (e.g. disable promiscuous mode)
         if self._strategy:
@@ -356,6 +376,13 @@ class CaptureEngine(CaptureProcessorMixin):
             """
             # Lock-free increment — safe under CPython GIL, advisory stat only
             self._packets_captured += 1
+
+            # Blocking policy runs *before* rate limiting and sampling: those
+            # exist to protect the DB/UI from load, but a dropped packet here
+            # would silently let a blocked domain resolve. Matching is a single
+            # boolean check when no rules are configured.
+            if self._dns_blocker is not None:
+                self._dns_blocker.handle_packet(pkt)
 
             # Rate limiting via shared mixin
             if not self._should_accept_packet():

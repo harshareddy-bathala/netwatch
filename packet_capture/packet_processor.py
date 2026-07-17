@@ -75,6 +75,25 @@ except Exception:
     _orch_state = None
 
 
+# TLS ports where a ClientHello SNI is worth extracting.  SNI names the
+# site a client is connecting to even when the client uses encrypted DNS
+# (DoH/DoT "Private DNS"), which hides its lookups from the DNS feed.
+_TLS_SNI_PORTS = {443, 8443}
+
+from packet_capture.quic_sni import sni_from_client_hello, extract_quic_sni
+
+
+def extract_tls_sni(payload: bytes) -> Optional[str]:
+    """Server Name Indication from a TCP TLS ClientHello record, or None.
+
+    Strips the 5-byte TLS record header and delegates the ClientHello walk
+    to the shared parser (also used by the QUIC path).
+    """
+    if len(payload) < 6 or payload[0] != 0x16 or payload[5] != 0x01:
+        return None
+    return sni_from_client_hello(payload[5:])
+
+
 # =============================================================================
 # DATA CLASSES
 # =============================================================================
@@ -131,6 +150,9 @@ class PacketData:
         if "dns_qname" in self.extra:
             d["dns_qname"] = self.extra["dns_qname"]
             d["dns_qtype"] = self.extra.get("dns_qtype")
+        if "tls_sni" in self.extra:
+            d["tls_sni"] = self.extra["tls_sni"]
+            d["tls_sni_proto"] = self.extra.get("tls_sni_proto", "TLS")
         return d
 
 
@@ -271,15 +293,30 @@ class PacketProcessor:
             # Fallback: enrich with our known MAC when Ether layer is
             # missing (Windows WiFi/Npcap) or when the captured MAC is
             # a broadcast/multicast that would be filtered out later.
-            # In WiFi-client mode every packet involves our IP, so we
-            # know exactly which side is "us".
             if self._our_mac:
-                if direction == "upload" or src_ip == self._our_ip:
-                    if not src_mac or src_mac == 'ff:ff:ff:ff:ff:ff':
-                        src_mac = self._our_mac
-                if direction == "download" or dst_ip == self._our_ip:
-                    if not dst_mac or dst_mac == 'ff:ff:ff:ff:ff:ff':
-                        dst_mac = self._our_mac
+                if self._scope == NetworkScope.CONNECTED_CLIENTS:
+                    # Hotspot: "we" are the gateway, not an endpoint. An
+                    # "upload" here is a *client* sending through us — its
+                    # source is the client, NOT the host. Stamping our MAC
+                    # onto it (as the old logic did) made every Ether-less
+                    # client packet collapse into the host card and be
+                    # mis-attributed in the twin. Only stamp our MAC when
+                    # the packet is genuinely the host's own traffic.
+                    if src_ip == self._our_ip:
+                        if not src_mac or src_mac == 'ff:ff:ff:ff:ff:ff':
+                            src_mac = self._our_mac
+                    if dst_ip == self._our_ip:
+                        if not dst_mac or dst_mac == 'ff:ff:ff:ff:ff:ff':
+                            dst_mac = self._our_mac
+                else:
+                    # WiFi-client / ethernet: every packet involves our IP,
+                    # so direction identifies "us" unambiguously.
+                    if direction == "upload" or src_ip == self._our_ip:
+                        if not src_mac or src_mac == 'ff:ff:ff:ff:ff:ff':
+                            src_mac = self._our_mac
+                    if direction == "download" or dst_ip == self._our_ip:
+                        if not dst_mac or dst_mac == 'ff:ff:ff:ff:ff:ff':
+                            dst_mac = self._our_mac
 
             # --- TTL --------------------------------------------------------
             ttl = None
@@ -312,6 +349,21 @@ class PacketProcessor:
                             extra["dns_qtype"] = int(_q.qtype or 0)
                 except Exception:
                     pass
+            # SNI: names the destination site even when the client's DNS is
+            # encrypted (Private DNS / DoH) and invisible to us. TCP path =
+            # classic TLS ClientHello; UDP/443 = QUIC Initial (HTTP/3), which
+            # is what Instagram/YouTube actually use — decrypted per RFC 9001.
+            if dst_port in _TLS_SNI_PORTS and packet.haslayer(Raw):
+                _raw = bytes(packet[Raw].load)
+                if packet.haslayer(TCP):
+                    _sni, _sni_proto = extract_tls_sni(_raw), "TLS"
+                elif packet.haslayer(UDP):
+                    _sni, _sni_proto = extract_quic_sni(_raw), "QUIC"
+                else:
+                    _sni, _sni_proto = None, None
+                if _sni:
+                    extra["tls_sni"] = _sni
+                    extra["tls_sni_proto"] = _sni_proto
             if is_transition_packet:
                 extra["transition_phase"] = transition_phase
                 extra["is_transition_packet"] = True

@@ -51,6 +51,32 @@ IS_LINUX = sys.platform.startswith('linux')
 IS_MACOS = sys.platform == 'darwin'
 PLATFORM_NAME = platform.system()
 
+# ---------------------------------------------------------------------------
+# Frozen (PyInstaller) awareness — separate READ-ONLY bundled assets from
+# WRITABLE runtime state. Under a onefile build, __file__-relative paths point
+# into a temp extraction dir that is read-only and vanishes on exit, so logs
+# and retrained models must go to a per-machine writable directory instead.
+# ---------------------------------------------------------------------------
+IS_FROZEN = bool(getattr(sys, 'frozen', False))
+_BUNDLE_DIR = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+
+
+def resource_path(*parts):
+    """Absolute path to a bundled read-only asset (frontend, schema, data)."""
+    return os.path.join(_BUNDLE_DIR, *parts)
+
+
+def _writable_state_dir():
+    """Per-machine writable dir for logs / retrained models when frozen."""
+    override = os.getenv('NETWATCH_DATA_DIR')
+    if override:
+        return override
+    if IS_WINDOWS:
+        return os.path.join(os.environ.get('PROGRAMDATA', 'C:\\ProgramData'), 'NetWatch')
+    if IS_MACOS:
+        return os.path.expanduser('~/Library/Application Support/NetWatch')
+    return '/var/lib/netwatch'
+
 # Debug mode (disable in production)
 DEBUG_MODE = APP_ENV == 'development'
 
@@ -238,8 +264,17 @@ PROTOCOL_PORTS = {
 # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 
+# Log directory: env override, else a writable per-machine dir when frozen
+# (the bundle dir is read-only/ephemeral), else the source tree in dev.
+if os.getenv('NETWATCH_LOG_DIR'):
+    LOG_DIR = os.getenv('NETWATCH_LOG_DIR')
+elif IS_FROZEN or IS_PRODUCTION:
+    LOG_DIR = os.path.join(_writable_state_dir(), 'logs')
+else:
+    LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+
 # Log file path (set automatically for production; None = console only in dev)
-LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "netwatch.log") if APP_ENV == 'production' else None
+LOG_FILE = os.path.join(LOG_DIR, "netwatch.log") if APP_ENV == 'production' else None
 
 # Log format string (used by fallback logger)
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -247,9 +282,6 @@ LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 # Rotating log file settings
 LOG_FILE_MAX_SIZE = 50 * 1024 * 1024   # 50 MB per file
 LOG_FILE_BACKUP_COUNT = 5              # keep 5 rotated copies
-
-# Log directory for production structured logs (JSON)
-LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 
 # =============================================================================
 # CORS CONFIGURATION
@@ -709,6 +741,105 @@ THREAT_DNS_TUNNEL_ENTROPY = float(os.getenv('THREAT_DNS_TUNNEL_ENTROPY', '3.8'))
 # (SMB/RDP/SSH/WinRM/VNC) inside the window.
 THREAT_LATERAL_WINDOW_SECONDS = int(os.getenv('THREAT_LATERAL_WINDOW_SECONDS', '300'))
 THREAT_LATERAL_HOST_THRESHOLD = int(os.getenv('THREAT_LATERAL_HOST_THRESHOLD', '3'))
+
+# =============================================================================
+# VPN / ENCRYPTED-TUNNEL DETECTION (W3) — detect & classify, never decrypt
+# =============================================================================
+
+# Bytes to one external peer within the window before a "commercial VPN /
+# encrypted proxy" heuristic fires (protocol-signature VPNs fire immediately).
+VPN_MIN_TUNNEL_BYTES = int(os.getenv('VPN_MIN_TUNNEL_BYTES', str(2_000_000)))
+# Rolling window (seconds) over which a device's tunnel volume/duration is
+# accumulated for the heuristic and reporting.
+VPN_WINDOW_SECONDS = int(os.getenv('VPN_WINDOW_SECONDS', '600'))
+# Minimum tunnel duration (seconds) before the volume heuristic reports, so a
+# brief large transfer to a CDN isn't mislabeled as a VPN.
+VPN_MIN_TUNNEL_SECONDS = int(os.getenv('VPN_MIN_TUNNEL_SECONDS', '120'))
+
+# =============================================================================
+# FORECASTING (Phase 2, AI-first) — bandwidth saturation + device-count trend
+# =============================================================================
+
+# Holt double-exponential smoothing coefficients for the bandwidth forecast.
+# alpha weights the level, beta the trend; both in (0, 1).
+FORECAST_ALPHA = float(os.getenv('FORECAST_ALPHA', '0.5'))
+FORECAST_BETA = float(os.getenv('FORECAST_BETA', '0.1'))
+
+# Minimum per-minute history buckets before a forecast is attempted.
+FORECAST_MIN_SAMPLES = int(os.getenv('FORECAST_MIN_SAMPLES', '20'))
+
+# History window fed to the model and default forecast horizon.
+FORECAST_HISTORY_HOURS = int(os.getenv('FORECAST_HISTORY_HOURS', '3'))
+FORECAST_HORIZON_MINUTES = int(os.getenv('FORECAST_HORIZON_MINUTES', '30'))
+
+# Link capacity in Mbps for saturation ETA (0 = saturation check disabled).
+FORECAST_LINK_CAPACITY_MBPS = float(os.getenv('FORECAST_LINK_CAPACITY_MBPS', '0'))
+
+# Forecast responses are cached for this many seconds.
+FORECAST_CACHE_TTL_SECONDS = int(os.getenv('FORECAST_CACHE_TTL_SECONDS', '30'))
+
+# =============================================================================
+# INCIDENT TRIAGE (Phase 2, AI-first) — alert → incident fusion
+# =============================================================================
+
+# Alerts hitting the same device (or the network at large) within this
+# rolling window are fused into one incident.
+INCIDENT_WINDOW_MINUTES = int(os.getenv('INCIDENT_WINDOW_MINUTES', '30'))
+
+# =============================================================================
+# CAPTURE PRIVILEGE SEPARATION (Phase 2.5, AI-first)
+# =============================================================================
+
+# When enabled, packet capture runs in a separate minimal privileged
+# process (the capture daemon) and streams packet batches to the
+# unprivileged main process over a loopback socket.  Default OFF — the
+# in-process monolithic capture path is unchanged when this is false.
+CAPTURE_IPC_ENABLED = os.getenv('CAPTURE_IPC_ENABLED', 'false').lower() == 'true'
+
+# Loopback endpoint for the capture transport.  Port 0 lets the daemon
+# pick a free port and advertise it (see CAPTURE_IPC_PORT_FILE).
+CAPTURE_IPC_HOST = os.getenv('CAPTURE_IPC_HOST', '127.0.0.1')
+CAPTURE_IPC_PORT = int(os.getenv('CAPTURE_IPC_PORT', '0'))
+
+# Shared token gating the transport so other local processes cannot
+# inject packets.  Auto-generated per run when unset.
+CAPTURE_IPC_TOKEN = os.getenv('CAPTURE_IPC_TOKEN', '')
+
+# File the daemon writes its chosen host:port:token to, and the main
+# process reads to connect (co-located, local-only).
+CAPTURE_IPC_PORT_FILE = os.getenv(
+    'CAPTURE_IPC_PORT_FILE',
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), '.capture_ipc'),
+)
+
+# =============================================================================
+# LLM INVESTIGATIONS (Phase 3, AI-first) — tool-grounded local model
+# =============================================================================
+
+# Local Ollama model name for "Ask NetWatch". The runtime talks only to a
+# local Ollama server (127.0.0.1:11434) — zero cloud. Investigations
+# degrade to "unavailable" when no local model is reachable.
+#
+# Default is the 3B model, chosen on measured evidence rather than size:
+# NetWatch is local-first and must run on ordinary laptops. llama3 (8B,
+# 5.3 GB) does not fit in an 8 GB host alongside the app — ~0.7-1.5 GB of
+# weights stay paged out and generation slows ~2.5x (67.4s vs 26.8s on the
+# same question, same steps) while thrashing the disk. llama3.2:3b
+# (2.6 GB) stays resident, is faster, and scored no worse on faithfulness.
+LLM_MODEL = os.getenv('NETWATCH_LLM_MODEL', 'llama3.2:3b')
+
+# Max **tool calls** the investigator may make before it must answer —
+# bounds cost and stops a confused model from looping forever. Protocol
+# corrections (a grounding nudge, a retry after unparseable output) are
+# NOT charged against this budget: on a 3B model those corrections are
+# common, and charging them starved real investigations of retrieval —
+# 2 of 8 evaluation questions exhausted the budget before answering.
+LLM_MAX_STEPS = int(os.getenv('NETWATCH_LLM_MAX_STEPS', '6'))
+
+# Seconds to wait on one local generation. An 8B model on CPU takes ~10s
+# for a short turn, and grows with the transcript as tool results are fed
+# back — 60s timed out mid-investigation on real hardware.
+LLM_TIMEOUT_SECONDS = float(os.getenv('NETWATCH_LLM_TIMEOUT', '180'))
 
 # =============================================================================
 # PERFORMANCE TUNING — Prevents NetWatch from degrading network performance

@@ -195,6 +195,17 @@ class TestDnsTunneling:
                 detector.ingest_dns(self._dns(f"{host}.google.com"))
         assert [a for a in engine.alerts if a["threat_type"] == "dns_tunneling"] == []
 
+    def test_reverse_dns_ptr_burst_is_exempt(self, detector, engine):
+        # OS resolvers emit bursts of ip6.arpa PTR lookups whose qnames are
+        # legitimately ~72 chars — observed live as a false positive.
+        nibbles = ".".join("b" * 1 for _ in range(32))
+        for i in range(40):
+            qname = f"{i % 10}.{nibbles}.ip6.arpa"
+            detector.ingest_dns(self._dns(qname))
+        for i in range(40):
+            detector.ingest_dns(self._dns(f"{i}.77.143.10.in-addr.arpa"))
+        assert [a for a in engine.alerts if a["threat_type"] == "dns_tunneling"] == []
+
 
 # ===================================================================
 # Rogue device

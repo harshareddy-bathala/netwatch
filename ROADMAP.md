@@ -38,7 +38,7 @@ Goal: trustworthy telemetry + an event stream every AI feature can subscribe to.
 - [x] **P0.4** Anomaly-detector feature enrichment fixed — per-minute-bucket features (single `GROUP BY` query) instead of one aggregate copied to every training row; regression tests in `tests/test_anomaly_detector.py::TestEnrichmentPerBucket`
 - [x] **P0.5** In-process **event bus** (`intelligence/event_bus.py`): bounded, drop-oldest, never blocks the capture path; publishers wired in `DatabaseWriter` (`packet.batch`) and mode transitions (`mode.changed`); `device.seen` reserved for Phase 1
 - [x] **P0.6** **Flow telemetry**: migration 010 adds `flows` + `dns_queries`; `intelligence/flow_normalizer.py` consumes `packet.batch` events into flow records (idle/max-age flush, self-contained 72h retention); DNS query names captured in `PacketData.extra` and persisted; `flow.completed` / `dns.query` published on the bus
-- [x] **P0.7** Chart.js 4.4.0 vendored at `frontend/vendor/` (SRI-verified byte-identical to the CDN copy); CSP tightened to `script-src 'self'`
+- [x] **P0.7** Chart.js 4.4.0 vendored at `frontend/vendor/` (SRI-verified byte-identical to the CDN copy); CSP is now **fully self-contained — every directive is `'self'`, no external host at all**. (Verification on 2026-07-16 found this had been overclaimed: `style-src`/`font-src` still allowed the Google Fonts hosts. Nothing used them — the UI is system-font-only — but two `preconnect` hints in `index.html` still opened DNS/TLS connections to Google on every page load. Both removed.)
 - [x] **P0.8** Test suite green after all of the above (751 passed, 0 failed — includes 27 new tests for enrichment, event bus, and flow normalizer)
 
 **Phase 0 complete (2026-07-14).** Next: Phase 1 — twin builder subscribing to
@@ -71,32 +71,216 @@ baseline measured; dashboard runs fully offline.
 evidence fields. Remaining for later sprints: SSE push for twin deltas (currently
 10s polling), hostname enrichment on behavior alerts from the twin.*
 
-### Phase 2 — Detection + prediction (Sprints 6–7, weeks 11–14)
+### Phase 2 — Detection + prediction (Sprints 6–7, weeks 11–14)  ← **complete (2026-07-15)**
 
-- Threat detector pack: port-scan, beaconing, DNS-tunneling signals, rogue device, lateral movement
-- Forecasting service (bandwidth saturation, device-count trend) + forecast overlay on BandwidthChart
-- Incident triage: alert→incident fusion (fixes dedup-by-type weakness)
+- [x] **P2.1** Threat detector pack (`intelligence/threats.py`): port-scan
+  (vertical/horizontal), beaconing (low-jitter C2 heartbeat), DNS-tunneling
+  (query burst + long/high-entropy qnames), rogue device (unknown MAC),
+  lateral movement (internal fan-out on admin ports) — subscribes to
+  `flow.completed`/`dns.query`, alerts with `evidence[]`+`confidence` via
+  `AlertEngine.create_threat_alert`, `THREAT_*` config
+- [x] **P2.2** Forecasting (`intelligence/forecast.py`): Holt bandwidth
+  forecast with confidence band + saturation ETA, least-squares device-count
+  trend; `/api/forecast/bandwidth`, `/api/forecast/devices`; dashed overlay
+  on BandwidthChart with shaded band (`--chart-forecast`); `FORECAST_*` config
+- [x] **P2.3** Incident triage (`intelligence/incidents.py`): alert→incident
+  fusion by device + rolling window (migration 012 `incidents` +
+  `alerts.incident_id`), `/api/incidents*`; fixes the dedup-by-type weakness
 
-*Exit:* red-team demo script triggers named threats; forecast line on the chart.
+*Exit met:* named threats fire with evidence; forecast line + band on the
+chart; related alerts collapse into incidents. Remaining polish for later:
+red-team demo script in `scripts/`, incident timeline UI view (API is ready).
 
-### Phase 2.5 — Privilege separation (parallel with Phase 2)
+### Phase 2.5 — Privilege separation (parallel with Phase 2)  ← **complete (2026-07-15)**
 
-- Capture moves behind a local socket as a minimal privileged process; API/intelligence run unprivileged
-- pcap-replay through the normalizer becomes the primary test strategy
+- [x] **P2.5.1** Capture IPC transport (`packet_capture/capture_ipc.py`):
+  zero-dependency loopback-TCP, length-prefixed JSON framing, token
+  handshake, datetime revival; `CaptureServer.publish` (privileged) →
+  `CaptureClient` (unprivileged), publish never blocks
+- [x] **P2.5.2** Capture daemon (`capture_daemon.py`): minimal privileged
+  entrypoint reusing the whole capture stack with its sink redirected via a
+  `CaptureServerWriter` adapter (CaptureEngine gained an injectable
+  `db_writer`); advertises host:port:token in an endpoint file
+- [x] **P2.5.3** Unprivileged bridge (`packet_capture/capture_bridge.py`):
+  connects to the daemon, feeds batches into the real `DatabaseWriter` so
+  DB / realtime-state / event-bus run unchanged; auto-reconnect
+- [x] **P2.5.4** pcap-replay (`packet_capture/pcap_replay.py`) is the
+  root-free primary test strategy — parse→batch→transport→bridge exercised
+  end to end on synthetic pcaps. Surfaced + fixed a real defect: parsing
+  did a blocking reverse-DNS/nbtstat lookup per packet
+  (`parse_packet(resolve_names=False)`)
 
-### Phase 3 — LLM investigations (Sprints 8–10, weeks 15–20)
+Default OFF (`CAPTURE_IPC_ENABLED`); the in-process monolith is untouched.
+Remaining for a later sprint: wire the daemon spawn into `main.py`'s
+mode-handler lifecycle (transport + bridge + daemon are ready and tested).
 
-- Knowledge-graph projection (twin + time + provenance)
-- Local LLM runtime (Ollama/llama.cpp, quantized 4–8B) in a **separate process**, strict JSON tool calls only: `query_metrics`, `query_graph`, `list_incidents`
-- "Ask NetWatch" chat view + incident timeline view
-- Explainability: every alert/incident carries `evidence[]`, `confidence`, feature attributions
+### Phase 3 — LLM investigations (Sprints 8–10, weeks 15–20)  ← **core complete (2026-07-15)**
 
-*Exit:* "Why did the lab Wi-Fi degrade at 10:42?" answered with citations, fully offline.
+- [x] **P3.1** Grounding tools (`intelligence/investigator_tools.py`):
+  `query_metrics`, `query_graph`, `list_incidents` — read-only, each
+  returning JSON with a `provenance {source, read_at}` stamp (the
+  twin + time + provenance projection the model reasons over)
+- [x] **P3.2** Local LLM runtime (`intelligence/llm_runtime.py`):
+  `OllamaRuntime` talks only to a local Ollama server (127.0.0.1:11434) —
+  a separate process, zero cloud; `ScriptedRuntime` drives tests with no
+  model; `get_runtime()` degrades to None when none is reachable
+- [x] **P3.3** Investigator (`intelligence/investigator.py`): bounded
+  tool-calling loop, strict one-JSON-object-per-turn protocol, returns
+  answer + validated citations + full tool-call trace
+- [x] **P3.4** "Ask NetWatch" chat view (`AskView.js`) + `/api/investigate*`;
+  incident timeline view already shipped (Phase 2 polish)
+- [x] **P3.5** Explainability: alerts/incidents carry `evidence[]` +
+  `confidence` (Phase 1/2); investigations carry citations + the tool
+  trace, and citations are validated against the real toolset so an answer
+  cannot cite a source it never had
 
-### Phase 4 — Evaluation + packaging (Sprints 11–12, weeks 21–24)
+*Exit met (model-dependent):* with a local model pulled
+(`ollama pull llama3`), "Why did the lab Wi-Fi degrade at 10:42?" is
+answered with citations, fully offline. The whole pipeline is tested
+without a model via the scripted runtime. Remaining for a later sprint:
+richer time-series/knowledge-graph tools, citation-faithfulness eval
+harness (Phase 4).
 
-- Labeled evaluation dataset from lab traffic; precision/recall tables; ablations (LLM with vs without tool grounding)
-- Installer updates (models ship beside `models/`); thesis material
+### Phase 4 — Evaluation + packaging (Sprints 11–12, weeks 21–24)  ← **evaluation core complete (2026-07-15)**
+
+- [x] **P4.1** Labeled traffic dataset (`evaluation/threat_dataset.py`,
+  published to `docs/evaluation/threat_dataset.json`): 18 deterministic
+  scenarios, incl. 6 benign near-misses that make precision a real measure
+- [x] **P4.2** Detector precision/recall harness (`evaluation/detector_eval.py`,
+  `scripts/eval_detectors.py`): per-detector P/R/F1, macro-F1, benign
+  FP-rate. Current pack: **macro-F1 1.000, accuracy 1.000, benign FP-rate
+  0.000**; documented multi-label overlap (admin-port sweeps)
+- [x] **P4.3** Citation-faithfulness metric + tool-grounding ablation
+  (`evaluation/faithfulness.py`, `scripts/eval_faithfulness.py`):
+  citation_validity / grounded / claim_support + fact coverage and a
+  micro-averaged hallucination rate; model-free in CI via the scripted
+  runtime, real numbers against a local model
+- [x] **P4.3b** Deterministic seeded network (`evaluation/network_seed.py`):
+  subnet-aware, refreshed per question. Against an idle DB the model can
+  only truthfully say "0 devices" — an answer with no checkable facts, so
+  the metric measured nothing (a flattering 1.000 over 2 facts)
+- [x] **P4.4** Thesis material: `docs/evaluation/` (README + published
+  dataset + detector report JSON + faithfulness JSON)
+- [x] **P4.5** Installer updates (2026-07-17): the `.deb`/`.app` installers
+  shipped only a subset of the tree and **omitted the entire AI-first layer**
+  (`intelligence/`, `utils/`, `orchestration/`) plus `models/`, `data/`, and
+  `VERSION` — a broken package. All three installers now bundle the full
+  runtime; the Windows spec adds `models/`/`data/`/`VERSION` + `cryptography`.
+  Added frozen (PyInstaller `_MEIPASS`) awareness in `config.py`
+  (`resource_path`, `_writable_state_dir`, `NETWATCH_LOG_DIR`/`NETWATCH_DATA_DIR`)
+  so logs + retrained models resolve to a writable per-machine dir instead of
+  the read-only bundle. Ollama stays external (documented in the installer's
+  post-install notes: `ollama pull llama3.2:3b`).
+
+*Exit (evaluation):* reproducible precision/recall table + a
+faithfulness/ablation harness, all offline.
+
+**Robustness gaps the live-model evaluation surfaced** (each now fixed and
+regression-tested — none were reachable with the scripted runtime):
+
+1. Investigator degrades gracefully when Ollama is up but the model isn't
+   pulled (was an unhandled mid-loop error).
+2. llama3 returns a JSON **boolean** for `answer` on yes/no questions;
+   downstream assumed a string. Coerced at the investigator boundary.
+3. **Prompting a small local model to be faithful is not sufficient.** The
+   first live run scored grounded-rate 0.000 / citation-validity 0.200 —
+   it answered with no data and cited tools it never called. Rewording the
+   prompt did not fix it; the loop now *enforces* retrieval. 0.000 -> 1.000.
+4. Failed investigations were scored as perfect (empty answer -> no
+   checkable facts -> free claim_support 1.0). Now excluded and surfaced.
+
+*Hardware note:* llama3 (8B, 5.3 GB) thrashes on an 8 GB host — ~0.7-1.5 GB
+of weights stay paged out and generation slows ~2.5x (67.4s vs 26.8s on the
+same question, same 3 steps). `llama3.2:3b` fits in RAM and is the better
+local-first default; `NETWATCH_LLM_MODEL` / `NETWATCH_LLM_TIMEOUT` tune both.
+
+**Optimised for the 3B default (2026-07-16).** Its measured failure modes
+drove: pre-converted `human`/`summary` fields in tool results (it converted
+raw bytes to "548.7 MB" — arithmetic it gets wrong, so it now quotes rather
+than computes); a tool-call budget that no longer charges protocol
+corrections (2 of 8 questions had exhausted it before retrieving anything);
+forcing an answer from retrieved data on budget exhaustion; and repairing
+the near-miss `{"action": "<tool name>"}` deviation it reliably emits (which
+had caused 14 identical malformed calls, 0 tools, truncation). Measured
+effect: citation validity 0.750 -> **1.000**, claim support 0.812 ->
+**0.929**, hallucination rate 0.286 -> **0.053**, ablation delta +0.125 ->
+**+0.286** (ungrounded hallucinates 2/2 facts; grounded 0/24).
+
+**Full verification pass (2026-07-16).** Every roadmap claim checked against
+the codebase and the running app, not the checkboxes: all artifacts present;
+red-team demo 6/6 named threats with evidence; detector eval macro-F1 1.000 /
+benign FP-rate 0.000; P0.3 auth fail-closed and P0.4 enrichment regression
+tests green; all AI-first endpoints + frontend assets 200 on the live app;
+live capture 989 packets / 0 dropped, firing a real `rogue_device` threat ->
+alert -> incident. Live `/ask`: "19 open security incidents", independently
+confirmed against `/api/incidents` (19). Two real defects were found and
+fixed — the P0.7 CSP overclaim above, and a test-isolation bug where the
+seeder tests read host subnet state that other test modules mutate (they
+passed alone, failed in the full suite; now pinned via a hermetic fixture).
+
+**Live hotspot field test (2026-07-16, two real clients).** Running the app
+against a real hotspot (a phone on Instagram, a tablet on YouTube) surfaced
+six defects the synthetic suites couldn't see; all fixed + regression-tested
+(`tests/test_false_positive_guards.py`, `tests/test_tls_sni.py`):
+
+1. **Threat FPs from the capture host itself** — NetWatch's ping sweep and
+   NAT return traffic alerted as "port scans" from our own/gateway MACs;
+   browsing a dozen CDN edges on 443 alerted as a "network sweep"; Instagram
+   keepalives (~51s, 3-4% jitter) alerted as C2 beaconing. Detector now
+   exempts self/gateway MACs, ignores ephemeral destination ports (vertical),
+   counts only internal targets (horizontal), and demands ≤2% jitter on
+   common keepalive ports. Detector eval unchanged: macro-F1 1.000, benign
+   FP-rate 0.000.
+2. **Twin lied about liveness** — DB seeding stamped every node "seen now"
+   (44 ghost nodes at startup), mode changes kept the previous network's
+   graph, and node IPs flapped to `fe80::`/external addresses (the capture
+   host rendered as a Microsoft IP). Seeds keep stored timestamps, the graph
+   resets on mode change, display IPs only upgrade (context-pinned for
+   self/gateway).
+3. **Activity feed was resolver noise** — the host's own `*.in-addr.arpa`
+   burst dominated; clients on Private DNS (DoH) showed nothing. Reverse-DNS/
+   mDNS/WPAD filtered at ingest **and** TLS ClientHello SNI extracted on
+   443/8443, so encrypted-DNS clients' sites still appear (tagged `tls`).
+4. **Incident fusion bugs** — device alerts stored `mac` while triage read
+   `device_mac` (device incidents lost their anchor), and MAC-less alerts
+   fused across categories (High CPU joined a security incident). Both fixed;
+   MAC-less fusion is now category-scoped.
+5. **Ask NetWatch UX** — with no Ollama the UI POSTed into a 240s timeout;
+   now `/api/investigate/status` is cached, offline questions answer
+   instantly with model-correct setup steps (`llama3.2:3b`), and the
+   thinking bubble shows elapsed time.
+6. **UI clarity** — Alerts vs Incidents explained + cross-linked
+   (alert → its incident), topology external endpoints capped/toggleable
+   with an honest legend.
+
+**Production-readiness build (2026-07-17).** Seven workstreams beyond the
+field-test fixes, each regression-tested:
+
+- **W1 Hotspot attribution** — Topology/Activity/Dashboard now share one
+  host/gateway exclusion (`dashboard_state.get_host_identity()`); the host's
+  leftover Wi-Fi adapter is no longer a phantom "2nd device", the Activity feed
+  no longer shows a bogus "this host" card, and out-of-subnet nodes are dropped.
+- **W2 Real client visibility** — passive **QUIC Initial SNI** decryption
+  (RFC 9001, `packet_capture/quic_sni.py`) recovers Instagram/YouTube (HTTP/3)
+  names even with encrypted DNS; an **offline IP→org map**
+  (`intelligence/ip_org.py` + `data/ip_org_ranges.json`) labels the rest
+  ("→ Meta"); transition-window DNS is no longer dropped. Adds `cryptography`.
+- **W3 VPN detection & classification** (`intelligence/vpn_detector.py`) —
+  protocol signatures + tunnel-shape heuristic + provider classification;
+  honest "contents unavailable inside the tunnel".
+- **W4 Auto device identification** (`intelligence/device_fingerprint.py`) —
+  vendor/hostname/DHCP → device type + friendly name; rogue-device alerts
+  softened for recognized consumer vendors.
+- **W5 Parental controls / quotas** (`device_policies`, migration 014,
+  `parental_bp`, `ParentalView`) — pause / daily cap / bedtime windows enforced
+  via the DNS sinkhole at device level (hotspot-only, stated plainly).
+- **W6 Standalone Threats / Forecast / Behavior views** — first-class pages
+  over existing intelligence APIs (+ `/api/threats/recent`).
+- **W7 Packaging (P4.5)** — see above.
+
+*Honest limits (unchanged, cryptographic):* sites inside a full VPN tunnel and
+ECH-protected SNI are unrecoverable passively; QUIC-SNI + IP→org cover the
+common case. No payload inspection is added anywhere.
 
 ---
 

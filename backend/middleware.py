@@ -252,16 +252,19 @@ def register_middleware(app: Flask) -> None:
         response.headers['X-Frame-Options'] = 'SAMEORIGIN'
         response.headers['X-XSS-Protection'] = '1; mode=block'
         response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-        # Offline-first CSP: Chart.js is vendored (frontend/vendor/), so no
-        # CDN script source is needed.  Font hosts remain for the optional
-        # Google Fonts preconnect in index.html; everything else is 'self'.
+        # Offline-first CSP: every source is 'self'. Chart.js is vendored
+        # (frontend/vendor/) and the UI uses system font stacks only (see
+        # css/variables.css), so no external host is needed — and NetWatch
+        # must not reach one. The former Google Fonts allowances existed for
+        # preconnect hints that loaded no font; they were removed, so the
+        # policy no longer grants network access nothing uses.
         response.headers['Content-Security-Policy'] = (
             "default-src 'self'; "
             "script-src 'self'; "
-            "style-src 'self' https://fonts.googleapis.com; "
+            "style-src 'self'; "
             "img-src 'self' data:; "
             "connect-src 'self'; "
-            "font-src 'self' https://fonts.gstatic.com"
+            "font-src 'self'"
         )
 
         # HSTS header when behind HTTPS reverse proxy

@@ -364,6 +364,15 @@ export default class DeviceList {
         const hnText = d.hostname || d.device_name || d.ip_address || '—';
         if (hostnameSpan && hostnameSpan.textContent !== hnText) hostnameSpan.textContent = hnText;
 
+        const typeIcon = row.querySelector('.device-row__type-icon');
+        if (typeIcon) {
+          const ic = this._deviceTypeIcon(d.device_type);
+          if (typeIcon.textContent !== ic) {
+            typeIcon.textContent = ic;
+            typeIcon.title = this._deviceTypeLabel(d.device_type);
+          }
+        }
+
         const bwCell = row.querySelector('.device-row__bandwidth');
         const bwText = formatBytes(this._getDisplayUsageBytes(d));
         if (bwCell && bwCell.textContent !== bwText) bwCell.textContent = bwText;
@@ -395,6 +404,7 @@ export default class DeviceList {
           <div class="device-row__ip">${this._statusDot(d)}${escapeHtml(ipDisplay)}</div>
           <div class="device-row__mac">${escapeHtml(d.mac_address || '—')}</div>
           <div class="device-row__hostname">
+            <span class="device-row__type-icon" title="${escapeHtml(this._deviceTypeLabel(d.device_type))}">${this._deviceTypeIcon(d.device_type)}</span>
             <span class="hostname-text">${escapeHtml(d.hostname || d.device_name || d.ip_address || '—')}</span>
             <span class="device-row__hostname-edit" title="Edit hostname">✎</span>
           </div>
@@ -422,6 +432,22 @@ export default class DeviceList {
     // Replace contents in correct sorted order
     rowsEl.textContent = '';
     rowsEl.appendChild(fragment);
+  }
+
+  /* ── Device-type identification (W4) ─────────────── */
+
+  _deviceTypeIcon(type) {
+    const map = {
+      phone: '📱', tablet: '▭', laptop: '💻', desktop: '🖥️',
+      tv: '📺', console: '🎮', iot: '🔌', printer: '🖨️',
+      wearable: '⌚', router: '📶',
+    };
+    return map[type] || '•';
+  }
+
+  _deviceTypeLabel(type) {
+    if (!type || type === 'unknown') return 'Unidentified device';
+    return type.charAt(0).toUpperCase() + type.slice(1);
   }
 
   /* ── ARP-only device helpers ─────────────── */

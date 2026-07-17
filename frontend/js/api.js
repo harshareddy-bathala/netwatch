@@ -19,18 +19,25 @@ let _apiKey = localStorage.getItem('netwatch-api-key') || '';
 
 /* ── Core fetch ────────────────────────────────────── */
 
-async function request(endpoint, opts = {}, retries = MAX_RETRIES) {
+async function request(endpoint, opts = {}, retries) {
+  // Per-call overrides: `timeout` (ms) and `retries` let slow endpoints
+  // (e.g. LLM investigations that run tens of seconds) opt out of the
+  // short default budget without changing every other call.
+  const { timeout, retries: optRetries, ...fetchOpts } = opts;
+  const budget = timeout || TIMEOUT;
+  if (retries === undefined) retries = optRetries !== undefined ? optRetries : MAX_RETRIES;
+
   const url = BASE + endpoint;
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT);
+  const timer = setTimeout(() => ctrl.abort(), budget);
 
   // Inject X-API-Key header when configured
-  const headers = { ...HEADERS, ...opts.headers };
+  const headers = { ...HEADERS, ...fetchOpts.headers };
   if (_apiKey) headers['X-API-Key'] = _apiKey;
 
   try {
     const res = await fetch(url, {
-      ...opts,
+      ...fetchOpts,
       headers,
       signal: ctrl.signal,
     });
@@ -49,12 +56,21 @@ async function request(endpoint, opts = {}, retries = MAX_RETRIES) {
     return data;
   } catch (err) {
     clearTimeout(timer);
-    if (retries > 0) {
+    // Never auto-retry an aborted request: for a slow endpoint the retry
+    // just starts a second expensive run while the first may still be
+    // executing server-side (compounding load on a constrained host).
+    if (err.name !== 'AbortError' && retries > 0) {
       await sleep(RETRY_DELAY);
       return request(endpoint, opts, retries - 1);
     }
     console.error(`[api] ${endpoint}:`, err.message);
-    return { error: true, status: 0, message: err.message || 'Network error' };
+    const aborted = err.name === 'AbortError';
+    return {
+      error: true,
+      status: 0,
+      aborted,
+      message: aborted ? `Request timed out after ${Math.round(budget / 1000)}s` : (err.message || 'Network error'),
+    };
   }
 }
 
@@ -77,8 +93,11 @@ const api = {
     request(`/flows/recent?limit=${limit}${mac ? `&mac=${encodeURIComponent(mac)}` : ''}`),
   getRecentDns:       (limit=100, mac='') =>
     request(`/dns/recent?limit=${limit}${mac ? `&mac=${encodeURIComponent(mac)}` : ''}`),
+  getActivity:        (minutes=5, limit=300, mac='') =>
+    request(`/activity/recent?minutes=${minutes}&limit=${limit}${mac ? `&mac=${encodeURIComponent(mac)}` : ''}`),
   getBehaviorProfile: (mac)              =>
     request(`/behavior/profiles/${encodeURIComponent(mac)}`),
+  getRecentThreats:   (limit=100)        => request(`/threats/recent?limit=${limit}`),
 
   // Devices
   getAllDevices:     (limit=50, offset=0, includeControl=false) =>
@@ -92,6 +111,48 @@ const api = {
   // Protocols & Traffic
   getProtocols:       (hours=1)                      => request(`/protocols?hours=${hours}`),
   getBandwidthDual:   (hours=1, interval='minute')   => request(`/bandwidth/dual?hours=${hours}&interval=${interval}`),
+
+  // Forecasting (Phase 2)
+  getForecastBandwidth: (horizon=30) => request(`/forecast/bandwidth?horizon=${horizon}`),
+  getForecastDevices:   (horizon=6)  => request(`/forecast/devices?horizon=${horizon}`),
+
+  // Incidents (Phase 2)
+  getIncidents:     (status=null, limit=50) =>
+    request(`/incidents?limit=${limit}${status ? `&status=${status}` : ''}`),
+  getIncident:      (id)   => request(`/incidents/${id}`),
+  getIncidentStats: ()     => request('/incidents/stats'),
+  resolveIncident:  (id)   => request(`/incidents/${id}/resolve`, { method: 'POST' }),
+
+  // Ask NetWatch — LLM investigations (Phase 3)
+  getInvestigateStatus: ()        => request('/investigate/status'),
+  getInvestigateTools:  ()        => request('/investigate/tools'),
+  // Investigations run a local LLM through a multi-step tool loop; on a
+  // modest host this legitimately takes tens of seconds. Give it a long
+  // budget and never auto-retry (a retry would launch a second run).
+  investigate:          (question) => request('/investigate', {
+      method: 'POST', body: JSON.stringify({ question }),
+      timeout: 240000, retries: 0,
+  }),
+
+  // Blocking — admin policy on what clients may reach
+  getBlockingRules: ()  => request('/blocking/rules'),
+  addBlockingRule:  (domain, deviceMac=null) => request('/blocking/rules', {
+      method: 'POST',
+      body: JSON.stringify({ domain, device_mac: deviceMac }),
+  }),
+  setBlockingRuleEnabled: (id, enabled) => request(`/blocking/rules/${id}`, {
+      method: 'PATCH', body: JSON.stringify({ enabled }),
+  }),
+  deleteBlockingRule: (id) => request(`/blocking/rules/${id}`, { method: 'DELETE' }),
+
+  // Parental controls / quotas (W5)
+  getParentalPolicies: () => request('/parental/policies'),
+  setParentalPolicy: (mac, policy) => request(`/parental/policies/${encodeURIComponent(mac)}`, {
+      method: 'PUT', body: JSON.stringify(policy),
+  }),
+  pauseDevice:  (mac) => request(`/parental/policies/${encodeURIComponent(mac)}/pause`,  { method: 'POST' }),
+  resumeDevice: (mac) => request(`/parental/policies/${encodeURIComponent(mac)}/resume`, { method: 'POST' }),
+  clearParentalPolicy: (mac) => request(`/parental/policies/${encodeURIComponent(mac)}`, { method: 'DELETE' }),
 
   // Alerts
   getAlerts: (limit=50, severity=null, acknowledged=null) => {

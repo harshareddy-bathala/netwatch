@@ -101,6 +101,13 @@ def shutdown():
         except Exception as e:
             logger.error("Error stopping threat detector: %s", e)
 
+    if getattr(state, 'vpn_detector', None):
+        try:
+            state.vpn_detector.stop()
+            logger.info("VPN detector stopped")
+        except Exception as e:
+            logger.error("Error stopping VPN detector: %s", e)
+
     if state.twin_builder:
         try:
             state.twin_builder.stop()

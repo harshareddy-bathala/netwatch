@@ -80,9 +80,14 @@ EOF
 # -----------------------------------------------
 echo "[4/5] Copying application files..."
 
-for item in main.py config.py requirements.txt \
-            backend database alerts packet_capture frontend; do
-    cp -r "$PROJECT_ROOT/$item" "$APP_BUNDLE/Contents/Resources/app/"
+# intelligence/, utils/, orchestration/ are imported by main.py — the original
+# list omitted them and shipped a broken app. VERSION + models/ + data/ too.
+for item in main.py config.py requirements.txt VERSION \
+            backend database alerts packet_capture frontend \
+            intelligence utils orchestration models data; do
+    if [ -e "$PROJECT_ROOT/$item" ]; then
+        cp -r "$PROJECT_ROOT/$item" "$APP_BUNDLE/Contents/Resources/app/"
+    fi
 done
 
 # Create launcher script

@@ -81,8 +81,65 @@ CREATE TABLE IF NOT EXISTS alerts (
     resolved_at TIMESTAMP DEFAULT NULL,
     resolved_by TEXT DEFAULT NULL,
     acknowledged INTEGER DEFAULT 0,
-    acknowledged_at TIMESTAMP DEFAULT NULL
+    acknowledged_at TIMESTAMP DEFAULT NULL,
+    incident_id INTEGER DEFAULT NULL REFERENCES incidents(id)
 );
+
+-- NOTE: no index on alerts(incident_id) here — on pre-012 databases the
+-- alerts table exists without the column (CREATE TABLE IF NOT EXISTS is a
+-- no-op) and the index statement would abort initialization before the
+-- migration runner could add the column.  Migration 012 creates it.
+
+-- =============================================================================
+-- INCIDENTS TABLE (Phase 2, AI-first)
+-- =============================================================================
+-- Fused groups of related alerts: alerts hitting the same device (or the
+-- network at large) inside a rolling window share one incident.
+-- Maintained by intelligence.incidents.IncidentManager via migration 012.
+
+CREATE TABLE IF NOT EXISTS incidents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'resolved')),
+    severity TEXT NOT NULL DEFAULT 'info'
+        CHECK(severity IN ('info', 'low', 'medium', 'warning', 'high', 'critical')),
+    title TEXT NOT NULL,
+    device_mac TEXT DEFAULT NULL,    -- NULL = network-wide
+    alert_count INTEGER NOT NULL DEFAULT 0,
+    categories TEXT DEFAULT NULL,    -- JSON array of alert types
+    summary TEXT DEFAULT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_incidents_status_updated
+    ON incidents(status, updated_at);
+
+-- =============================================================================
+-- BLOCKING_RULES TABLE
+-- =============================================================================
+-- Admin policy for what connected clients may reach. Enforced by
+-- packet_capture.dns_blocker, which answers a matching client DNS query with
+-- NXDOMAIN before the real reply arrives. Added by migration 013.
+
+CREATE TABLE IF NOT EXISTS blocking_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    domain TEXT NOT NULL,
+    device_mac TEXT DEFAULT NULL,    -- NULL = every client
+    enabled INTEGER NOT NULL DEFAULT 1,
+    hit_count INTEGER NOT NULL DEFAULT 0,
+    last_hit TIMESTAMP DEFAULT NULL,
+    note TEXT DEFAULT NULL
+);
+
+-- COALESCE keeps the network-wide rule distinct from per-device ones: NULLs
+-- never compare equal, so a plain UNIQUE(domain, device_mac) would allow
+-- unlimited duplicate network-wide rules for the same domain.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_blocking_rules_unique
+    ON blocking_rules(domain, COALESCE(device_mac, ''));
+
+CREATE INDEX IF NOT EXISTS idx_blocking_rules_enabled
+    ON blocking_rules(enabled);
 
 -- =============================================================================
 -- BANDWIDTH_STATS TABLE
@@ -303,6 +360,21 @@ CREATE TABLE IF NOT EXISTS alert_rules (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_triggered_at TIMESTAMP DEFAULT NULL
+);
+
+-- =============================================================================
+-- DEVICE POLICIES TABLE (W5 — parental controls / quotas)
+-- =============================================================================
+-- Per-client controls enforced (in hotspot mode) by the DNS blocker.
+CREATE TABLE IF NOT EXISTS device_policies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_mac TEXT NOT NULL UNIQUE,
+    paused INTEGER NOT NULL DEFAULT 0,
+    daily_quota_mb INTEGER DEFAULT NULL,
+    blocked_windows TEXT DEFAULT NULL,   -- JSON: [{"start":"22:00","end":"07:00"}]
+    note TEXT DEFAULT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- =============================================================================

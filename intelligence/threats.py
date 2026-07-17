@@ -74,6 +74,17 @@ except ImportError:
 # Admin/remote-management ports watched by the lateral-movement detector.
 LATERAL_PORTS = {22, 23, 135, 139, 445, 3389, 5900, 5985, 5986}
 
+# Vertical-scan port counting ignores the ephemeral range: return traffic
+# to a busy client lands on many distinct ephemeral ports and looks
+# exactly like a scan otherwise (the classic gateway-"scans"-you FP).
+_EPHEMERAL_PORT_START = 32768
+
+# Messaging/web keepalive ports (HTTPS, XMPP push, DoT, NTP…). Mobile
+# apps heartbeat on these with 3-5% jitter — indistinguishable from C2 by
+# interval alone — so on these ports beaconing needs near-zero jitter.
+_BEACON_COMMON_PORTS = {80, 443, 853, 123, 5222, 5223, 4500}
+_BEACON_COMMON_PORT_MAX_JITTER = 0.02
+
 # Beacon intervals outside this band are either interactive traffic
 # (too fast) or too slow to conclude regularity from a short horizon.
 _BEACON_MIN_INTERVAL = 5.0
@@ -90,6 +101,34 @@ def _norm_mac(mac: Optional[str]) -> str:
 
 def _is_excluded_mac(mac: str) -> bool:
     return not mac or mac.startswith(_EXCLUDED_MAC_PREFIXES)
+
+
+_oui_cache: Dict[str, str] = {}
+
+
+def _oui_vendor(mac: str) -> str:
+    """Best-effort OUI → vendor (cached, lazy, never raises)."""
+    if not mac:
+        return ""
+    if mac in _oui_cache:
+        return _oui_cache[mac]
+    vendor = ""
+    try:
+        from mac_vendor_lookup import MacLookup
+        vendor = MacLookup().lookup(mac)
+    except Exception:
+        vendor = ""
+    if len(_oui_cache) < 4096:
+        _oui_cache[mac] = vendor
+    return vendor
+
+
+def _is_known_consumer_vendor(vendor: str) -> bool:
+    try:
+        from intelligence.device_fingerprint import is_known_consumer_vendor
+        return is_known_consumer_vendor(vendor)
+    except Exception:
+        return False
 
 
 def _shannon_entropy(text: str) -> float:
@@ -184,6 +223,10 @@ class ThreatDetector:
         self._lateral: Dict[str, _SlidingWindow] = {}
         # rogue_device: every MAC ever seen (seeded from devices table)
         self._known_macs: Set[str] = set()
+        # Our own interfaces + the gateway: their traffic is capture-host
+        # plumbing (discovery sweeps, return traffic, NAT forwarding) and
+        # must never be scored as an attacker.
+        self._ignored_macs: Set[str] = set()
         # (threat_type, key) pairs already alerted — session-scoped dedup
         # on top of AlertEngine's cooldown dedup.
         self._alerted: Set[tuple] = set()
@@ -243,6 +286,20 @@ class ThreatDetector:
                 logger.error("ThreatDetector ingest error: %s", exc)
         logger.info("ThreatDetector thread exited")
 
+    def set_context(self, local_macs=None, gateway_mac: str = "") -> None:
+        """Identify the capture host's own interfaces and the gateway so
+        their traffic is exempt from attacker-shaped detections."""
+        with self._lock:
+            for mac in (local_macs or []):
+                m = _norm_mac(mac)
+                if m:
+                    self._ignored_macs.add(m)
+                    self._known_macs.add(m)
+            gm = _norm_mac(gateway_mac)
+            if gm:
+                self._ignored_macs.add(gm)
+                self._known_macs.add(gm)
+
     def _seed_known_macs(self) -> None:
         from database.queries.device_queries import get_all_devices
         for d in get_all_devices(limit=2000, hours=24 * 365):
@@ -267,6 +324,11 @@ class ThreatDetector:
     def ingest_flow(self, flow: dict) -> None:
         src = _norm_mac(flow.get("source_mac"))
         if _is_excluded_mac(src) or flow.get("is_control"):
+            return
+        if src in self._ignored_macs:
+            # Self/gateway traffic: our own discovery sweeps and forwarded/
+            # return traffic would otherwise read as port scans from the
+            # network's most trusted MACs.
             return
         dst_ip = flow.get("dest_ip") or ""
         dst_port = flow.get("dest_port")
@@ -308,10 +370,20 @@ class ThreatDetector:
         ports_by_host: Dict[str, Set[int]] = {}
         hosts_by_port: Dict[int, Set[str]] = {}
         for ip, port in pairs:
-            ports_by_host.setdefault(ip, set()).add(port)
-            hosts_by_port.setdefault(port, set()).add(ip)
+            # Vertical: ephemeral destination ports are response traffic to
+            # a client's many outbound connections, not probed services.
+            if port < _EPHEMERAL_PORT_START:
+                ports_by_host.setdefault(ip, set()).add(port)
+            # Horizontal: fanning out to many *external* hosts on one port
+            # is just browsing (CDNs); only an internal sweep is a scan.
+            if is_private_ip(ip):
+                hosts_by_port.setdefault(port, set()).add(ip)
 
-        host, ports = max(ports_by_host.items(), key=lambda kv: len(kv[1]))
+        if not ports_by_host and not hosts_by_port:
+            return
+
+        host, ports = (max(ports_by_host.items(), key=lambda kv: len(kv[1]))
+                       if ports_by_host else ("", set()))
         if len(ports) >= self._portscan_port_threshold:
             self._raise(
                 "port_scan", src, key=(src, host),
@@ -330,6 +402,8 @@ class ThreatDetector:
             )
             return
 
+        if not hosts_by_port:
+            return
         port, hosts = max(hosts_by_port.items(), key=lambda kv: len(kv[1]))
         if len(hosts) >= self._portscan_host_threshold:
             self._raise(
@@ -369,7 +443,13 @@ class ThreatDetector:
             return
         variance = sum((x - mean) ** 2 for x in intervals) / len(intervals)
         jitter = math.sqrt(variance) / mean if mean else 1.0
-        if jitter <= self._beacon_max_jitter:
+        # Instagram/WhatsApp/push-notification keepalives heartbeat on the
+        # common ports with a few percent of jitter — on those ports only a
+        # machine-regular interval is suspicious enough to call C2.
+        max_jitter = (min(self._beacon_max_jitter, _BEACON_COMMON_PORT_MAX_JITTER)
+                      if dst_port in _BEACON_COMMON_PORTS
+                      else self._beacon_max_jitter)
+        if jitter <= max_jitter:
             self._raise(
                 "beaconing", src, key=key,
                 severity="warning",
@@ -389,6 +469,12 @@ class ThreatDetector:
             )
 
     def _check_dns_tunneling(self, now: float, src: str, qname: str) -> None:
+        # Reverse-DNS lookups (PTR) have legitimately long qnames — an
+        # IPv6 address spelled nibble-by-nibble under ip6.arpa is ~72
+        # chars.  The OS resolver emits bursts of these; never treat the
+        # .arpa zone as tunneling.
+        if qname.lower().rstrip(".").endswith(".arpa"):
+            return
         domain = _registered_domain(qname)
         if not domain:
             return
@@ -439,19 +525,29 @@ class ThreatDetector:
         src_ip = flow.get("source_ip") or ""
         if src_ip and not is_private_ip(src_ip):
             return
+        # W4: a recognized consumer device (phone/laptop by OUI) joining is
+        # expected — especially on a hotspot, where every client is "new".
+        # Keep the visibility but drop the severity so it doesn't read as an
+        # intruder and doesn't open a warning-level incident.
+        vendor = _oui_vendor(src)
+        known = _is_known_consumer_vendor(vendor)
         self._raise(
             "rogue_device", src, key=src,
-            severity="warning",
+            severity="info" if known else "warning",
             message=(
-                f"Unrecognized device joined the network: {src}"
-                f"{f' ({src_ip})' if src_ip else ''} has no history here."
+                (f"New device joined: {vendor} device {src}"
+                 f"{f' ({src_ip})' if src_ip else ''}."
+                 if known else
+                 f"Unrecognized device joined the network: {src}"
+                 f"{f' ({src_ip})' if src_ip else ''} has no history here.")
             ),
             evidence=[{
                 "signal": "never_seen_mac", "mac": src, "ip": src_ip,
+                "vendor": vendor,
                 "first_flow_protocol": flow.get("protocol"),
                 "first_flow_destination": flow.get("dest_ip"),
             }],
-            confidence=0.5,
+            confidence=0.3 if known else 0.5,
         )
 
     def _check_lateral(self, now: float, src: str, dst_ip: str,

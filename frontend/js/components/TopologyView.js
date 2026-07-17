@@ -17,7 +17,7 @@ import { formatBytes, formatRelativeTime } from '../utils/formatters.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const REFRESH_MS = 10000;
-const MAX_EXTERNAL_SHOWN = 24;
+const MAX_EXTERNAL_SHOWN = 14;
 const MAX_DEVICES_SHOWN = 40;
 
 const W = 1000;
@@ -33,6 +33,8 @@ export default class TopologyView {
     this._timer = null;
     this._tooltip = null;
     this._destroyed = false;
+    this._showExternal = localStorage.getItem('netwatch-topo-external') !== 'off';
+    this._twin = null;
   }
 
   render() {
@@ -41,10 +43,11 @@ export default class TopologyView {
         <div class="topology__toolbar">
           <div class="topology__stats" id="topology-stats"></div>
           <div class="topology__legend">
-            <span class="topology__legend-item"><span class="topo-dot topo-dot--self"></span>This host</span>
-            <span class="topology__legend-item"><span class="topo-dot topo-dot--gateway"></span>Gateway</span>
-            <span class="topology__legend-item"><span class="topo-dot topo-dot--device"></span>Device</span>
-            <span class="topology__legend-item"><span class="topo-dot topo-dot--external"></span>External</span>
+            <span class="topology__legend-item" title="The machine running NetWatch"><span class="topo-dot topo-dot--self"></span>This host</span>
+            <span class="topology__legend-item" title="The router — in hotspot mode this is also this host"><span class="topo-dot topo-dot--gateway"></span>Gateway</span>
+            <span class="topology__legend-item" title="Clients seen on the local network right now"><span class="topo-dot topo-dot--device"></span>Device</span>
+            <span class="topology__legend-item" title="Internet endpoints (servers/CDNs) your devices talked to — not devices on your network"><span class="topo-dot topo-dot--external"></span>External</span>
+            <button type="button" class="btn btn--sm" id="topology-external-toggle"></button>
           </div>
         </div>
         <div class="topology__canvas card" id="topology-canvas">
@@ -54,8 +57,26 @@ export default class TopologyView {
       </div>
     `;
     this._tooltip = this.el.querySelector('#topology-tooltip');
+    const toggle = this.el.querySelector('#topology-external-toggle');
+    this._syncToggle();
+    toggle.addEventListener('click', () => {
+      this._showExternal = !this._showExternal;
+      localStorage.setItem('netwatch-topo-external', this._showExternal ? 'on' : 'off');
+      this._syncToggle();
+      if (this._twin) {
+        this._renderStats(this._twin);
+        this._renderGraph(this._twin);
+      }
+    });
     this._load();
     this._timer = setInterval(() => this._load(), REFRESH_MS);
+  }
+
+  _syncToggle() {
+    const toggle = this.el.querySelector('#topology-external-toggle');
+    if (toggle) {
+      toggle.textContent = this._showExternal ? 'Hide external' : 'Show external';
+    }
   }
 
   destroy() {
@@ -68,6 +89,7 @@ export default class TopologyView {
     const resp = await api.getTwin();
     if (this._destroyed || !resp || resp.error) return;
     const twin = resp.data || resp;
+    this._twin = twin;
     this._renderStats(twin);
     this._renderGraph(twin);
   }
@@ -76,10 +98,13 @@ export default class TopologyView {
     const el = this.el.querySelector('#topology-stats');
     if (!el) return;
     const s = twin.stats || {};
+    const devices = s.device_count || 0;
+    const ext = s.external_count || 0;
     el.textContent =
-      `${s.device_count || 0} local devices · ` +
-      `${s.external_count || 0} external endpoints · ` +
-      `${s.edge_count || 0} connections · mode: ${twin.mode || 'unknown'}`;
+      `${devices} connected device${devices === 1 ? '' : 's'} · ` +
+      `${ext} external endpoint${ext === 1 ? '' : 's'}` +
+      (this._showExternal ? '' : ' (hidden)') +
+      ` · mode: ${twin.mode || 'unknown'}`;
   }
 
   /* ── Layout ─────────────────────────────────────── */
@@ -94,7 +119,9 @@ export default class TopologyView {
     bySide.device.sort((a, b) => traffic(b) - traffic(a));
     bySide.external.sort((a, b) => traffic(b) - traffic(a));
     const devices = bySide.device.slice(0, MAX_DEVICES_SHOWN);
-    const externals = bySide.external.slice(0, MAX_EXTERNAL_SHOWN);
+    const externals = this._showExternal
+      ? bySide.external.slice(0, MAX_EXTERNAL_SHOWN)
+      : [];
 
     const pos = new Map();
     if (bySide.gateway.length) pos.set(bySide.gateway[0].id, { x: CX, y: CY });
@@ -185,7 +212,7 @@ export default class TopologyView {
       svg.appendChild(g);
     }
 
-    if (hiddenExternal > 0) {
+    if (hiddenExternal > 0 && this._showExternal) {
       const note = document.createElementNS(SVG_NS, 'text');
       note.setAttribute('x', W - 12);
       note.setAttribute('y', H - 12);

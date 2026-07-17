@@ -51,10 +51,15 @@ mkdir -p "$BUILD_DIR/usr/local/bin"
 # -----------------------------------------------
 echo "[3/6] Copying application files..."
 
-# Copy Python source
-for item in main.py config.py requirements.txt \
-            backend database alerts packet_capture frontend; do
-    cp -r "$PROJECT_ROOT/$item" "$BUILD_DIR/opt/netwatch/"
+# Copy Python source. NOTE: intelligence/, utils/, orchestration/ are the
+# AI-first layer and are imported by main.py — omitting them (as the original
+# list did) ships a broken app. VERSION + models/ + data/ are runtime assets.
+for item in main.py config.py requirements.txt VERSION \
+            backend database alerts packet_capture frontend \
+            intelligence utils orchestration models data; do
+    if [ -e "$PROJECT_ROOT/$item" ]; then
+        cp -r "$PROJECT_ROOT/$item" "$BUILD_DIR/opt/netwatch/"
+    fi
 done
 
 # Create launcher script

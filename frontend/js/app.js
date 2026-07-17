@@ -14,6 +14,13 @@ import Dashboard from './components/Dashboard.js';
 import DeviceList from './components/DeviceList.js';
 import AlertFeed from './components/AlertFeed.js';
 import TopologyView from './components/TopologyView.js';
+import IncidentsView from './components/IncidentsView.js';
+import ActivityView from './components/ActivityView.js';
+import ParentalView from './components/ParentalView.js';
+import ThreatsView from './components/ThreatsView.js';
+import ForecastView from './components/ForecastView.js';
+import BehaviorView from './components/BehaviorView.js';
+import AskView from './components/AskView.js';
 
 class App {
   constructor() {
@@ -86,6 +93,27 @@ class App {
       })
       .on('/topology', () => {
         loadView(TopologyView, 'Topology', '/topology');
+      })
+      .on('/incidents', () => {
+        loadView(IncidentsView, 'Incidents', '/incidents');
+      })
+      .on('/threats', () => {
+        loadView(ThreatsView, 'Threats', '/threats');
+      })
+      .on('/forecast', () => {
+        loadView(ForecastView, 'Forecast', '/forecast');
+      })
+      .on('/behavior', () => {
+        loadView(BehaviorView, 'Behavior', '/behavior');
+      })
+      .on('/activity', () => {
+        loadView(ActivityView, 'Activity', '/activity');
+      })
+      .on('/controls', () => {
+        loadView(ParentalView, 'Controls', '/controls');
+      })
+      .on('/ask', () => {
+        loadView(AskView, 'Ask NetWatch', '/ask');
       })
       .start();
 

@@ -75,13 +75,18 @@ logger = logging.getLogger(__name__)
 # MAIN PARSING FUNCTION
 # =============================================================================
 
-def parse_packet(packet) -> Optional[Dict[str, Any]]:
+def parse_packet(packet, resolve_names: bool = True) -> Optional[Dict[str, Any]]:
     """
     Parse a raw Scapy packet and return structured data.
-    
+
     Args:
         packet: Raw Scapy packet object
-    
+        resolve_names: When True (default) enrich the packet with a
+            reverse-DNS / NetBIOS device-name lookup.  These are blocking
+            network calls; pass False on the privileged capture side and in
+            pcap replay so parsing stays pure and fast — the background
+            hostname resolver fills names in later.
+
     Returns:
         dict with packet info or None if not parseable
         
@@ -207,14 +212,17 @@ def parse_packet(packet) -> Optional[Dict[str, Any]]:
         
         # Resolve device name and vendor from MAC/IP (source)
         if result['source_mac'] and result['source_ip']:
-            # Look up MAC vendor
+            # Look up MAC vendor (local OUI table — non-blocking)
             result['vendor'] = lookup_mac_vendor(result['source_mac'])
-            
-            # Resolve device hostname
-            result['device_name'] = resolve_device_name(
-                result['source_mac'],
-                result['source_ip']
-            )
+
+            # Resolve device hostname — blocking reverse-DNS / NetBIOS.
+            # Skipped when resolve_names=False (capture daemon, pcap replay);
+            # the background hostname resolver enriches names asynchronously.
+            if resolve_names:
+                result['device_name'] = resolve_device_name(
+                    result['source_mac'],
+                    result['source_ip']
+                )
         
         # Also lookup destination vendor for gateway/hotspot detection
         if result['dest_mac']:

@@ -94,3 +94,102 @@ class TestFrontendSmoke:
         assert resp.status_code == 200
         html = resp.data.decode('utf-8')
         assert 'NetWatch' in html
+
+
+class TestIncidentsView:
+    """The Phase 2 incident timeline view is served and wired in."""
+
+    def test_incidents_view_served(self, client):
+        resp = client.get('/js/components/IncidentsView.js')
+        assert resp.status_code == 200
+        body = resp.data.decode('utf-8')
+        # Renders via DOM APIs (no HTML interpolation of untrusted text)
+        assert 'getIncidents' in body
+        assert 'resolveIncident' in body
+
+    def test_incidents_route_registered(self, client):
+        """app.js must route /incidents to the IncidentsView."""
+        body = client.get('/js/app.js').data.decode('utf-8')
+        assert "IncidentsView" in body
+        assert "'/incidents'" in body
+
+    def test_incidents_nav_entry(self, client):
+        """Sidebar must expose an Incidents nav item."""
+        body = client.get('/js/components/Sidebar.js').data.decode('utf-8')
+        assert "data-route=\"/incidents\"" in body
+
+    def test_incidents_api_methods(self, client):
+        """api.js must expose the incident endpoints the view calls."""
+        body = client.get('/js/api.js').data.decode('utf-8')
+        for method in ('getIncidents', 'getIncident', 'getIncidentStats',
+                       'resolveIncident'):
+            assert method in body
+
+    def test_incidents_css_present(self, client):
+        """components.css must carry the incident timeline styles."""
+        body = client.get('/css/components.css').data.decode('utf-8')
+        assert '.incident-timeline' in body
+        assert '.incident-row' in body
+
+
+class TestAskView:
+    """The Phase 3 Ask NetWatch view is served and wired in."""
+
+    def test_ask_view_served(self, client):
+        resp = client.get('/js/components/AskView.js')
+        assert resp.status_code == 200
+        body = resp.data.decode('utf-8')
+        assert 'investigate' in body
+        assert 'citations' in body
+
+    def test_ask_route_registered(self, client):
+        body = client.get('/js/app.js').data.decode('utf-8')
+        assert 'AskView' in body
+        assert "'/ask'" in body
+
+    def test_ask_nav_entry(self, client):
+        body = client.get('/js/components/Sidebar.js').data.decode('utf-8')
+        assert 'data-route="/ask"' in body
+
+    def test_ask_api_methods(self, client):
+        body = client.get('/js/api.js').data.decode('utf-8')
+        for method in ('getInvestigateStatus', 'getInvestigateTools',
+                       'investigate'):
+            assert method in body
+
+    def test_ask_css_present(self, client):
+        body = client.get('/css/components.css').data.decode('utf-8')
+        assert '.ask__thread' in body
+        assert '.ask-msg' in body
+
+
+class TestNewViews:
+    """W5/W6: Controls, Threats, Forecast, Behavior views served + wired."""
+
+    def test_views_served(self, client):
+        for name in ('ParentalView', 'ThreatsView', 'ForecastView', 'BehaviorView'):
+            resp = client.get(f'/js/components/{name}.js')
+            assert resp.status_code == 200, name
+
+    def test_routes_registered(self, client):
+        body = client.get('/js/app.js').data.decode('utf-8')
+        for token in ('ParentalView', 'ThreatsView', 'ForecastView', 'BehaviorView',
+                      "'/controls'", "'/threats'", "'/forecast'", "'/behavior'"):
+            assert token in body, token
+
+    def test_nav_entries(self, client):
+        body = client.get('/js/components/Sidebar.js').data.decode('utf-8')
+        for route in ('/controls', '/threats', '/forecast', '/behavior'):
+            assert f'data-route="{route}"' in body, route
+
+    def test_api_methods(self, client):
+        body = client.get('/js/api.js').data.decode('utf-8')
+        for method in ('getParentalPolicies', 'setParentalPolicy', 'pauseDevice',
+                       'resumeDevice', 'clearParentalPolicy', 'getRecentThreats',
+                       'getForecastBandwidth', 'getBehaviorProfile'):
+            assert method in body, method
+
+    def test_css_present(self, client):
+        body = client.get('/css/components.css').data.decode('utf-8')
+        for cls in ('.parental-card', '.threats-group', '.forecast-card', '.behavior-bar'):
+            assert cls in body, cls

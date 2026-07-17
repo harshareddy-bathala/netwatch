@@ -76,6 +76,7 @@ ALERT_DEVICE_COUNT = "device_count"
 ALERT_HEALTH = "health"
 ALERT_NEW_DEVICE = "new_device"
 ALERT_SECURITY = "security"
+ALERT_CONNECTION = "connection"
 ALERT_CUSTOM = "custom"
 
 
@@ -96,7 +97,31 @@ class AlertEngine:
         self._known_macs: set = set()
         self._known_ips: set = set()   # IPs belonging to our own machine
 
+        # Alert→incident fusion (Phase 2).  Wired at startup; when None
+        # (tests, standalone use) alerts are simply not triaged.
+        self.incident_manager = None
+
         logger.info("AlertEngine initialised (cooldown=%ds)", cooldown_seconds)
+
+    def _triage_incident(self, alert_id, alert_type, severity, message, metadata):
+        """Offer a persisted alert to the incident manager (never raises)."""
+        if self.incident_manager is None:
+            return
+        try:
+            # Alert creators are inconsistent about the key ("device_mac"
+            # vs "mac"); accept both so device alerts fuse per-device
+            # instead of piling into one network-wide incident.
+            meta = metadata or {}
+            device_mac = meta.get("device_mac") or meta.get("mac")
+            self.incident_manager.triage(
+                alert_id=alert_id,
+                alert_type=alert_type,
+                severity=severity,
+                device_mac=device_mac,
+                message=message,
+            )
+        except Exception:
+            logger.exception("Incident triage hook failed for alert #%s", alert_id)
 
     _RULE_OPERATOR_MAP = {
         ">": _op.gt,
@@ -142,6 +167,7 @@ class AlertEngine:
             logger.warning(
                 "Alert #%d created [%s/%s]: %s", alert_id, alert_type, severity, full_message
             )
+            self._triage_incident(alert_id, alert_type, severity, full_message, metadata)
             self._push_alerts_to_dashboard()
         else:
             logger.error("Failed to persist alert [%s/%s]: %s", alert_type, severity, full_message)
@@ -701,6 +727,35 @@ class AlertEngine:
                 "detector": "threat_pack",
             },
             dedup_key=f"threat:{threat_type}:{mac.lower()}",
+        )
+
+    def create_vpn_alert(
+        self,
+        mac: str,
+        message: str,
+        evidence: list,
+        confidence: float,
+        severity: str = "low",
+    ) -> Optional[int]:
+        """Create a VPN-usage alert (W3).
+
+        Filed under the ``connection`` category (a VPN is a connection
+        characteristic, not a security threat) so it never fuses into a
+        security incident or reads as an attack. Deduped per device.
+        """
+        return self._create_alert_with_dedup(
+            alert_type=ALERT_CONNECTION,
+            severity=severity,
+            title="VPN / Encrypted Tunnel Detected",
+            message=message,
+            metadata={
+                "threat_type": "vpn",
+                "device_mac": mac,
+                "confidence": round(confidence, 4),
+                "evidence": evidence,
+                "detector": "vpn_detector",
+            },
+            dedup_key=f"vpn:{mac.lower()}",
         )
 
     def create_anomaly_alert(

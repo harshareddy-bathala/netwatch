@@ -65,7 +65,7 @@ from orchestration.background_tasks import (
     start_anomaly_detector, start_cleanup_task,
     start_health_monitor, start_thread_watchdog,
     start_flow_normalizer, start_twin_builder, start_behavior_analyzer,
-    start_threat_detector,
+    start_threat_detector, start_vpn_detector, start_policy_enforcer,
 )
 
 # Hostname resolver functions
@@ -128,8 +128,14 @@ def setup_logging(log_level=None, log_file=None):
     level = log_level or LOG_LEVEL
 
     if _HAS_PRODUCTION_LOGGING:
+        # Use config.LOG_DIR so a frozen build logs to a writable per-machine
+        # dir instead of the read-only bundle (see config._writable_state_dir).
+        try:
+            from config import LOG_DIR as _cfg_log_dir
+        except Exception:
+            _cfg_log_dir = os.path.join(PROJECT_ROOT, 'logs')
         root = _production_setup_logging(
-            log_dir=os.path.join(PROJECT_ROOT, 'logs'),
+            log_dir=_cfg_log_dir,
             log_level=level,
             enable_console=True,
             enable_json_file=True,
@@ -414,6 +420,15 @@ def main():
     alert_engine = AlertEngine()
     logger.info("AlertEngine created (shared instance)")
 
+    # Phase 2: fuse related alerts into incidents (same device / window)
+    try:
+        from intelligence.incidents import IncidentManager
+        alert_engine.incident_manager = IncidentManager()
+        state.incident_manager = alert_engine.incident_manager
+        logger.info("IncidentManager attached (alert->incident fusion)")
+    except Exception as e:
+        logger.error("Incident triage unavailable: %s", e)
+
     # Register our own MAC as known so it won't trigger security alerts
     if _own_mac:
         alert_engine.add_known_mac(_own_mac)
@@ -453,12 +468,21 @@ def main():
             mode = state.interface_manager.get_current_mode() if state.interface_manager else None
             if mode and state.twin_builder:
                 gw_ip = getattr(mode.interface, 'gateway', None) or ""
+                _host_ip = mode.interface.ip_address or ''
+                _is_hotspot = mode.get_mode_name().value == 'hotspot'
+                _subnet_prefix = '.'.join(_host_ip.split('.')[:3]) if _host_ip.count('.') == 3 else ''
+                from orchestration.discovery_manager import get_all_local_macs, get_all_local_ips
                 state.twin_builder.set_context(
                     our_mac=getattr(mode.interface, 'mac_address', '') or '',
-                    our_ip=mode.interface.ip_address or '',
-                    gateway_mac=resolve_gateway_mac(gw_ip) if gw_ip else '',
-                    gateway_ip=gw_ip,
+                    our_ip=_host_ip,
+                    # In hotspot the host IS the gateway (its own IP/MAC).
+                    gateway_mac=(getattr(mode.interface, 'mac_address', '') or '')
+                                if _is_hotspot else (resolve_gateway_mac(gw_ip) if gw_ip else ''),
+                    gateway_ip=_host_ip if _is_hotspot else gw_ip,
                     mode=mode.get_mode_name().value,
+                    host_macs=get_all_local_macs(),
+                    host_ips=set(get_all_local_ips()),
+                    subnet=_subnet_prefix,
                 )
         except Exception as e:
             logger.debug("Twin context not set: %s", e)
@@ -471,6 +495,32 @@ def main():
             "Threat detector started (port-scan, beaconing, DNS-tunneling, "
             "rogue-device, lateral-movement)"
         )
+        # Our own interfaces and the gateway are never attackers — without
+        # this, NetWatch's discovery sweeps read as port scans from itself.
+        try:
+            from orchestration.discovery_manager import get_all_local_macs
+            mode = state.interface_manager.get_current_mode() if state.interface_manager else None
+            gw_ip = getattr(mode.interface, 'gateway', None) or "" if mode else ""
+            state.threat_detector.set_context(
+                local_macs=get_all_local_macs(),
+                gateway_mac=resolve_gateway_mac(gw_ip) if gw_ip else '',
+            )
+        except Exception as e:
+            logger.debug("Threat context not set: %s", e)
+
+    # Start VPN / encrypted-tunnel detector (W3)
+    if capture_started and start_vpn_detector(alert_engine):
+        logger.info("VPN detector started (tunnel detection + provider classification)")
+        try:
+            from orchestration.discovery_manager import get_all_local_macs
+            mode = state.interface_manager.get_current_mode() if state.interface_manager else None
+            gw_ip = getattr(mode.interface, 'gateway', None) or "" if mode else ""
+            state.vpn_detector.set_context(
+                local_macs=get_all_local_macs(),
+                gateway_mac=resolve_gateway_mac(gw_ip) if gw_ip else '',
+            )
+        except Exception as e:
+            logger.debug("VPN context not set: %s", e)
 
     # Start system health monitor
     health_started = start_health_monitor(alert_engine)
@@ -488,6 +538,13 @@ def main():
     # Start periodic device discovery
     if capture_started:
         start_discovery_task()
+
+    # Start parental-controls / quota enforcer (W5)
+    if capture_started:
+        try:
+            start_policy_enforcer()
+        except Exception as e:
+            logger.debug("Policy enforcer not started: %s", e)
 
     # Start background hostname resolver and mDNS browser
     try:

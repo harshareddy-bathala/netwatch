@@ -80,6 +80,7 @@
   --chart-upload-fill:    rgba(59, 130, 246, 0.08);
   --chart-control-download: #f59e0b;
   --chart-control-upload:   #ef4444;
+  --chart-forecast:      #a78bfa;
   --chart-grid:          rgba(255,255,255,0.04);
   --chart-text:          #6b6b6b;
   --chart-tooltip-bg:    #1a1a1a;
@@ -145,6 +146,7 @@ canvas {
   --chart-upload-fill:    rgba(37, 99, 235, 0.10);
   --chart-control-download: #d97706;
   --chart-control-upload:   #dc2626;
+  --chart-forecast:       #7c3aed;
   --chart-grid:           rgba(0,0,0,0.06);
   --chart-text:           #555555;
   --chart-tooltip-bg:     #ffffff;

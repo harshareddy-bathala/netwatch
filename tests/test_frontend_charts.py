@@ -362,3 +362,68 @@ class TestProtocolChartDataPaths:
         labels, values = _proto_extract_data(raw)
         assert labels == ['Empty']
         assert values == [0]
+
+
+# =============================================================================
+# Forecast overlay merge logic replicated from BandwidthChart.js (Phase 2)
+# =============================================================================
+
+def _merge_forecast(history_len, dl_last, ul_last, fc_points):
+    """
+    Replicate the forecast dataset construction in BandwidthChart.update():
+
+        datasets[4] = nulls×(histLen-1) + [bridge] + points.mbps
+        datasets[5] = nulls×histLen + points.upper
+        datasets[6] = nulls×histLen + points.lower
+
+    where bridge = last measured download + upload total.
+    """
+    if not fc_points or history_len == 0:
+        return [], [], []
+    bridge = (dl_last or 0) + (ul_last or 0)
+    line = [None] * (history_len - 1) + [bridge] + [p['mbps'] for p in fc_points]
+    upper = [None] * history_len + [p['upper'] for p in fc_points]
+    lower = [None] * history_len + [p['lower'] for p in fc_points]
+    return line, upper, lower
+
+
+class TestForecastOverlayMerge:
+    """The dashed forecast line must bridge from the last measured total
+    and stay index-aligned with its confidence band."""
+
+    def _points(self, n=5):
+        return [
+            {'timestamp': f'2026-07-15 12:{i:02d}:00',
+             'mbps': 10.0 + i, 'upper': 12.0 + i, 'lower': 8.0 + i}
+            for i in range(n)
+        ]
+
+    def test_lengths_match_extended_axis(self):
+        line, upper, lower = _merge_forecast(60, 4.0, 2.0, self._points(30))
+        # x-axis = 60 history labels + 30 forecast labels
+        assert len(line) == 90
+        assert len(upper) == 90
+        assert len(lower) == 90
+
+    def test_bridge_is_last_measured_total(self):
+        line, _, _ = _merge_forecast(60, 4.0, 2.0, self._points())
+        assert line[59] == 6.0          # dl + ul at the last history index
+        assert all(v is None for v in line[:59])
+
+    def test_band_starts_after_history(self):
+        _, upper, lower = _merge_forecast(60, 4.0, 2.0, self._points())
+        assert all(v is None for v in upper[:60])
+        assert all(v is None for v in lower[:60])
+        assert upper[60] == 12.0
+        assert lower[60] == 8.0
+
+    def test_band_brackets_line(self):
+        line, upper, lower = _merge_forecast(10, 1.0, 1.0, self._points(8))
+        for i in range(10, 18):
+            assert lower[i] <= line[i] <= upper[i]
+
+    def test_empty_forecast_clears_overlay(self):
+        assert _merge_forecast(60, 4.0, 2.0, []) == ([], [], [])
+
+    def test_no_history_no_overlay(self):
+        assert _merge_forecast(0, 0, 0, self._points()) == ([], [], [])

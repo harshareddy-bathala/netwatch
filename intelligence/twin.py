@@ -65,6 +65,17 @@ SNAPSHOT_MAX_EDGES = 500
 RECENT_DNS_PER_DEVICE = 20
 NODE_STALE_HOURS = 24
 
+# How recently a device/external node must have been seen to appear in the
+# *live* topology snapshot and its counts. Node retention (NODE_STALE_HOURS)
+# is a memory bound; this is the "is it on the network right now" window, so
+# a client that disconnects drops off the map within minutes rather than
+# lingering for a day. self/gateway are structural and never filtered out.
+try:
+    from config import TWIN_ACTIVE_DEVICE_SECONDS as _ACTIVE_SECS
+    TWIN_ACTIVE_SECONDS = float(_ACTIVE_SECS)
+except (ImportError, ValueError, TypeError):
+    TWIN_ACTIVE_SECONDS = 300.0
+
 
 def _norm_mac(mac: Optional[str]) -> str:
     return (mac or "").lower().replace("-", ":").strip()
@@ -79,8 +90,9 @@ class _Node:
                  "first_seen", "last_seen", "bytes_in", "bytes_out",
                  "packets", "protocols", "recent_dns")
 
-    def __init__(self, node_id: str, node_type: str, mac: str = "", ip: str = ""):
-        now = time.time()
+    def __init__(self, node_id: str, node_type: str, mac: str = "", ip: str = "",
+                 seen: Optional[float] = None):
+        now = seen if seen is not None else time.time()
         self.node_id = node_id
         self.node_type = node_type      # device | gateway | self | external
         self.mac = mac
@@ -117,8 +129,8 @@ class _Edge:
     __slots__ = ("source", "target", "first_seen", "last_seen",
                  "bytes", "packets", "protocols")
 
-    def __init__(self, source: str, target: str):
-        now = time.time()
+    def __init__(self, source: str, target: str, seen: Optional[float] = None):
+        now = seen if seen is not None else time.time()
         self.source = source
         self.target = target
         self.first_seen = now
@@ -157,6 +169,14 @@ class TwinBuilder:
         self._our_ip = ""
         self._gateway_mac = ""
         self._gateway_ip = ""
+        # Full set of the host's own adapter MACs / IPs — so the host's
+        # *other* interfaces (e.g. the pre-hotspot Wi-Fi adapter at
+        # 192.168.1.68) are recognized as "self", not counted as devices.
+        self._host_macs: set = set()
+        self._host_ips: set = set()
+        # Current monitored subnet prefix (e.g. "192.168.137"); device
+        # nodes whose IPv4 is outside it are stale from a previous network.
+        self._subnet_prefix = ""
         self._mode = "unknown"
         self._mode_timeline: deque = deque(maxlen=100)
 
@@ -173,26 +193,50 @@ class TwinBuilder:
 
     def set_context(self, our_mac: str = "", our_ip: str = "",
                     gateway_mac: str = "", gateway_ip: str = "",
-                    mode: str = "") -> None:
-        """Identify self/gateway so their nodes get the right roles."""
+                    mode: str = "", host_macs=None, host_ips=None,
+                    subnet: str = "") -> None:
+        """Identify self/gateway so their nodes get the right roles.
+
+        *host_macs* / *host_ips* are the monitoring machine's full adapter
+        sets (from ``get_all_local_macs`` / ``get_all_local_ips``) so every
+        host interface — not just the capture one — is treated as "self".
+        *subnet* is the current monitored /24 prefix ("192.168.137") used to
+        drop device nodes left over from a previous network.
+        """
         with self._lock:
             self._our_mac = _norm_mac(our_mac)
             self._our_ip = our_ip or ""
             self._gateway_mac = _norm_mac(gateway_mac)
             self._gateway_ip = gateway_ip or ""
+            if host_macs is not None:
+                self._host_macs = {_norm_mac(m) for m in host_macs if m}
+            if host_ips is not None:
+                self._host_ips = {ip for ip in host_ips if ip}
+            if subnet:
+                self._subnet_prefix = subnet
             if mode:
                 self._mode = mode
-            # Re-role any existing nodes
+            # Re-role any existing nodes and pin authoritative addresses
             for node in self._nodes.values():
                 node_role = self._role_for(node.mac, node.ip)
                 if node_role and node.node_type != node_role:
                     node.node_type = node_role
+                if node.node_type == "self" and self._our_ip:
+                    node.ip = self._our_ip
+                elif node.node_type == "gateway" and self._gateway_ip:
+                    node.ip = self._gateway_ip
 
     def _role_for(self, mac: str, ip: str) -> Optional[str]:
         """Return special role for a local node, or None for plain device."""
         if mac and mac == self._our_mac:
             return "self"
         if ip and ip == self._our_ip:
+            return "self"
+        # Any of the host's *other* adapters (e.g. the leftover Wi-Fi NIC in
+        # hotspot mode) is still "self", never a client device.
+        if mac and mac in self._host_macs:
+            return "self"
+        if ip and ip in self._host_ips:
             return "self"
         if mac and mac == self._gateway_mac:
             return "gateway"
@@ -259,8 +303,28 @@ class TwinBuilder:
     #  Seeding from durable storage
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _parse_ts(value) -> Optional[float]:
+        """DB timestamp (str/datetime) → epoch seconds, or None."""
+        if isinstance(value, datetime):
+            return value.timestamp()
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str) and value:
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+                try:
+                    return datetime.strptime(value[:19], fmt).timestamp()
+                except ValueError:
+                    continue
+        return None
+
     def _seed(self) -> None:
-        """Rebuild nodes/edges from the devices table + recent flows."""
+        """Rebuild nodes/edges from the devices table + recent flows.
+
+        Seeded nodes keep their *stored* last_seen: stamping them "now"
+        would make every device from the last 24h render as live for the
+        first TWIN_ACTIVE_SECONDS after a restart.
+        """
         from database.queries.device_queries import get_all_devices
         from database.queries.flow_queries import get_recent_flows
 
@@ -274,6 +338,11 @@ class TwinBuilder:
                 continue
             node.hostname = d.get("hostname") or d.get("device_name") or ""
             node.vendor = d.get("vendor") or ""
+            seen = self._parse_ts(d.get("last_seen"))
+            if seen:
+                node.last_seen = seen
+                node.first_seen = min(
+                    node.first_seen, self._parse_ts(d.get("first_seen")) or seen)
 
         since = (datetime.now() - timedelta(hours=NODE_STALE_HOURS)).strftime(
             "%Y-%m-%d %H:%M:%S")
@@ -288,6 +357,7 @@ class TwinBuilder:
                 npackets=int(f.get("packets_total") or 0),
                 touch_liveness=False,
                 direction=f.get("direction") or "",
+                seen_at=self._parse_ts(f.get("last_seen")),
             )
 
     # ------------------------------------------------------------------ #
@@ -322,38 +392,77 @@ class TwinBuilder:
 
     def ingest_mode_change(self, event: dict) -> None:
         with self._lock:
-            self._mode = event.get("new_mode") or self._mode
+            old = self._mode
+            new = event.get("new_mode") or self._mode
+            self._mode = new
             self._mode_timeline.append(dict(event))
+            # A mode change means a different network (new subnet/gateway).
+            # Keeping the old graph would draw last network's devices and
+            # endpoints on top of this one, so start clean; the mode
+            # handler re-sets self/gateway context right after.
+            if old != new and old != "unknown":
+                self._nodes.clear()
+                self._edges.clear()
+                logger.info("Twin reset for mode change %s -> %s", old, new)
 
     # ------------------------------------------------------------------ #
     #  Graph mutation (caller holds lock unless seeding single-threaded)
     # ------------------------------------------------------------------ #
 
-    def _get_or_create_local(self, mac: str, ip: str) -> Optional[_Node]:
+    def _get_or_create_local(self, mac: str, ip: str,
+                             seen_at: Optional[float] = None) -> Optional[_Node]:
         node_id = f"mac:{mac}"
         node = self._nodes.get(node_id)
         if node is None:
             if len(self._nodes) >= MAX_NODES:
                 return None
             role = self._role_for(mac, ip) or "device"
-            node = _Node(node_id, role, mac=mac, ip=ip)
+            node = _Node(node_id, role, mac=mac, ip="", seen=seen_at)
             self._nodes[node_id] = node
-        if ip:
-            node.ip = ip
+        self._update_node_ip(node, ip)
         return node
 
-    def _get_or_create_external(self, ip: str) -> Optional[_Node]:
+    def _update_node_ip(self, node: _Node, ip: str) -> None:
+        """Adopt *ip* as the node's display address only when it is an
+        improvement.  Every packet used to overwrite it, so a device
+        flapped between IPv4 and fe80::… labels, and one mis-attributed
+        packet could relabel the capture host with an external IP."""
+        if not ip or ip == node.ip:
+            return
+        # self/gateway addresses are authoritative context, not inferred.
+        if node.node_type == "self" and self._our_ip:
+            node.ip = self._our_ip
+            return
+        if node.node_type == "gateway" and self._gateway_ip:
+            node.ip = self._gateway_ip
+            return
+        if not node.ip:
+            node.ip = ip
+            return
+        is_v4 = "." in ip and ":" not in ip
+        had_v4 = "." in node.ip and ":" not in node.ip
+        if had_v4 and not is_v4:
+            return                       # never replace IPv4 with IPv6
+        if ip.lower().startswith(("fe80:", "169.254.")):
+            return                       # never adopt link-local over anything
+        if had_v4 and is_v4 and is_private_ip(node.ip) and not is_private_ip(ip):
+            return                       # keep the private address for local nodes
+        node.ip = ip
+
+    def _get_or_create_external(self, ip: str,
+                                seen_at: Optional[float] = None) -> Optional[_Node]:
         node_id = f"ip:{ip}"
         node = self._nodes.get(node_id)
         if node is None:
             if len(self._nodes) >= MAX_NODES:
                 return None
-            node = _Node(node_id, "external", ip=ip)
+            node = _Node(node_id, "external", ip=ip, seen=seen_at)
             self._nodes[node_id] = node
         return node
 
     def _endpoint_node(self, mac: str, ip: str,
-                       local_hint: bool = False) -> Optional[_Node]:
+                       local_hint: bool = False,
+                       seen_at: Optional[float] = None) -> Optional[_Node]:
         """Resolve one side of a communication to a twin node.
 
         Role (self/gateway MAC) and *local_hint* (from the packet's
@@ -365,11 +474,11 @@ class TwinBuilder:
         if not _is_excluded_mac(mac) and (
             local_hint or self._role_for(mac, "") is not None
         ):
-            return self._get_or_create_local(mac, ip)
+            return self._get_or_create_local(mac, ip, seen_at=seen_at)
         if ip and not is_private_ip(ip):
-            return self._get_or_create_external(ip)
+            return self._get_or_create_external(ip, seen_at=seen_at)
         if not _is_excluded_mac(mac):
-            return self._get_or_create_local(mac, ip)
+            return self._get_or_create_local(mac, ip, seen_at=seen_at)
         return None
 
     def _fold_communication(self, src_mac: str, dst_mac: str,
@@ -378,13 +487,16 @@ class TwinBuilder:
                             device_name: Optional[str] = None,
                             vendor: Optional[str] = None,
                             touch_liveness: bool = True,
-                            direction: str = "") -> None:
+                            direction: str = "",
+                            seen_at: Optional[float] = None) -> None:
         # Direction identifies the local side even when its IP is a
         # global IPv6 address: upload → source is local, download → dest.
         src = self._endpoint_node(src_mac, src_ip,
-                                  local_hint=(direction == "upload"))
+                                  local_hint=(direction == "upload"),
+                                  seen_at=seen_at)
         dst = self._endpoint_node(dst_mac, dst_ip,
-                                  local_hint=(direction == "download"))
+                                  local_hint=(direction == "download"),
+                                  seen_at=seen_at)
         if src is None or dst is None or src.node_id == dst.node_id:
             return
 
@@ -407,7 +519,7 @@ class TwinBuilder:
         if edge is None:
             if len(self._edges) >= MAX_EDGES:
                 return
-            edge = _Edge(*key)
+            edge = _Edge(*key, seen=seen_at if not touch_liveness else None)
             self._edges[key] = edge
         edge.bytes += nbytes
         edge.packets += npackets
@@ -446,31 +558,76 @@ class TwinBuilder:
         return removed
 
     def snapshot(self, max_edges: int = SNAPSHOT_MAX_EDGES) -> dict:
-        """Thread-safe JSON-ready view of the twin (size-capped)."""
+        """Thread-safe JSON-ready view of the twin (size-capped).
+
+        Only *live* nodes are returned: self/gateway are always present
+        (structural), while device/external nodes must have been seen within
+        ``TWIN_ACTIVE_SECONDS`` — so a client that left the network drops off
+        the map (and the counts) promptly instead of lingering for hours.
+        """
         with self._lock:
+            active_cutoff = time.time() - TWIN_ACTIVE_SECONDS
+
+            def _out_of_subnet(node) -> bool:
+                # A device node whose IPv4 is outside the monitored subnet is
+                # a leftover from a previous network (e.g. the host's own
+                # 192.168.1.68 Wi-Fi adapter while the hotspot is 192.168.137).
+                if not self._subnet_prefix or node.node_type != "device":
+                    return False
+                ip = node.ip or ""
+                if not ip or ":" in ip:      # no IPv4 to judge → keep
+                    return False
+                return not ip.startswith(self._subnet_prefix + ".")
+
+            def _is_live(node) -> bool:
+                if node.node_type in ("self", "gateway"):
+                    return True
+                if _out_of_subnet(node):
+                    return False
+                return node.last_seen >= active_cutoff
+
+            live_ids = {
+                nid for nid, n in self._nodes.items() if _is_live(n)
+            }
+            # An edge is live only if both endpoints are live, so we never
+            # draw a line to a node that has aged out of the view. The count
+            # is over all live edges; the drawn list is additionally capped.
+            live_edges = [
+                e for e in self._edges.values()
+                if e.source in live_ids and e.target in live_ids
+            ]
             edges = sorted(
-                self._edges.values(), key=lambda e: e.bytes, reverse=True,
+                live_edges, key=lambda e: e.bytes, reverse=True,
             )[:max_edges]
             keep_ids = {e.source for e in edges} | {e.target for e in edges}
-            # Always include local devices even if edge-less (just seeded)
             nodes = [
                 n.to_dict() for n in self._nodes.values()
-                if n.node_id in keep_ids or n.node_type in ("device", "self", "gateway")
+                if n.node_id in live_ids and (
+                    n.node_id in keep_ids
+                    or n.node_type in ("device", "self", "gateway")
+                )
             ]
+
+            # Counts describe the *live* network. "self" is the capture host,
+            # not a client — it is excluded from device_count so this number
+            # agrees with the dashboard's active-device count.
+            device_count = sum(
+                1 for n in self._nodes.values()
+                if n.node_type == "device" and n.last_seen >= active_cutoff
+                and not _out_of_subnet(n)
+            )
+            external_count = sum(
+                1 for n in self._nodes.values()
+                if n.node_type == "external" and n.last_seen >= active_cutoff
+            )
             return {
                 "generated_at": time.time(),
                 "mode": self._mode,
                 "stats": {
                     "node_count": len(self._nodes),
-                    "edge_count": len(self._edges),
-                    "device_count": sum(
-                        1 for n in self._nodes.values()
-                        if n.node_type in ("device", "self")
-                    ),
-                    "external_count": sum(
-                        1 for n in self._nodes.values()
-                        if n.node_type == "external"
-                    ),
+                    "edge_count": len(live_edges),
+                    "device_count": device_count,
+                    "external_count": external_count,
                     "events_consumed": self.events_consumed,
                 },
                 "mode_timeline": list(self._mode_timeline)[-10:],

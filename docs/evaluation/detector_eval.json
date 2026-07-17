@@ -1,0 +1,191 @@
+{
+  "per_detector": {
+    "port_scan": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "tp": 4,
+      "fp": 0,
+      "fn": 0
+    },
+    "beaconing": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "tp": 2,
+      "fp": 0,
+      "fn": 0
+    },
+    "dns_tunneling": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "tp": 2,
+      "fp": 0,
+      "fn": 0
+    },
+    "rogue_device": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "tp": 2,
+      "fp": 0,
+      "fn": 0
+    },
+    "lateral_movement": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "tp": 2,
+      "fp": 0,
+      "fn": 0
+    }
+  },
+  "overall": {
+    "macro_f1": 1.0,
+    "accuracy": 1.0,
+    "benign_false_positive_rate": 0.0
+  },
+  "label_counts": {
+    "port_scan": 4,
+    "beaconing": 2,
+    "dns_tunneling": 2,
+    "rogue_device": 2,
+    "lateral_movement": 2,
+    "benign": 6
+  },
+  "scenarios": [
+    {
+      "id": "portscan-vertical-0",
+      "label": "port_scan",
+      "fired": [
+        "port_scan"
+      ],
+      "correct": true
+    },
+    {
+      "id": "portscan-vertical-1",
+      "label": "port_scan",
+      "fired": [
+        "port_scan"
+      ],
+      "correct": true
+    },
+    {
+      "id": "portscan-horizontal-0",
+      "label": "port_scan",
+      "fired": [
+        "port_scan"
+      ],
+      "correct": true
+    },
+    {
+      "id": "portscan-horizontal-1",
+      "label": "port_scan",
+      "fired": [
+        "port_scan"
+      ],
+      "correct": true
+    },
+    {
+      "id": "beacon-0",
+      "label": "beaconing",
+      "fired": [
+        "beaconing"
+      ],
+      "correct": true
+    },
+    {
+      "id": "beacon-1",
+      "label": "beaconing",
+      "fired": [
+        "beaconing"
+      ],
+      "correct": true
+    },
+    {
+      "id": "dnstunnel-0",
+      "label": "dns_tunneling",
+      "fired": [
+        "dns_tunneling"
+      ],
+      "correct": true
+    },
+    {
+      "id": "dnstunnel-1",
+      "label": "dns_tunneling",
+      "fired": [
+        "dns_tunneling"
+      ],
+      "correct": true
+    },
+    {
+      "id": "rogue-0",
+      "label": "rogue_device",
+      "fired": [
+        "rogue_device"
+      ],
+      "correct": true
+    },
+    {
+      "id": "rogue-1",
+      "label": "rogue_device",
+      "fired": [
+        "rogue_device"
+      ],
+      "correct": true
+    },
+    {
+      "id": "lateral-0",
+      "label": "lateral_movement",
+      "fired": [
+        "lateral_movement"
+      ],
+      "correct": true
+    },
+    {
+      "id": "lateral-1",
+      "label": "lateral_movement",
+      "fired": [
+        "lateral_movement"
+      ],
+      "correct": true
+    },
+    {
+      "id": "benign-browsing",
+      "label": "benign",
+      "fired": [],
+      "correct": true
+    },
+    {
+      "id": "benign-fileshare",
+      "label": "benign",
+      "fired": [],
+      "correct": true
+    },
+    {
+      "id": "benign-dns",
+      "label": "benign",
+      "fired": [],
+      "correct": true
+    },
+    {
+      "id": "benign-ptr-burst",
+      "label": "benign",
+      "fired": [],
+      "correct": true
+    },
+    {
+      "id": "benign-jittery",
+      "label": "benign",
+      "fired": [],
+      "correct": true
+    },
+    {
+      "id": "benign-mixed",
+      "label": "benign",
+      "fired": [],
+      "correct": true
+    }
+  ]
+}
