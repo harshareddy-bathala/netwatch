@@ -71,12 +71,29 @@ class TestProtocolSignatures:
         assert ev["signal"] == "protocol_signature"
         assert ev["protocol"] == "WireGuard"
 
-    def test_openvpn_and_ipsec_ports(self, detector, engine):
+    def test_openvpn_fires(self, detector, engine):
         detector.ingest_flow(_flow(src="aa:bb:cc:dd:ee:02", dst_port=1194))
-        detector.ingest_flow(_flow(src="aa:bb:cc:dd:ee:03", dst_port=500))
         protocols = {a["evidence"][0]["protocol"] for a in engine.vpn_alerts}
         assert "OpenVPN" in protocols
+
+    def test_ipsec_to_vpn_provider_fires(self, detector, engine):
+        # IPsec/IKE only counts as a user VPN when the peer is a real VPN
+        # provider (Proton), not a carrier ePDG (VoWiFi).
+        detector.ingest_flow(_flow(src="aa:bb:cc:dd:ee:03",
+                                   dst_ip="185.159.157.5", dst_port=500))
+        protocols = {a["evidence"][0]["protocol"] for a in engine.vpn_alerts}
         assert "IPsec/IKE" in protocols
+
+    def test_ipsec_to_carrier_is_vowifi_not_vpn(self, detector, engine):
+        # Nothing-Phone Wi-Fi calling: IPsec/IKE to the carrier ePDG. The user
+        # did NOT set up a VPN — must not be flagged.
+        # 3gppnetwork.org has no IP range, so simulate a carrier-org IP by
+        # monkeypatching lookup_org is overkill; instead use a plain IP (no
+        # org) which must NOT fire on 500/4500 (VoWiFi default).
+        for _ in range(5):
+            detector.ingest_flow(_flow(src="22:5e:3e:1a:d0:f3",
+                                       dst_ip="203.0.113.50", dst_port=4500))
+        assert engine.vpn_alerts == []
 
     def test_dedup_per_device(self, detector, engine):
         for _ in range(5):

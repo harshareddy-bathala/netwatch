@@ -23,6 +23,7 @@ only the ClientHello (offset-0 CRYPTO) is parsed, which is the normal case.
 import hashlib
 import hmac
 import logging
+import re
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -104,12 +105,35 @@ def sni_from_client_hello(hs: bytes) -> Optional[str]:
             i += 4
             if ext_type == 0:                  # server_name
                 name_len = int.from_bytes(hs[i + 3:i + 5], "big")
-                name = hs[i + 5:i + 5 + name_len].decode("ascii", "replace")
-                return name.rstrip(".").lower() or None
+                raw = hs[i + 5:i + 5 + name_len]
+                try:
+                    name = raw.decode("ascii")   # strict: junk → not a hostname
+                except UnicodeDecodeError:
+                    return None
+                name = name.rstrip(".").lower()
+                return name if _is_valid_hostname(name) else None
             i += ext_len
     except (IndexError, ValueError):
         pass
     return None
+
+
+# A misparsed / partial ClientHello (e.g. QUIC CRYPTO spanning packets, or a
+# non-Initial UDP-443 payload that happens to AEAD-verify) can walk into
+# garbage and yield mojibake SNI. Only accept a syntactically valid hostname.
+_HOSTNAME_RE = re.compile(
+    r"^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$"
+)
+
+
+def _is_valid_hostname(name: str) -> bool:
+    """True for a plausible DNS hostname (has a dot, valid labels, sane TLD)."""
+    if not name or "." not in name:
+        return False
+    if not _HOSTNAME_RE.match(name):
+        return False
+    tld = name.rsplit(".", 1)[-1]
+    return len(tld) >= 2 and tld.isalpha()   # reject numeric/garbage TLDs
 
 
 # --------------------------------------------------------------------------- #

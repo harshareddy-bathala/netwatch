@@ -68,6 +68,14 @@ def _is_excluded_mac(mac: str) -> bool:
     return not mac or mac.startswith(_EXCLUDED_MAC_PREFIXES)
 
 
+def _is_carrier_org(org) -> bool:
+    """True for a mobile-carrier peer (VoWiFi ePDG), not a consumer VPN."""
+    if not org:
+        return False
+    o = org.lower()
+    return "carrier" in o or "mobile" in o or "3gpp" in o
+
+
 def _fmt_bytes(n: float) -> str:
     n = float(n)
     for unit in ("B", "KB", "MB"):
@@ -227,12 +235,20 @@ class VpnDetector:
 
             duration = tun.last_seen - tun.first_seen
 
-            # Decide: signature port = immediate; else volume+provider heuristic.
-            is_signature = proto_label is not None
+            # WireGuard/OpenVPN ports are unambiguous VPNs. IPsec/IKE and L2TP
+            # (500/4500/1701) are ALSO what carrier VoWiFi / Wi-Fi-calling use to
+            # the ePDG (3gppnetwork.org) — a phone with Wi-Fi calling would
+            # otherwise always read as "VPN". For those ports require the peer to
+            # be a real VPN provider (not a mobile carrier) before flagging.
+            unambiguous = proto_label in ("WireGuard", "OpenVPN")
+            ambiguous = proto_label in ("IPsec/IKE", "L2TP/IPsec")
+            carrier = _is_carrier_org(tun.org)
+            is_signature = unambiguous or (ambiguous and is_vpn_org(tun.org) and not carrier)
             is_heuristic = (
                 tun.bytes >= self._min_bytes
                 and duration >= self._min_seconds
                 and is_vpn_org(tun.org)
+                and not carrier
             )
             if is_signature or is_heuristic:
                 self._report(src, dst_ip, tun, duration, is_signature)
