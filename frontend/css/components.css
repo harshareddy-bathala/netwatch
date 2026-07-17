@@ -1885,6 +1885,66 @@
   font-size: var(--font-size-xs); color: var(--color-text-tertiary);
 }
 
+/* Threats / Forecast / Behavior views (W6) ------------------------------- */
+.threats__summary {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  margin-bottom: var(--spacing-md);
+}
+.threats__groups { display: flex; flex-direction: column; gap: var(--spacing-md); }
+.threats-group { padding: var(--spacing-md); }
+.threats-group__head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: var(--spacing-sm);
+  border-bottom: 1px solid var(--color-border); padding-bottom: 6px;
+}
+.threats-group__title { font-weight: var(--font-weight-semibold); }
+.threats-group__count {
+  font-size: var(--font-size-xs); color: var(--color-text-tertiary);
+  background: var(--color-bg-secondary); padding: 1px 8px;
+  border-radius: var(--border-radius-sm);
+}
+.threats-row { padding: var(--spacing-sm) 0; border-bottom: 1px solid var(--color-border); }
+.threats-row:last-child { border-bottom: none; }
+.threats-row__top { display: flex; justify-content: space-between; align-items: center; }
+.threats-row__time { font-size: var(--font-size-xs); color: var(--color-text-tertiary); }
+.threats-row__msg { font-size: var(--font-size-sm); margin: 4px 0; }
+.threats-row__meta { font-size: var(--font-size-xs); color: var(--color-text-tertiary); }
+
+.forecast__cards {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--spacing-md);
+}
+.forecast-card { padding: var(--spacing-md); }
+.forecast-card__title {
+  font-weight: var(--font-weight-semibold); margin-bottom: var(--spacing-sm);
+}
+.forecast-card__stat {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 6px 0; border-bottom: 1px solid var(--color-border);
+}
+.forecast-card__label { color: var(--color-text-secondary); font-size: var(--font-size-sm); }
+.forecast-card__value { font-weight: var(--font-weight-semibold); font-variant-numeric: tabular-nums; }
+.forecast-card__value--warn { color: var(--color-warning); }
+.forecast-card__note {
+  font-size: var(--font-size-xs); color: var(--color-text-tertiary);
+  margin-top: var(--spacing-sm);
+}
+
+.behavior__toolbar { margin-bottom: var(--spacing-md); }
+.behavior__body { display: flex; flex-direction: column; gap: var(--spacing-md); }
+.behavior-card { padding: var(--spacing-md); }
+.behavior-card__title { font-weight: var(--font-weight-semibold); margin-bottom: var(--spacing-sm); }
+.behavior-card__bars { display: flex; flex-direction: column; gap: 4px; }
+.behavior-bar { display: flex; align-items: center; gap: var(--spacing-sm); font-size: var(--font-size-xs); }
+.behavior-bar__label { width: 70px; color: var(--color-text-tertiary); flex-shrink: 0; }
+.behavior-bar__track {
+  flex: 1; height: 8px; background: var(--color-bg-secondary);
+  border-radius: 4px; overflow: hidden;
+}
+.behavior-bar__fill { display: block; height: 100%; background: var(--color-accent-primary); }
+.behavior-bar__val { width: 130px; text-align: right; color: var(--color-text-secondary); flex-shrink: 0; }
+
 /* Blocking ---------------------------------------------------------------- */
 
 .activity__hint--warn { color: var(--color-warning); }

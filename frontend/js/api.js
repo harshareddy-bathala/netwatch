@@ -97,6 +97,7 @@ const api = {
     request(`/activity/recent?minutes=${minutes}&limit=${limit}${mac ? `&mac=${encodeURIComponent(mac)}` : ''}`),
   getBehaviorProfile: (mac)              =>
     request(`/behavior/profiles/${encodeURIComponent(mac)}`),
+  getRecentThreats:   (limit=100)        => request(`/threats/recent?limit=${limit}`),
 
   // Devices
   getAllDevices:     (limit=50, offset=0, includeControl=false) =>

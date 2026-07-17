@@ -208,6 +208,41 @@ def _org_fallback_rows(minutes, exclude_macs, exclude_ips, mac):
     return out
 
 
+@twin_bp.route('/api/threats/recent', methods=['GET'])
+@handle_errors
+def get_threats_recent():
+    """Recent fired threat detections (+ VPN), with parsed evidence, for the
+    standalone Threats view. Reads the alert stream and unpacks the detector
+    metadata each carries."""
+    import json
+    from database.queries.alert_queries import get_alerts
+    limit = min(max(request.args.get('limit', 100, type=int), 1), 500)
+    out = []
+    for a in get_alerts(limit=limit, include_resolved=False):
+        details = a.get("details")
+        meta = {}
+        if details:
+            try:
+                meta = json.loads(details) if isinstance(details, str) else details
+            except (ValueError, TypeError):
+                meta = {}
+        ttype = meta.get("threat_type")
+        if not ttype:
+            continue        # only detector-produced alerts belong here
+        out.append({
+            "id": a.get("id"),
+            "timestamp": a.get("timestamp"),
+            "severity": a.get("severity"),
+            "threat_type": ttype,
+            "message": a.get("message"),
+            "device_mac": meta.get("device_mac"),
+            "confidence": meta.get("confidence"),
+            "evidence": meta.get("evidence") or [],
+            "incident_id": a.get("incident_id"),
+        })
+    return jsonify({'data': out})
+
+
 @twin_bp.route('/api/behavior/profiles/<mac>', methods=['GET'])
 @handle_errors
 def get_behavior_profile(mac):

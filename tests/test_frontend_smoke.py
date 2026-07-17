@@ -161,3 +161,35 @@ class TestAskView:
         body = client.get('/css/components.css').data.decode('utf-8')
         assert '.ask__thread' in body
         assert '.ask-msg' in body
+
+
+class TestNewViews:
+    """W5/W6: Controls, Threats, Forecast, Behavior views served + wired."""
+
+    def test_views_served(self, client):
+        for name in ('ParentalView', 'ThreatsView', 'ForecastView', 'BehaviorView'):
+            resp = client.get(f'/js/components/{name}.js')
+            assert resp.status_code == 200, name
+
+    def test_routes_registered(self, client):
+        body = client.get('/js/app.js').data.decode('utf-8')
+        for token in ('ParentalView', 'ThreatsView', 'ForecastView', 'BehaviorView',
+                      "'/controls'", "'/threats'", "'/forecast'", "'/behavior'"):
+            assert token in body, token
+
+    def test_nav_entries(self, client):
+        body = client.get('/js/components/Sidebar.js').data.decode('utf-8')
+        for route in ('/controls', '/threats', '/forecast', '/behavior'):
+            assert f'data-route="{route}"' in body, route
+
+    def test_api_methods(self, client):
+        body = client.get('/js/api.js').data.decode('utf-8')
+        for method in ('getParentalPolicies', 'setParentalPolicy', 'pauseDevice',
+                       'resumeDevice', 'clearParentalPolicy', 'getRecentThreats',
+                       'getForecastBandwidth', 'getBehaviorProfile'):
+            assert method in body, method
+
+    def test_css_present(self, client):
+        body = client.get('/css/components.css').data.decode('utf-8')
+        for cls in ('.parental-card', '.threats-group', '.forecast-card', '.behavior-bar'):
+            assert cls in body, cls
