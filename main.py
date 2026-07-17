@@ -66,6 +66,7 @@ from orchestration.background_tasks import (
     start_health_monitor, start_thread_watchdog,
     start_flow_normalizer, start_twin_builder, start_behavior_analyzer,
     start_threat_detector, start_vpn_detector, start_policy_enforcer,
+    start_traffic_blocker,
 )
 
 # Hostname resolver functions
@@ -539,9 +540,10 @@ def main():
     if capture_started:
         start_discovery_task()
 
-    # Start parental-controls / quota enforcer (W5)
+    # Start parental-controls / quota enforcer (W5) + real packet-level blocker
     if capture_started:
         try:
+            start_traffic_blocker()
             start_policy_enforcer()
         except Exception as e:
             logger.debug("Policy enforcer not started: %s", e)

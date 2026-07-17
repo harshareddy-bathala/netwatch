@@ -488,12 +488,16 @@ def _on_mode_change_locked(old_mode, new_mode):
                 # psutil.  In ethernet mode the host IS a device we track.
                 our_ip=(new_mode.interface.ip_address or '') if is_hotspot else '',
             )
-            # Hotspot mode: use a short active window so disconnected
-            # clients disappear quickly from the dashboard.
-            if is_hotspot:
-                dashboard_state.set_device_active_window(60)   # 60 seconds
-            else:
-                dashboard_state.set_device_active_window(300)  # 5 minutes
+            # Presence window (config-driven, no magic numbers). Hotspot uses
+            # the tuned HOTSPOT_STALE_DEVICE_SECONDS so an idle client doesn't
+            # flicker out between its sparse packets; other modes use the
+            # general device-inactivity timeout.
+            try:
+                from config import HOTSPOT_STALE_DEVICE_SECONDS, DEVICE_INACTIVITY_TIMEOUT
+            except ImportError:
+                HOTSPOT_STALE_DEVICE_SECONDS, DEVICE_INACTIVITY_TIMEOUT = 180, 300
+            dashboard_state.set_device_active_window(
+                HOTSPOT_STALE_DEVICE_SECONDS if is_hotspot else DEVICE_INACTIVITY_TIMEOUT)
         except Exception:
             pass
 

@@ -935,8 +935,11 @@ STALE_DEVICE_TIMEOUT_HOURS = int(os.getenv('STALE_DEVICE_TIMEOUT_HOURS', '2'))
 MAX_IN_MEMORY_DEVICES = int(os.getenv('MAX_IN_MEMORY_DEVICES', '10000'))
 
 # Hotspot realtime presence tuning.
-# Lower values remove disconnected clients faster from the dashboard.
-HOTSPOT_STALE_DEVICE_SECONDS = int(os.getenv('HOTSPOT_STALE_DEVICE_SECONDS', '60'))
+# Lower values remove disconnected clients faster from the dashboard; too low
+# makes an idle-but-connected device flicker out between its sparse packets.
+# 180s keeps an idle phone/tablet listed while still dropping a client that
+# actually left within ~3 min.
+HOTSPOT_STALE_DEVICE_SECONDS = int(os.getenv('HOTSPOT_STALE_DEVICE_SECONDS', '180'))
 
 # Write queue overflow thresholds (percentage of BATCH_SIZE * max_queue_batches)
 WRITE_QUEUE_WARNING_PERCENT = 80

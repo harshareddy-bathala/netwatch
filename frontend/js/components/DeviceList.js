@@ -25,7 +25,9 @@ export default class DeviceList {
     this._openModal = null;    // track currently open DeviceDetail modal (#48)
     this._modeData = null;     // current mode capabilities from store
     this._pendingRenames = new Map(); // device key (ip/mac) -> newName
-    this._showControlOverhead = !!store.get('includeControlTraffic');
+    // Control-overhead breakdown was removed from the Devices UI (the toggle
+    // didn't earn its space); usage always shows app traffic.
+    this._showControlOverhead = false;
     this._refreshTimer = null;
   }
 
@@ -73,10 +75,6 @@ export default class DeviceList {
           <input class="search-box__input" id="device-search"
                  placeholder="Search by IP, MAC, or hostname…" type="text" />
         </div>
-        <label class="control-toggle control-toggle--compact" title="Include control traffic in per-device usage">
-          <input type="checkbox" id="device-control-overhead-toggle" ${this._showControlOverhead ? 'checked' : ''}>
-          <span>Show control overhead</span>
-        </label>
         <span class="device-count" id="device-count">— devices</span>
       </div>
 

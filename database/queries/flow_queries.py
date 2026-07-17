@@ -182,6 +182,7 @@ def get_recent_activity(minutes: int = 5, limit: int = 300,
     # other writer) must not resurface as "activity".
     clauses.append("q.qname NOT LIKE '%.arpa'")
     clauses.append("q.qname NOT LIKE '%.local'")
+    clauses.append("q.qname NOT LIKE '%.mshome.net'")
     clauses.append("q.qname NOT LIKE 'wpad%'")
     for m in (exclude_macs or set()):
         clauses.append("(q.source_mac IS NULL OR LOWER(q.source_mac) != LOWER(?))")

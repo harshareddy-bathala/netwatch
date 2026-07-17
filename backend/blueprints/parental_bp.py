@@ -31,12 +31,29 @@ parental_bp = Blueprint('parental', __name__)
 
 
 def _enforcement_status() -> dict:
-    """Reuse the blocking blueprint's honest hotspot-only status."""
+    """Honest status: hotspot-only + which enforcement level is actually active
+    (windivert packet-drop > arp blackhole > dns sinkhole)."""
     try:
         from backend.blueprints.blocking_bp import _enforcement_status as s
-        return s()
+        status = s()
     except Exception:
-        return {"enforcing": False, "mode": None, "reason": None}
+        status = {"enforcing": False, "mode": None, "reason": None}
+    try:
+        from orchestration import state
+        tb = getattr(state, 'traffic_blocker', None)
+        if tb is not None:
+            ts = tb.get_status()
+            status["enforcement_level"] = ts.get("mode")       # windivert|arp|off|unavailable
+            status["windivert_available"] = ts.get("windivert_available")
+            if not ts.get("windivert_available"):
+                status["enforcement_note"] = (
+                    "Install WinDivert (pip install pydivert) for kernel-level "
+                    "packet blocking. Without it, blocking falls back to DNS, "
+                    "which encrypted-DNS/QUIC clients can bypass."
+                )
+    except Exception:
+        pass
+    return status
 
 
 def _kick_enforcer() -> None:

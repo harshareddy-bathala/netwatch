@@ -317,12 +317,48 @@ def _use_devices_table_only_mode(mode_name: Optional[str]) -> bool:
     return mode_name in _RESTRICTIVE_MODES or mode_name == "hotspot"
 
 
+def _host_exclusion_sql() -> str:
+    """SQL that removes the monitoring host / gateway from a device list.
+
+    In hotspot the host IS the gateway (192.168.137.1) and NAT-forwards every
+    client's traffic, so without this it appears as a bogus device whose usage
+    mirrors a client's. The device LIST previously lacked this exclusion while
+    the COUNT had it — hence "count 2, list 3". Uses the same identity the
+    dashboard uses; addresses are our own (psutil), inlined as validated
+    literals (no user input). Matches on BOTH the COALESCEd IP and the MAC.
+    """
+    try:
+        from utils.realtime_state import dashboard_state
+        ident = dashboard_state.get_host_identity()
+        ips = {i for i in (ident.get("ips") or set()) if _looks_like_addr(i)}
+        macs = {m.lower() for m in (ident.get("macs") or set()) if _looks_like_mac(m)}
+    except Exception:
+        return ""
+    parts = []
+    if ips:
+        vals = ",".join(f"'{i}'" for i in ips)
+        parts.append(f"COALESCE(ipv4_address, ip_address) NOT IN ({vals})")
+    if macs:
+        vals = ",".join(f"'{m}'" for m in macs)
+        parts.append(f"LOWER(mac_address) NOT IN ({vals})")
+    return (" AND " + " AND ".join(f"({p})" for p in parts)) if parts else ""
+
+
+def _looks_like_addr(s: str) -> bool:
+    return bool(s) and all(c in "0123456789abcdefABCDEF.:%" for c in s)
+
+
+def _looks_like_mac(s: str) -> bool:
+    return bool(s) and all(c in "0123456789abcdefABCDEF:-" for c in s) and (":" in s or "-" in s)
+
+
 def _devices_table_ip_filter_clause(mode_name: Optional[str]) -> str:
     """Return SQL predicate for devices-table IP visibility by mode.
 
     In hotspot mode, connected clients can be discovered by MAC before IP
     assignment/ARP resolution is complete. Keep those rows visible instead
-    of dropping them behind strict private-IP-only checks.
+    of dropping them behind strict private-IP-only checks — but always
+    exclude the host/gateway itself.
     """
     if mode_name == "hotspot":
         return f"""
@@ -332,6 +368,7 @@ def _devices_table_ip_filter_clause(mode_name: Optional[str]) -> str:
                 OR TRIM(COALESCE(ipv4_address, ip_address)) = ''
                 OR LOWER(TRIM(COALESCE(ipv4_address, ip_address))) = 'unknown'
             )
+            {_host_exclusion_sql()}
         """
 
     return f"({_PRIVATE_IP_FILTER_DEVICE})"

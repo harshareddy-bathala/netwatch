@@ -45,6 +45,33 @@ def _to_int(value) -> int:
         return 0
 
 
+def _dedupe_by_hostname(devices: list) -> list:
+    """Collapse rows that are the same physical device seen under two MACs.
+
+    Phones use per-connection MAC randomization and can also raise a second
+    row from an IPv6 link-local frame, so one device shows twice (both in the
+    devices list and the parental dropdown). When two rows share a real
+    hostname, keep the most-recently-seen one. Rows without a hostname pass
+    through untouched (still keyed by their unique MAC)."""
+    best: dict = {}
+    passthrough: list = []
+    order: list = []
+    for d in devices:
+        hn = str(d.get('hostname') or d.get('device_name') or '').strip().lower()
+        ip = str(d.get('ip_address') or '').strip().lower()
+        # Only dedupe on a meaningful hostname (not empty, not the bare IP).
+        if not hn or hn == ip:
+            passthrough.append(d)
+            continue
+        cur = best.get(hn)
+        if cur is None:
+            best[hn] = d
+            order.append(hn)
+        elif str(d.get('last_seen') or '') > str(cur.get('last_seen') or ''):
+            best[hn] = d
+    return [best[h] for h in order] + passthrough
+
+
 def _merge_hotspot_realtime_devices(
     db_rows: list,
     include_control: bool,
@@ -163,6 +190,7 @@ def get_devices():
         limit=limit,
         offset=offset,
     )
+    devices = _dedupe_by_hostname(devices)
     devices = devices[offset:offset + limit]
 
     return jsonify({

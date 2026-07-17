@@ -142,6 +142,13 @@ export default class AskView {
           this._checkStatus();
           this._appendNotice(data.reason || 'Investigations are unavailable.');
         } else {
+          // A real answer proves the model is up — clear any stale
+          // "no model running" banner (it may have been shown before Ollama
+          // finished starting).
+          if (!this._available) {
+            this._available = true;
+            this._checkStatus();
+          }
           this._appendAnswer(data);
         }
       }

@@ -108,6 +108,13 @@ def shutdown():
         except Exception as e:
             logger.error("Error stopping VPN detector: %s", e)
 
+    if getattr(state, 'traffic_blocker', None):
+        try:
+            state.traffic_blocker.stop()
+            logger.info("Traffic blocker stopped")
+        except Exception as e:
+            logger.error("Error stopping traffic blocker: %s", e)
+
     if state.twin_builder:
         try:
             state.twin_builder.stop()

@@ -56,6 +56,8 @@ def _is_noise_qname(qname: str) -> bool:
     one host card was 67 ``*.in-addr.arpa`` rows and zero real sites."""
     q = qname.lower().rstrip(".")
     return (q.endswith(".arpa") or q.endswith(".local")
+            or q.endswith(".mshome.net") or q == "mshome.net"
+            or "._tcp" in q or "._udp" in q
             or q in ("wpad", "localhost") or q.startswith("wpad."))
 
 

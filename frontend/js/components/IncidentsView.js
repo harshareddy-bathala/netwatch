@@ -30,9 +30,10 @@ export default class IncidentsView {
     this.el.innerHTML = `
       <div class="incidents">
         <div class="view-explainer">
-          One incident = one story: related <a href="#/alerts">alerts</a> from
-          the same device and time window, fused so you triage a case instead
-          of a wall of repeats.
+          Fused security cases, highest risk first. Related
+          <a href="#/alerts">alerts</a> from the same device and window are
+          grouped into one case with a <strong>risk score</strong> and threat
+          category — so you act on what matters, not a wall of repeats.
         </div>
         <div class="incidents__toolbar">
           <div class="incidents__summary" id="incidents-summary"></div>
@@ -137,6 +138,13 @@ export default class IncidentsView {
     row.classList.toggle('incident-row--selected', inc.id === this._selectedId);
     row.classList.toggle('incident-row--resolved', inc.status === 'resolved');
 
+    // Risk score is the headline — a single number ranking what matters.
+    const risk = document.createElement('span');
+    const band = inc.risk_band || 'low';
+    risk.className = `incident-risk incident-risk--${band}`;
+    risk.textContent = (inc.risk_score != null ? inc.risk_score : '–');
+    risk.title = `Risk ${inc.risk_score ?? ''} (${band})`;
+
     const sev = document.createElement('span');
     sev.className = `alert-item__severity alert-item__severity--${severityClass(inc.severity)}`;
     sev.textContent = inc.severity || 'info';
@@ -167,6 +175,7 @@ export default class IncidentsView {
       main.appendChild(chip);
     }
 
+    row.appendChild(risk);
     row.appendChild(sev);
     row.appendChild(main);
 

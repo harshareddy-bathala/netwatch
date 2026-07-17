@@ -58,6 +58,40 @@ def _max_severity(a: str, b: str) -> str:
     return a if _severity_rank(a) >= _severity_rank(b) else b
 
 
+# Threat categories carry more risk than health/bandwidth noise.
+_SECURITY_CATEGORIES = {"security", "connection", "anomaly", "new_device"}
+
+
+def risk_score(incident: dict) -> int:
+    """0-100 risk for an incident — the Security view's headline number.
+
+    Combines: severity (dominant), how many alerts fused (persistence),
+    whether it is a security-class category (vs health/bandwidth), and
+    whether it is still open. Pure + deterministic so it is unit-testable.
+    """
+    sev = _severity_rank(incident.get("severity") or "info")   # 0..5
+    base = {0: 10, 1: 20, 2: 35, 3: 55, 4: 75, 5: 90}.get(sev, 10)
+    count = int(incident.get("alert_count") or 1)
+    base += min(15, (count - 1) * 3)                            # persistence
+    cats = incident.get("categories")
+    if isinstance(cats, list) and any(c in _SECURITY_CATEGORIES for c in cats):
+        base += 10
+    if (incident.get("status") or "open") != "open":
+        base = int(base * 0.5)                                  # resolved → halved
+    return max(0, min(100, base))
+
+
+def risk_band(score: int) -> str:
+    """Human band for a risk score."""
+    if score >= 75:
+        return "critical"
+    if score >= 50:
+        return "high"
+    if score >= 30:
+        return "medium"
+    return "low"
+
+
 class IncidentManager:
     """Fuses alerts into incidents.  One instance per process, attached
     to the shared AlertEngine at startup."""
