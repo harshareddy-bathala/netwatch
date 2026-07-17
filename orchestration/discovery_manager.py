@@ -720,8 +720,21 @@ def _discovery_loop():
                             if confirmed_ips:
                                 active_discovered_ips.update(confirmed_ips)
 
-                        # 1. ARP scan (primary -- fast, L2)
-                        devices = discovery.arp_scan(timeout=3)
+                        # In hotspot mode every client's traffic already crosses
+                        # our adapter, so we discover them PASSIVELY (captured
+                        # packets + ARP cache). Actively ARP-scanning / ping-
+                        # sweeping all 254 host IPs is redundant there and only
+                        # adds network+CPU load that can degrade forwarding for
+                        # clients ("NetWatch shouldn't affect the network").
+                        # Opt back in with HOTSPOT_ACTIVE_PROBING=true.
+                        try:
+                            from config import HOTSPOT_ACTIVE_PROBING as _HAP
+                        except Exception:
+                            _HAP = False
+                        _active_probing_ok = (current_mode_name != "hotspot") or _HAP
+
+                        # 1. ARP scan (primary -- fast, L2) — passive-only in hotspot
+                        devices = discovery.arp_scan(timeout=3) if _active_probing_ok else []
                         _upsert_devices(
                             devices,
                             current_mode_name,
@@ -767,7 +780,8 @@ def _discovery_loop():
                             pass
 
                         # 3. Ping sweep -- first iteration and every 5th cycle
-                        if _iteration == 0 or _iteration % 5 == 0:
+                        #    (skipped in hotspot: passive discovery suffices)
+                        if _active_probing_ok and (_iteration == 0 or _iteration % 5 == 0):
                             try:
                                 ping_devices = discovery.ping_sweep(
                                     max_workers=20,
