@@ -18,6 +18,16 @@ from flask import Blueprint, request
 
 from backend.helpers import handle_errors, success_detail, success_list, error_response
 from database.queries import incident_queries
+from intelligence.incidents import risk_score, risk_band
+
+
+def _with_risk(incident: dict) -> dict:
+    """Attach the Security-view risk score/band to an incident row."""
+    if incident is not None:
+        s = risk_score(incident)
+        incident["risk_score"] = s
+        incident["risk_band"] = risk_band(s)
+    return incident
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +43,10 @@ def list_incidents():
         return error_response("status must be 'open' or 'resolved'",
                               code='BAD_STATUS', status=400)
     limit = request.args.get('limit', default=50, type=int)
-    return success_list(incident_queries.get_incidents(status=status, limit=limit))
+    incidents = [_with_risk(i) for i in incident_queries.get_incidents(status=status, limit=limit)]
+    # Highest risk first — the Security view leads with what matters.
+    incidents.sort(key=lambda i: i.get("risk_score", 0), reverse=True)
+    return success_list(incidents)
 
 
 @incidents_bp.route('/api/incidents/stats', methods=['GET'])
@@ -57,7 +70,7 @@ def get_incident(incident_id: int):
     incident = incident_queries.get_incident(incident_id)
     if incident is None:
         return error_response('Incident not found', code='NOT_FOUND', status=404)
-    return success_detail(incident)
+    return success_detail(_with_risk(incident))
 
 
 @incidents_bp.route('/api/incidents/<int:incident_id>/resolve', methods=['POST'])

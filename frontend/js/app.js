@@ -17,7 +17,6 @@ import TopologyView from './components/TopologyView.js';
 import IncidentsView from './components/IncidentsView.js';
 import ActivityView from './components/ActivityView.js';
 import ParentalView from './components/ParentalView.js';
-import ThreatsView from './components/ThreatsView.js';
 import ForecastView from './components/ForecastView.js';
 import BehaviorView from './components/BehaviorView.js';
 import AskView from './components/AskView.js';
@@ -94,11 +93,15 @@ class App {
       .on('/topology', () => {
         loadView(TopologyView, 'Topology', '/topology');
       })
+      .on('/security', () => {
+        loadView(IncidentsView, 'Security', '/security');
+      })
+      // Back-compat aliases → the merged Security page.
       .on('/incidents', () => {
-        loadView(IncidentsView, 'Incidents', '/incidents');
+        loadView(IncidentsView, 'Security', '/security');
       })
       .on('/threats', () => {
-        loadView(ThreatsView, 'Threats', '/threats');
+        loadView(IncidentsView, 'Security', '/security');
       })
       .on('/forecast', () => {
         loadView(ForecastView, 'Forecast', '/forecast');

@@ -113,10 +113,11 @@ class TestIncidentsView:
         assert "IncidentsView" in body
         assert "'/incidents'" in body
 
-    def test_incidents_nav_entry(self, client):
-        """Sidebar must expose an Incidents nav item."""
+    def test_security_nav_entry(self, client):
+        """Incidents+Threats merged into a single Security nav item."""
         body = client.get('/js/components/Sidebar.js').data.decode('utf-8')
-        assert "data-route=\"/incidents\"" in body
+        assert 'data-route="/security"' in body
+        assert 'data-route="/threats"' not in body
 
     def test_incidents_api_methods(self, client):
         """api.js must expose the incident endpoints the view calls."""
@@ -167,19 +168,19 @@ class TestNewViews:
     """W5/W6: Controls, Threats, Forecast, Behavior views served + wired."""
 
     def test_views_served(self, client):
-        for name in ('ParentalView', 'ThreatsView', 'ForecastView', 'BehaviorView'):
+        for name in ('ParentalView', 'ForecastView', 'BehaviorView'):
             resp = client.get(f'/js/components/{name}.js')
             assert resp.status_code == 200, name
 
     def test_routes_registered(self, client):
         body = client.get('/js/app.js').data.decode('utf-8')
-        for token in ('ParentalView', 'ThreatsView', 'ForecastView', 'BehaviorView',
-                      "'/controls'", "'/threats'", "'/forecast'", "'/behavior'"):
+        for token in ('ParentalView', 'ForecastView', 'BehaviorView',
+                      "'/controls'", "'/security'", "'/forecast'", "'/behavior'"):
             assert token in body, token
 
     def test_nav_entries(self, client):
         body = client.get('/js/components/Sidebar.js').data.decode('utf-8')
-        for route in ('/controls', '/threats', '/forecast', '/behavior'):
+        for route in ('/controls', '/security', '/forecast', '/behavior'):
             assert f'data-route="{route}"' in body, route
 
     def test_api_methods(self, client):
