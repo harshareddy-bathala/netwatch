@@ -138,6 +138,29 @@ def start_vpn_detector(alert_engine):
 def start_policy_enforcer(interval: int = 30):
     """Evaluate device policies (parental controls / quotas, W5) and push the
     currently-blocked MAC set to the DNS blocker. Daemon thread; cheap."""
+    def _macs_to_ips(macs):
+        """Resolve blocked MACs → their current IPs for packet-level blocking."""
+        if not macs:
+            return set()
+        try:
+            from database.connection import get_connection
+            ips = set()
+            with get_connection() as conn:
+                cur = conn.cursor()
+                ph = ",".join("?" for _ in macs)
+                cur.execute(
+                    f"SELECT COALESCE(ipv4_address, ip_address) AS ip FROM devices "
+                    f"WHERE LOWER(mac_address) IN ({ph})",
+                    tuple(m.lower() for m in macs),
+                )
+                for row in cur.fetchall():
+                    ip = row[0]
+                    if ip:
+                        ips.add(ip)
+            return ips
+        except Exception:
+            return set()
+
     def _loop():
         from database.queries.policy_queries import (
             get_policies, get_usage_today_by_mac, evaluate_blocked_macs,
@@ -146,15 +169,20 @@ def start_policy_enforcer(interval: int = 30):
         while not state.shutdown_event.wait(timeout=interval):
             try:
                 policies = get_policies()
-                blocker = getattr(state, 'dns_blocker', None)
-                if blocker is None:
-                    continue
+                dns = getattr(state, 'dns_blocker', None)
+                traffic = getattr(state, 'traffic_blocker', None)
                 if not policies:
-                    blocker.set_blocked_macs(set())
+                    if dns: dns.set_blocked_macs(set())
+                    if traffic: traffic.set_blocked_ips(set())
                     continue
                 usage = get_usage_today_by_mac()
                 blocked = evaluate_blocked_macs(policies, usage)
-                blocker.set_blocked_macs(set(blocked.keys()))
+                macs = set(blocked.keys())
+                # DNS sinkhole (fast, name-level) + real packet drop (IP-level).
+                if dns:
+                    dns.set_blocked_macs(macs)
+                if traffic:
+                    traffic.set_blocked_ips(_macs_to_ips(macs))
             except Exception as e:
                 logger.debug("Policy enforcer error: %s", e)
 
@@ -162,6 +190,18 @@ def start_policy_enforcer(interval: int = 30):
     t.start()
     state.policy_enforcer_thread = t
     return True
+
+
+def start_traffic_blocker():
+    """Start the WinDivert/ARP packet-level enforcer (parental controls)."""
+    from packet_capture.traffic_blocker import TrafficBlocker
+    try:
+        state.traffic_blocker = TrafficBlocker()
+        logger.info("Traffic blocker ready (%s)", state.traffic_blocker.get_status()["mode"])
+        return True
+    except Exception as e:
+        logger.error("Failed to start traffic blocker: %s", e)
+        return False
 
 
 # =========================================================================
