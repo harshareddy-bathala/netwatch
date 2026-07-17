@@ -108,7 +108,9 @@ export default class ActivityView {
     });
   }
 
-  /** Group the flat DNS rows into one bucket per client device. */
+  /** Group the flat rows into one bucket per client device, and within a
+   *  device collapse many subdomains of one service into a single readable
+   *  entry ("Instagram", not graph/i/i-fallback.instagram.com). */
   _group() {
     const byDevice = new Map();
     for (const r of this._rows) {
@@ -122,21 +124,37 @@ export default class ActivityView {
           mac: r.source_mac || '',
           total: 0,
           latest: r.timestamp,
-          domains: [],      // {qname, timestamp}
-          seen: new Set(),  // dedup domains, keep the most recent occurrence
+          domains: [],      // collapsed: {label, site, qname, count, timestamp, protocol}
+          bySite: new Map(),
         };
         byDevice.set(key, g);
       }
       g.total += 1;
       if (r.timestamp > g.latest) g.latest = r.timestamp;
-      const dom = (r.qname || '').replace(/\.$/, '');
-      if (dom && !g.seen.has(dom)) {
-        g.seen.add(dom);
-        g.domains.push({ qname: dom, timestamp: r.timestamp, protocol: r.protocol });
+      const qname = (r.qname || '').replace(/\.$/, '');
+      if (!qname) continue;
+      // Collapse by friendly app name when known, else by registered domain.
+      const site = r.site || qname;
+      const label = r.app || site;
+      const siteKey = (r.app || site).toLowerCase();
+      let entry = g.bySite.get(siteKey);
+      if (!entry) {
+        entry = { label, site, qname, count: 0, timestamp: r.timestamp,
+                  protocol: r.protocol, org: r.org };
+        g.bySite.set(siteKey, entry);
+        g.domains.push(entry);
+      }
+      entry.count += 1;
+      if (r.timestamp > entry.timestamp) {
+        entry.timestamp = r.timestamp;
+        entry.qname = qname;            // freshest example subdomain
+        entry.protocol = r.protocol;
       }
     }
-    // Rows arrive newest-first, so each device's domains are already newest
-    // first; sort devices by most recent activity.
+    // Newest-active device first; within a device, newest site first.
+    for (const g of byDevice.values()) {
+      g.domains.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
+    }
     return [...byDevice.values()].sort((a, b) => (a.latest < b.latest ? 1 : -1));
   }
 
@@ -209,7 +227,10 @@ export default class ActivityView {
       g.ip.toLowerCase().includes(f) ||
       g.mac.toLowerCase().includes(f);
     if (deviceMatches) return g;
-    const domains = g.domains.filter(d => d.qname.toLowerCase().includes(f));
+    const domains = g.domains.filter(d =>
+      (d.label || '').toLowerCase().includes(f) ||
+      (d.site || '').toLowerCase().includes(f) ||
+      (d.qname || '').toLowerCase().includes(f));
     if (!domains.length) return null;
     return { ...g, domains };
   }
@@ -246,7 +267,7 @@ export default class ActivityView {
     if (g.domains.length > shown.length) {
       const more = document.createElement('li');
       more.className = 'activity-domain activity-domain--more';
-      more.textContent = `+${g.domains.length - shown.length} more domains`;
+      more.textContent = `+${g.domains.length - shown.length} more sites`;
       list.appendChild(more);
     }
     card.appendChild(list);
@@ -256,12 +277,32 @@ export default class ActivityView {
   _domainRow(d, g) {
     const li = document.createElement('li');
     li.className = 'activity-domain';
-    const blocked = this._isBlocked(d.qname, g.mac);
+    // Block by the registered domain so a rule covers all subdomains.
+    const blockTarget = d.site || d.qname;
+    const blocked = this._isBlocked(blockTarget, g.mac);
     if (blocked) li.classList.add('activity-domain--blocked');
 
     const dom = document.createElement('span');
     dom.className = 'activity-domain__name';
-    dom.textContent = d.qname;
+    // Primary = friendly app/site name; the raw domain is secondary context.
+    const primary = document.createElement('span');
+    primary.className = 'activity-domain__label';
+    primary.textContent = d.label || d.qname;
+    dom.appendChild(primary);
+    if (d.count > 1) {
+      const c = document.createElement('span');
+      c.className = 'activity-domain__count';
+      c.textContent = `×${d.count}`;
+      dom.appendChild(c);
+    }
+    // Show the raw domain only when it differs from the friendly label.
+    if (d.site && d.site !== (d.label || '').toLowerCase() && d.label !== d.site) {
+      const sub = document.createElement('span');
+      sub.className = 'activity-domain__sub';
+      sub.textContent = d.site;
+      sub.title = d.qname;
+      dom.appendChild(sub);
+    }
     const chipInfo = this._sourceChip(d.protocol);
     if (chipInfo) {
       const chip = document.createElement('span');
@@ -285,10 +326,10 @@ export default class ActivityView {
       btn.type = 'button';
       btn.className = 'activity-domain__block';
       btn.textContent = 'Block';
-      btn.title = `Block ${d.qname} for ${g.name}`;
+      btn.title = `Block ${blockTarget} for ${g.name}`;
       btn.addEventListener('click', async () => {
         btn.disabled = true;
-        const resp = await api.addBlockingRule(d.qname, g.mac);
+        const resp = await api.addBlockingRule(blockTarget, g.mac);
         if (resp && resp.error) {
           btn.disabled = false;
           btn.textContent = 'Failed';

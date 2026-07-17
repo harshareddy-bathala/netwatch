@@ -35,6 +35,11 @@ export default class TopologyView {
     this._destroyed = false;
     this._showExternal = localStorage.getItem('netwatch-topo-external') !== 'off';
     this._twin = null;
+    // Pan/zoom viewport + per-node drag offsets, persisted across the 10s
+    // refresh so a graph the user arranged doesn't snap back.
+    this._view = { tx: 0, ty: 0, scale: 1 };
+    this._dragOffsets = new Map();
+    this._dragging = false;
   }
 
   render() {
@@ -173,11 +178,25 @@ export default class TopologyView {
     svg.setAttribute('role', 'img');
     svg.setAttribute('aria-label', 'Network topology graph');
 
-    // Edges under nodes
+    // Everything lives inside a viewport <g> we pan/zoom (Obsidian-style).
+    const view = document.createElementNS(SVG_NS, 'g');
+    view.setAttribute('class', 'topology__viewport');
+    svg.appendChild(view);
+
+    // Apply any persisted per-node drag offsets on top of the layout.
+    const finalPos = (id) => {
+      const base = pos.get(id);
+      if (!base) return null;
+      const off = this._dragOffsets.get(id);
+      return off ? { x: base.x + off.dx, y: base.y + off.dy } : base;
+    };
+
+    // Edges under nodes — keep refs so dragging a node moves its lines.
+    const edgeEls = [];
     const maxBytes = Math.max(1, ...(twin.edges || []).map(e => e.bytes || 0));
     for (const edge of twin.edges || []) {
-      const a = pos.get(edge.source);
-      const b = pos.get(edge.target);
+      const a = finalPos(edge.source);
+      const b = finalPos(edge.target);
       if (!a || !b) continue;
       const line = document.createElementNS(SVG_NS, 'line');
       line.setAttribute('x1', a.x); line.setAttribute('y1', a.y);
@@ -186,11 +205,12 @@ export default class TopologyView {
       line.setAttribute('stroke-width', weight.toFixed(2));
       line.setAttribute('class', 'topology__edge');
       this._hover(line, () => this._edgeTooltip(edge));
-      svg.appendChild(line);
+      view.appendChild(line);
+      edgeEls.push({ el: line, source: edge.source, target: edge.target });
     }
 
     for (const node of drawn) {
-      const p = pos.get(node.id);
+      const p = finalPos(node.id);
       if (!p) continue;
       const g = document.createElementNS(SVG_NS, 'g');
       g.setAttribute('class', `topology__node topology__node--${node.type}`);
@@ -209,7 +229,8 @@ export default class TopologyView {
       g.appendChild(label);
 
       this._hover(g, () => this._nodeTooltip(node));
-      svg.appendChild(g);
+      this._makeDraggable(g, node.id, pos, edgeEls, svg);
+      view.appendChild(g);
     }
 
     if (hiddenExternal > 0 && this._showExternal) {
@@ -219,11 +240,88 @@ export default class TopologyView {
       note.setAttribute('text-anchor', 'end');
       note.setAttribute('class', 'topology__note');
       note.textContent = `+${hiddenExternal} more external endpoints`;
-      svg.appendChild(note);
+      view.appendChild(note);
     }
 
+    this._applyView(view);
+    this._bindPanZoom(svg, view);
     canvas.querySelector('svg')?.remove();
     canvas.appendChild(svg);
+  }
+
+  /* ── Pan / zoom / drag (Obsidian-style) ─────────── */
+
+  _applyView(view) {
+    const v = this._view;
+    view.setAttribute('transform', `translate(${v.tx},${v.ty}) scale(${v.scale})`);
+  }
+
+  /** SVG user-units per screen pixel, for translating mouse deltas. */
+  _unitsPerPixel(svg) {
+    const rect = svg.getBoundingClientRect();
+    return rect.width ? (W / rect.width) / this._view.scale : 1;
+  }
+
+  _bindPanZoom(svg, view) {
+    // Pan by dragging empty space.
+    svg.addEventListener('mousedown', (e) => {
+      if (e.target.closest('.topology__node')) return;   // node drag handles itself
+      const upp = this._unitsPerPixel(svg) * this._view.scale;
+      const start = { x: e.clientX, y: e.clientY, tx: this._view.tx, ty: this._view.ty };
+      const move = (ev) => {
+        this._view.tx = start.tx + (ev.clientX - start.x) * upp;
+        this._view.ty = start.ty + (ev.clientY - start.y) * upp;
+        this._applyView(view);
+      };
+      const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
+    });
+    // Zoom toward the cursor.
+    svg.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      const next = Math.min(4, Math.max(0.3, this._view.scale * factor));
+      const rect = svg.getBoundingClientRect();
+      const mx = (e.clientX - rect.left) * (W / rect.width);
+      const my = (e.clientY - rect.top) * (H / rect.height);
+      // keep the point under the cursor fixed
+      this._view.tx = mx - (mx - this._view.tx) * (next / this._view.scale);
+      this._view.ty = my - (my - this._view.ty) * (next / this._view.scale);
+      this._view.scale = next;
+      this._applyView(view);
+    }, { passive: false });
+  }
+
+  _makeDraggable(g, nodeId, pos, edgeEls, svg) {
+    g.style.cursor = 'grab';
+    g.addEventListener('mousedown', (e) => {
+      e.stopPropagation();       // don't start a pan
+      this._dragging = true;
+      if (this._tooltip) this._tooltip.style.display = 'none';
+      const upp = this._unitsPerPixel(svg) * this._view.scale;
+      const base = pos.get(nodeId) || { x: 0, y: 0 };
+      const cur = this._dragOffsets.get(nodeId) || { dx: 0, dy: 0 };
+      const start = { x: e.clientX, y: e.clientY, dx: cur.dx, dy: cur.dy };
+      const move = (ev) => {
+        const dx = start.dx + (ev.clientX - start.x) * upp;
+        const dy = start.dy + (ev.clientY - start.y) * upp;
+        this._dragOffsets.set(nodeId, { dx, dy });
+        const nx = base.x + dx, ny = base.y + dy;
+        g.setAttribute('transform', `translate(${nx},${ny})`);
+        for (const { el, source, target } of edgeEls) {
+          if (source === nodeId) { el.setAttribute('x1', nx); el.setAttribute('y1', ny); }
+          if (target === nodeId) { el.setAttribute('x2', nx); el.setAttribute('y2', ny); }
+        }
+      };
+      const up = () => {
+        this._dragging = false;
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', up);
+      };
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
+    });
   }
 
   _label(node) {
@@ -236,15 +334,23 @@ export default class TopologyView {
   _hover(el, buildLines) {
     el.addEventListener('mousemove', (e) => {
       const t = this._tooltip;
-      if (!t) return;
+      if (!t || this._dragging) return;
       t.replaceChildren(...buildLines().map(text => {
         const div = document.createElement('div');
         div.textContent = text;
         return div;
       }));
       t.style.display = 'block';
-      t.style.left = `${e.clientX + 14}px`;
-      t.style.top = `${e.clientY + 14}px`;
+      // Clamp to the viewport so the box never overflows off-screen: flip to
+      // the other side of the cursor when it would spill past an edge.
+      const r = t.getBoundingClientRect();
+      const pad = 8;
+      let left = e.clientX + 14;
+      let top = e.clientY + 14;
+      if (left + r.width > window.innerWidth - pad) left = e.clientX - r.width - 14;
+      if (top + r.height > window.innerHeight - pad) top = e.clientY - r.height - 14;
+      t.style.left = `${Math.max(pad, left)}px`;
+      t.style.top = `${Math.max(pad, top)}px`;
     });
     el.addEventListener('mouseleave', () => {
       if (this._tooltip) this._tooltip.style.display = 'none';

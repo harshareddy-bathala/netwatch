@@ -189,6 +189,10 @@ def get_recent_activity(minutes: int = 5, limit: int = 300,
     for ip in (exclude_ips or set()):
         clauses.append("(q.source_ip IS NULL OR q.source_ip != ?)")
         params.append(ip)
+    # Drop the host's own service-discovery chatter (_dosvc/_tcp/_udp) and,
+    # when we know it, rows that resolve to the monitoring host's hostname.
+    clauses.append("q.qname NOT LIKE '%._tcp%'")
+    clauses.append("q.qname NOT LIKE '%._udp%'")
     where = "WHERE " + " AND ".join(clauses)
     try:
         with get_connection() as conn:
