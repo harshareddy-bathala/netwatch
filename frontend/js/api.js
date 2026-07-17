@@ -144,6 +144,15 @@ const api = {
   }),
   deleteBlockingRule: (id) => request(`/blocking/rules/${id}`, { method: 'DELETE' }),
 
+  // Parental controls / quotas (W5)
+  getParentalPolicies: () => request('/parental/policies'),
+  setParentalPolicy: (mac, policy) => request(`/parental/policies/${encodeURIComponent(mac)}`, {
+      method: 'PUT', body: JSON.stringify(policy),
+  }),
+  pauseDevice:  (mac) => request(`/parental/policies/${encodeURIComponent(mac)}/pause`,  { method: 'POST' }),
+  resumeDevice: (mac) => request(`/parental/policies/${encodeURIComponent(mac)}/resume`, { method: 'POST' }),
+  clearParentalPolicy: (mac) => request(`/parental/policies/${encodeURIComponent(mac)}`, { method: 'DELETE' }),
+
   // Alerts
   getAlerts: (limit=50, severity=null, acknowledged=null) => {
     let url = `/alerts?limit=${limit}`;

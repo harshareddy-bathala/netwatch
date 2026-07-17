@@ -78,7 +78,10 @@ class DNSBlocker:
         self._sendp = sender if sender is not None else sendp
         # domain -> tuple of (rule_id, device_mac or None)
         self._index: Dict[str, Tuple[Tuple[int, Optional[str]], ...]] = {}
-        # Hot-path guard: skip all work when no rules are loaded.
+        # W5: whole-device blocks (parental pause / quota / schedule) — every
+        # lookup from these MACs is sinkholed regardless of domain.
+        self._blocked_macs: frozenset = frozenset()
+        # Hot-path guard: skip all work when no rules AND no device blocks.
         self._active = False
         self._lock = threading.Lock()
         self._queue: "queue.Queue" = queue.Queue(maxsize=_SEND_QUEUE_SIZE)
@@ -128,8 +131,21 @@ class DNSBlocker:
         frozen = {d: tuple(v) for d, v in index.items()}
         with self._lock:
             self._index = frozen
-            self._active = bool(frozen)
+            self._active = bool(frozen) or bool(self._blocked_macs)
         return len(frozen)
+
+    def set_blocked_macs(self, macs) -> None:
+        """Replace the set of fully-blocked device MACs (W5 policy enforcer).
+
+        Called periodically with the MACs currently over quota / paused /
+        inside a blocked window. Every DNS lookup from these devices is
+        sinkholed until the set changes."""
+        normalized = frozenset(
+            (m or "").lower().replace("-", ":") for m in (macs or []) if m
+        )
+        with self._lock:
+            self._blocked_macs = normalized
+            self._active = bool(self._index) or bool(normalized)
 
     def match(self, qname: str, src_mac: Optional[str]) -> Optional[int]:
         """Return the id of the rule blocking *qname* for *src_mac*, else None.
@@ -175,6 +191,11 @@ class DNSBlocker:
             if isinstance(qname, bytes):
                 qname = qname.decode("utf-8", "ignore")
             src_mac = pkt[Ether].src if pkt.haslayer(Ether) else None
+            # W5: whole-device block takes precedence over per-domain rules.
+            if src_mac and self._blocked_macs:
+                if (src_mac or "").lower().replace("-", ":") in self._blocked_macs:
+                    self._queue.put_nowait((pkt, -1))   # -1 = device-level block
+                    return True
             rule_id = self.match(qname, src_mac)
             if rule_id is None:
                 return False
@@ -232,6 +253,11 @@ class DNSBlocker:
         if not self._hits:
             return
         counts, self._hits = self._hits, {}
+        # -1 is the device-level (parental) block sentinel — not a
+        # blocking_rules row, so it has no hit counter to update.
+        counts = {rid: c for rid, c in counts.items() if rid and rid > 0}
+        if not counts:
+            return
         try:
             from database.queries.blocking_queries import record_hits
             record_hits(counts)

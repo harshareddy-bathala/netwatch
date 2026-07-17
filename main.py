@@ -65,7 +65,7 @@ from orchestration.background_tasks import (
     start_anomaly_detector, start_cleanup_task,
     start_health_monitor, start_thread_watchdog,
     start_flow_normalizer, start_twin_builder, start_behavior_analyzer,
-    start_threat_detector, start_vpn_detector,
+    start_threat_detector, start_vpn_detector, start_policy_enforcer,
 )
 
 # Hostname resolver functions
@@ -532,6 +532,13 @@ def main():
     # Start periodic device discovery
     if capture_started:
         start_discovery_task()
+
+    # Start parental-controls / quota enforcer (W5)
+    if capture_started:
+        try:
+            start_policy_enforcer()
+        except Exception as e:
+            logger.debug("Policy enforcer not started: %s", e)
 
     # Start background hostname resolver and mDNS browser
     try:

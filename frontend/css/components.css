@@ -1839,6 +1839,52 @@
   opacity: 0.85;
 }
 
+/* Parental controls (W5) ------------------------------------------------- */
+.parental__add { padding: var(--spacing-md); margin-bottom: var(--spacing-md); }
+.parental__add-title {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  margin-bottom: var(--spacing-sm);
+}
+.parental__add-row { display: flex; gap: var(--spacing-sm); flex-wrap: wrap; }
+.parental__list { display: flex; flex-direction: column; gap: var(--spacing-md); }
+.parental-card { padding: var(--spacing-md); }
+.parental-card--blocked { border-left: 3px solid var(--color-error); }
+.parental-card__head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--spacing-sm); margin-bottom: 4px;
+}
+.parental-card__name {
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+.parental-card__state {
+  font-size: var(--font-size-xs);
+  padding: 2px 8px; border-radius: var(--border-radius-sm);
+}
+.parental-card__state--ok { color: var(--color-success); border: 1px solid var(--color-success); }
+.parental-card__state--blocked { color: var(--color-error); border: 1px solid var(--color-error); }
+.parental-card__usage {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  margin-bottom: var(--spacing-sm);
+}
+.parental-card__controls {
+  display: flex; align-items: center; gap: var(--spacing-sm); flex-wrap: wrap;
+}
+.parental-card__quota, .parental-card__time {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-primary);
+  padding: 4px 8px; border-radius: var(--border-radius-sm);
+  font-size: var(--font-size-sm);
+}
+.parental-card__quota { width: 90px; }
+.parental-card__window {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: var(--font-size-xs); color: var(--color-text-tertiary);
+}
+
 /* Blocking ---------------------------------------------------------------- */
 
 .activity__hint--warn { color: var(--color-warning); }

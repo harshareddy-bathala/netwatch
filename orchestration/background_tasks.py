@@ -135,6 +135,35 @@ def start_vpn_detector(alert_engine):
         return False
 
 
+def start_policy_enforcer(interval: int = 30):
+    """Evaluate device policies (parental controls / quotas, W5) and push the
+    currently-blocked MAC set to the DNS blocker. Daemon thread; cheap."""
+    def _loop():
+        from database.queries.policy_queries import (
+            get_policies, get_usage_today_by_mac, evaluate_blocked_macs,
+        )
+        logger.info("Policy enforcer started (device quotas / schedules / pause)")
+        while not state.shutdown_event.wait(timeout=interval):
+            try:
+                policies = get_policies()
+                blocker = getattr(state, 'dns_blocker', None)
+                if blocker is None:
+                    continue
+                if not policies:
+                    blocker.set_blocked_macs(set())
+                    continue
+                usage = get_usage_today_by_mac()
+                blocked = evaluate_blocked_macs(policies, usage)
+                blocker.set_blocked_macs(set(blocked.keys()))
+            except Exception as e:
+                logger.debug("Policy enforcer error: %s", e)
+
+    t = threading.Thread(target=_loop, name="PolicyEnforcer", daemon=True)
+    t.start()
+    state.policy_enforcer_thread = t
+    return True
+
+
 # =========================================================================
 # Health monitor
 # =========================================================================

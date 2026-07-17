@@ -363,6 +363,21 @@ CREATE TABLE IF NOT EXISTS alert_rules (
 );
 
 -- =============================================================================
+-- DEVICE POLICIES TABLE (W5 — parental controls / quotas)
+-- =============================================================================
+-- Per-client controls enforced (in hotspot mode) by the DNS blocker.
+CREATE TABLE IF NOT EXISTS device_policies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_mac TEXT NOT NULL UNIQUE,
+    paused INTEGER NOT NULL DEFAULT 0,
+    daily_quota_mb INTEGER DEFAULT NULL,
+    blocked_windows TEXT DEFAULT NULL,   -- JSON: [{"start":"22:00","end":"07:00"}]
+    note TEXT DEFAULT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- =============================================================================
 -- DEFAULT SYSTEM CONFIGURATION
 -- =============================================================================
 

@@ -16,6 +16,7 @@ from backend.blueprints.forecast_bp import forecast_bp
 from backend.blueprints.incidents_bp import incidents_bp
 from backend.blueprints.investigate_bp import investigate_bp
 from backend.blueprints.blocking_bp import blocking_bp
+from backend.blueprints.parental_bp import parental_bp
 
 ALL_BLUEPRINTS = [
     devices_bp,
@@ -31,6 +32,7 @@ ALL_BLUEPRINTS = [
     incidents_bp,
     investigate_bp,
     blocking_bp,
+    parental_bp,
 ]
 
 __all__ = [
@@ -38,4 +40,5 @@ __all__ = [
     'devices_bp', 'alerts_bp', 'bandwidth_bp', 'discovery_bp',
     'interface_bp', 'system_bp', 'export_bp', 'health_bp', 'twin_bp',
     'forecast_bp', 'incidents_bp', 'investigate_bp', 'blocking_bp',
+    'parental_bp',
 ]
