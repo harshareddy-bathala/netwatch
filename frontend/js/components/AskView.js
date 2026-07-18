@@ -107,10 +107,11 @@ export default class AskView {
     this._offlineReason = data.reason || '';
     this._model = data.model || '';
     if (data.available) {
-      statusEl.className = 'ask__status ask__status--ok';
-      statusEl.textContent =
-        `Local model ready${this._model ? ` (${this._model})` : ''} — ` +
-        'answers are grounded in live network data and cite their sources.';
+      // Ready state: no banner. The model name is an implementation detail —
+      // the user asked not to surface it — and a persistent "ready" bar is
+      // just noise once answers are flowing.
+      statusEl.className = 'ask__status';
+      statusEl.textContent = '';
     } else {
       statusEl.className = 'ask__status ask__status--off';
       statusEl.textContent = this._offlineReason ||
@@ -211,7 +212,7 @@ export default class AskView {
     row.className = 'ask-msg ask-msg--assistant';
     const bubble = document.createElement('div');
     bubble.className = 'ask-msg__bubble ask-msg__bubble--thinking';
-    const label = this._model ? `Investigating with ${this._model}…` : 'Investigating…';
+    const label = 'Investigating…';   // model name intentionally not surfaced
     bubble.textContent = label;
     row.appendChild(bubble);
     this._thread().appendChild(row);

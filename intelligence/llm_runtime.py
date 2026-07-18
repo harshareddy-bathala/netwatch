@@ -41,10 +41,14 @@ class OllamaRuntime:
     """Local Ollama chat backend (offline, localhost only)."""
 
     def __init__(self, model: str = "llama3", host: str = _OLLAMA_HOST,
-                 port: int = _OLLAMA_PORT, timeout: float = 60.0):
+                 port: int = _OLLAMA_PORT, timeout: float = 60.0,
+                 keep_alive: Optional[str] = None,
+                 num_predict: Optional[int] = None):
         self.model = model
         self._base = f"http://{host}:{port}"
         self._timeout = timeout
+        self._keep_alive = keep_alive
+        self._num_predict = num_predict
 
     def is_available(self) -> bool:
         """True if a local Ollama server answers on the loopback port."""
@@ -56,13 +60,21 @@ class OllamaRuntime:
             return False
 
     def generate(self, messages: List[Dict[str, str]]) -> str:
-        payload = json.dumps({
+        # Low temperature: investigation must be faithful, not creative.
+        options: Dict[str, object] = {"temperature": 0.1}
+        if self._num_predict is not None:
+            options["num_predict"] = self._num_predict
+        body: Dict[str, object] = {
             "model": self.model,
             "messages": messages,
             "stream": False,
-            # Low temperature: investigation must be faithful, not creative.
-            "options": {"temperature": 0.1},
-        }).encode("utf-8")
+            "options": options,
+        }
+        # keep_alive holds the model resident between calls so only the first
+        # generation pays the load-from-disk cost (biggest latency win).
+        if self._keep_alive is not None:
+            body["keep_alive"] = self._keep_alive
+        payload = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
             f"{self._base}/api/chat", data=payload,
             headers={"Content-Type": "application/json"},
@@ -110,10 +122,15 @@ def get_runtime(model: Optional[str] = None) -> Optional[OllamaRuntime]:
     error.
     """
     try:
-        from config import LLM_TIMEOUT_SECONDS as _timeout, LLM_MODEL as _model
+        from config import (LLM_TIMEOUT_SECONDS as _timeout,
+                            LLM_MODEL as _model,
+                            LLM_KEEP_ALIVE as _keep_alive,
+                            LLM_NUM_PREDICT as _num_predict)
     except ImportError:          # config not importable (standalone use)
         _timeout, _model = 180.0, "llama3.2:3b"
-    runtime = OllamaRuntime(model=model or _model, timeout=_timeout)
+        _keep_alive, _num_predict = "30m", 512
+    runtime = OllamaRuntime(model=model or _model, timeout=_timeout,
+                            keep_alive=_keep_alive, num_predict=_num_predict)
     if runtime.is_available():
         return runtime
     logger.info("No local Ollama runtime reachable — LLM investigations "

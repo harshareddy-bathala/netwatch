@@ -841,6 +841,21 @@ LLM_MAX_STEPS = int(os.getenv('NETWATCH_LLM_MAX_STEPS', '6'))
 # back — 60s timed out mid-investigation on real hardware.
 LLM_TIMEOUT_SECONDS = float(os.getenv('NETWATCH_LLM_TIMEOUT', '180'))
 
+# Keep the model resident in Ollama between turns/questions. The investigator
+# makes several back-to-back generate() calls per question (system→tool→tool→
+# answer); Ollama's default evicts the model after 5 min idle and reloads it
+# from disk on the next call — a multi-second stall repeated per turn on an
+# 8 GB machine. "30m" holds it in RAM so only the FIRST question pays the load
+# cost. Accepts an Ollama duration ("30m", "1h", "-1" = forever, "0" = unload
+# immediately). This is the single biggest Ask-NetWatch latency win.
+LLM_KEEP_ALIVE = os.getenv('NETWATCH_LLM_KEEP_ALIVE', '30m')
+
+# Cap tokens generated per turn. The protocol turns are short JSON actions and
+# a final prose answer; without a cap a small model can ramble for hundreds of
+# tokens, and every token is wall-clock time on CPU. 512 comfortably fits an
+# action or a paragraph answer while trimming runaway generations.
+LLM_NUM_PREDICT = int(os.getenv('NETWATCH_LLM_NUM_PREDICT', '512'))
+
 # =============================================================================
 # PERFORMANCE TUNING — Prevents NetWatch from degrading network performance
 # =============================================================================

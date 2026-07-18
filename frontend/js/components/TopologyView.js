@@ -83,6 +83,12 @@ export default class TopologyView {
       </div>
     `;
     this._tooltip = this.el.querySelector('#topology-tooltip');
+    // Reparent the tooltip to <body>. It is position:fixed, but an ancestor
+    // view keeps a CSS `transform` (the .view-enter mount animation), which
+    // makes THAT element the containing block for fixed descendants — so the
+    // tooltip anchored to the panel, not the viewport, and appeared far from
+    // the cursor. On <body> it truly follows clientX/clientY.
+    if (this._tooltip) document.body.appendChild(this._tooltip);
     const toggle = this.el.querySelector('#topology-external-toggle');
     this._syncToggle();
     toggle.addEventListener('click', () => {
@@ -110,6 +116,9 @@ export default class TopologyView {
     if (this._timer) clearInterval(this._timer);
     this._timer = null;
     this._saveLayout();
+    // The tooltip lives on <body> (reparented in render), so tear it down
+    // explicitly — the view's own DOM removal won't reach it.
+    if (this._tooltip) { this._tooltip.remove(); this._tooltip = null; }
   }
 
   async _load() {

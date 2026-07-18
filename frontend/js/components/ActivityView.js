@@ -25,7 +25,30 @@ const REFRESH_MS = 3000;
 const WINDOW_MINUTES = 15;
 const MAX_DOMAINS_PER_DEVICE = 15;
 
+// Substrings identifying OS/app *background* endpoints — connectivity probes,
+// push/keep-alive channels, update and telemetry services — that phones hit
+// constantly regardless of what the user is doing. These get demoted below
+// real activity in a device's list (see _isBackgroundNoise). Deliberately
+// narrow: specific hostnames, never a whole provider, so opening google.com /
+// youtube / gmail is untouched.
+const NOISE_PATTERNS = [
+  'connectivitycheck',            // Android/Chrome captive-portal probe
+  'clients3.google', 'clients4.google', 'clientservices.google',
+  'mtalk.google', '-mtalk.google',                 // FCM/GCM push channel
+  'android.clients.google', 'play.googleapis', 'android.googleapis',
+  'safebrowsing.google',
+  'gvt1.com', 'gvt2.com',                          // Google update/media chunks
+  'app-measurement.com',                           // Firebase analytics
+  'settings.crashlytics', 'firebaselogging', 'firebaseinstallations',
+  'time.android.com', 'pool.ntp.org', 'time.apple.com',
+  'push.apple.com', 'gateway.icloud', 'gateway.push.apple',
+  'gsp-ssl.ls.apple', 'captive.apple',             // Apple connectivity/location
+  'dns.msftncsi', 'msftconnecttest',               // Windows connectivity probe
+];
+
 export default class ActivityView {
+  static NOISE_PATTERNS = NOISE_PATTERNS;
+
   constructor(el) {
     this.el = el;
     this._timer = null;
@@ -151,17 +174,36 @@ export default class ActivityView {
         entry.protocol = r.protocol;
       }
     }
-    // Within a device, newest site first (a feed). But the device CARDS keep
-    // a STABLE order (by name, then IP) so a card doesn't jump around as its
-    // traffic ebbs — critical once there are many devices to scan.
+    // Within a device: real, user-facing sites first (newest first), with OS
+    // background chatter (connectivity checks, push, Play/telemetry) demoted
+    // below it. A phone hammers Google keep-alive/connectivity endpoints
+    // constantly, so by pure recency "Google" sat on top even right after the
+    // user opened WhatsApp or Instagram — burying the app they actually used.
+    // Demoting (not hiding) that noise surfaces the foreground app while the
+    // chatter is still visible lower down. The device CARDS keep a STABLE
+    // order (by name, then IP) so a card doesn't jump as its traffic ebbs.
     for (const g of byDevice.values()) {
-      g.domains.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
+      g.domains.sort((a, b) => {
+        const na = this._isBackgroundNoise(a), nb = this._isBackgroundNoise(b);
+        if (na !== nb) return na ? 1 : -1;          // real sites above chatter
+        return a.timestamp < b.timestamp ? 1 : -1;  // then newest first
+      });
     }
     return [...byDevice.values()].sort((a, b) => {
       const an = (a.name || a.ip || a.key).toLowerCase();
       const bn = (b.name || b.ip || b.key).toLowerCase();
       return an < bn ? -1 : an > bn ? 1 : 0;
     });
+  }
+
+  /** True for OS/app background chatter — connectivity probes, push channels,
+   *  update/telemetry endpoints — that a device emits constantly regardless of
+   *  what the user is doing. Kept deliberately conservative (specific hosts,
+   *  not whole providers) so real usage like google.com / youtube is never
+   *  demoted. Matched against the entry's freshest qname and its site. */
+  _isBackgroundNoise(entry) {
+    const hay = `${entry.qname || ''} ${entry.site || ''}`.toLowerCase();
+    return ActivityView.NOISE_PATTERNS.some(p => hay.includes(p));
   }
 
   _renderSummary() {

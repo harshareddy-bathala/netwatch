@@ -29,12 +29,6 @@ export default class IncidentsView {
   render() {
     this.el.innerHTML = `
       <div class="incidents">
-        <div class="view-explainer">
-          Fused security cases, highest risk first. Related
-          <a href="#/alerts">alerts</a> from the same device and window are
-          grouped into one case with a <strong>risk score</strong> and threat
-          category — so you act on what matters, not a wall of repeats.
-        </div>
         <div class="incidents__toolbar">
           <div class="incidents__summary" id="incidents-summary"></div>
           <div class="incidents__filter" role="tablist">
