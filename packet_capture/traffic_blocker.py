@@ -103,13 +103,17 @@ class TrafficBlocker:
     def _start_windivert(self, ips: Set[str]) -> None:
         filt = build_windivert_filter(ips)
         self._stop.clear()
+        # Commit the mode synchronously: callers (and get_status) must see
+        # "windivert" as soon as _rearm returns, not race the worker thread's
+        # first line. If the driver then fails to open (no admin/driver), the
+        # worker downgrades this to "unavailable" below.
+        self._mode = "windivert"
 
         def _run():
             try:
                 handle = pydivert.WinDivert(filt)
                 handle.open()
                 self._handle = handle
-                self._mode = "windivert"
                 logger.info("TrafficBlocker: WinDivert dropping %d client IP(s)", len(ips))
                 while not self._stop.is_set():
                     pkt = handle.recv()      # removes packet from the stack
@@ -118,6 +122,10 @@ class TrafficBlocker:
                     del pkt
             except Exception as exc:
                 if not self._stop.is_set():
+                    # Opening/using the driver failed (commonly: not elevated,
+                    # or WinDivert.sys absent) — report honestly rather than
+                    # claiming active kernel enforcement.
+                    self._mode = "unavailable"
                     logger.warning("TrafficBlocker WinDivert loop ended: %s", exc)
             finally:
                 try:

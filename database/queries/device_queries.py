@@ -505,6 +505,28 @@ def get_active_device_count(minutes: int = 5, conn=None) -> int:
             if gw and gw not in excluded_ips:
                 excluded_ips.append(gw)
 
+        # Exclude the monitoring host by BOTH its IP(s) and MAC(s), using the
+        # SAME identity source the device *list* uses
+        # (dashboard_state.get_host_identity()). _detect_all_local_ips() misses
+        # the hotspot ICS virtual adapter, so the host slipped through here and
+        # the count read N+1 (1 with nothing connected, 2 with one phone) even
+        # though the list correctly dropped it. This keeps count == list.
+        host_mac_exclude = ""
+        host_macs_lc: list = []
+        try:
+            from utils.realtime_state import dashboard_state
+            _ident = dashboard_state.get_host_identity()
+            for _hip in (_ident.get("ips") or set()):
+                if _hip and _hip not in excluded_ips:
+                    excluded_ips.append(_hip)
+            host_macs_lc = sorted(
+                {m.lower() for m in (_ident.get("macs") or set()) if m})
+            if host_macs_lc:
+                ph = ",".join("?" for _ in host_macs_lc)
+                host_mac_exclude = f"AND LOWER(mac_address) NOT IN ({ph})"
+        except Exception:
+            host_macs_lc = []
+
         exclude_clause = ""
         exclude_params: list = []
         if excluded_ips:
@@ -516,6 +538,10 @@ def get_active_device_count(minutes: int = 5, conn=None) -> int:
         if _current_mode_name:
             mode_filter_dev = "AND active_mode = ?"
             params_dev.append(_current_mode_name)
+
+        # Host-MAC exclusion params come last in the subquery WHERE, so append
+        # them after the mode param to keep positional binding aligned.
+        params_dev.extend(host_macs_lc)
 
         if is_restrictive:
             cursor.execute(f"""
@@ -531,6 +557,7 @@ def get_active_device_count(minutes: int = 5, conn=None) -> int:
                         AND ({_PRIVATE_IP_FILTER_DEVICE})
                         {subnet_filter_dev}
                         {mode_filter_dev}
+                        {host_mac_exclude}
                 )
                 {exclude_clause}
             """, (*params_dev, *exclude_params))
@@ -548,6 +575,7 @@ def get_active_device_count(minutes: int = 5, conn=None) -> int:
                         AND ({_PRIVATE_IP_FILTER_DEVICE})
                         {subnet_filter_dev}
                         {mode_filter_dev}
+                        {host_mac_exclude}
                 )
                 {exclude_clause}
             """, (*params_dev, *exclude_params))

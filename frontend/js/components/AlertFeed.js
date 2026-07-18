@@ -21,12 +21,6 @@ export default class AlertFeed {
 
   render() {
     this.container.innerHTML = `
-      <div class="view-explainer">
-        Every individual detection, newest first. Related alerts are grouped
-        into <a href="#/incidents">Incidents</a> — triage there, use this feed
-        for the raw stream and custom rules.
-      </div>
-
       <div id="alert-rules-container"></div>
 
       <div class="alert-controls">

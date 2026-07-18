@@ -55,6 +55,30 @@ class TestPhase3CidrFiltering:
 
         assert count == 1
 
+    def test_active_count_excludes_host_by_mac_when_ip_evades_detection(self):
+        """The hotspot ICS virtual adapter is invisible to psutil, so
+        _detect_all_local_ips() misses the host IP and it slipped into the
+        count (1 with nothing connected, 2 with one phone). The count must
+        also exclude the host by its MAC, from get_host_identity() — the same
+        source the device *list* uses — so count == list."""
+        host_mac = "2E:D0:43:A5:22:70"
+        _insert_device(host_mac, "10.42.0.1")            # the host / gateway
+        _insert_device("AA:BB:CC:DD:EE:31", "10.42.99.9")  # one real client
+
+        class _FakeState:
+            def get_host_identity(self):
+                # IP intentionally absent (psutil can't see the ICS adapter);
+                # only the MAC is known — the exclusion must still fire.
+                return {"macs": {host_mac.lower()}, "ips": set()}
+
+        import utils.realtime_state as rs
+        with patch("database.queries.device_queries._detect_all_local_ips", return_value=set()), \
+             patch("database.queries.device_queries._get_gateway_ip", return_value=""), \
+             patch.object(rs, "dashboard_state", _FakeState()):
+            count = dq.get_active_device_count(minutes=5)
+
+        assert count == 1
+
     def test_get_all_devices_respects_16bit_subnet(self):
         _insert_device("AA:BB:CC:DD:EE:20", "10.42.99.9")
         _insert_device("AA:BB:CC:DD:EE:21", "10.43.1.5")
