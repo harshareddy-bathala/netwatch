@@ -55,10 +55,6 @@ export default class Dashboard {
                 <span class="speed-badge" id="bw-live-speed"></span>
               </div>
               <div class="chart-card__header-actions">
-                <label class="control-toggle" title="Include ARP, DHCP, mDNS, IPv6 ND and other control traffic in charts and usage">
-                  <input type="checkbox" id="control-overhead-toggle" ${this._showControlOverhead ? 'checked' : ''}>
-                  <span>Show control overhead</span>
-                </label>
                 <div class="time-range-toggle">
                   <button class="time-range-toggle__btn active" data-hours="1">1H</button>
                   <button class="time-range-toggle__btn" data-hours="6">6H</button>
