@@ -140,10 +140,17 @@ export default class AlertFeed {
     if (countLabel) countLabel.textContent = `${filtered.length} alert${filtered.length !== 1 ? 's' : ''}`;
 
     if (filtered.length === 0) {
+      // Say what the empty state MEANS. "No alerts" on an otherwise bare page
+      // reads as a broken/stray panel; naming it as a healthy state (and
+      // distinguishing "none at all" from "none match this filter") makes the
+      // page look intentional.
+      const filtered_out = this._filter !== 'all' && this._alerts.length > 0;
       listEl.innerHTML = `
         <div class="empty-state">
-          <div class="empty-state__icon">🔔</div>
-          <span class="empty-state__text">No alerts to show</span>
+          <div class="empty-state__icon">${filtered_out ? '🔍' : '✅'}</div>
+          <span class="empty-state__text">${filtered_out
+            ? `No ${escapeHtml(this._filter)} alerts — try the “All” filter.`
+            : 'No alerts — nothing unusual detected on the network.'}</span>
         </div>`;
       return;
     }
