@@ -280,6 +280,31 @@ class InMemoryDashboardState:
             pass
         return {"macs": macs, "ips": ips, "hostname": hostname}
 
+    def _is_host_device(self, dev) -> bool:
+        """True when this in-memory device row is the monitoring host itself.
+
+        The device *list* drops the host, but the dashboard's active-device
+        COUNT came straight from ``_devices`` with no exclusion — so the header
+        read "2 devices" while the Devices page listed 1. Both must use the
+        same definition of "not a client".
+
+        Caller must hold ``self._lock`` (reads host identity fields directly).
+        """
+        mac = (getattr(dev, "mac_address", "") or "").lower().replace("-", ":")
+        ip = (getattr(dev, "ip_address", "") or "").strip()
+        # In own-traffic (public_network) mode the host IS the monitored
+        # subject, so it must stay counted. Scoped to that mode deliberately:
+        # _allowed_macs contains our_mac in every mode, so testing it alone
+        # would also un-exclude the host in hotspot, which is the case this
+        # whole method exists to fix.
+        if self._own_traffic_only and mac and mac in self._allowed_macs:
+            return False
+        if mac and (mac in self._host_macs or mac in self._gateway_macs):
+            return True
+        if ip and self._our_ip and ip == self._our_ip:
+            return True
+        return False
+
     def set_device_active_window(self, seconds: int) -> None:
         """Configure the time window for considering a device 'active'.
 
@@ -699,9 +724,12 @@ class InMemoryDashboardState:
             # Active devices — use the same window for BOTH count and list
             # to prevent mismatches (bug: count=2 but list=3).
             cutoff = now - device_window
+            # Exclude the monitoring host: it is infrastructure, not a client.
+            # In hotspot it is also the gateway, so without this the dashboard
+            # counted itself and read one higher than the Devices page.
             active_devices = [
                 d for d in self._devices.values()
-                if d.last_seen >= cutoff
+                if d.last_seen >= cutoff and not self._is_host_device(d)
             ]
             active_count = len(active_devices)
 
@@ -773,10 +801,15 @@ class InMemoryDashboardState:
             ]
 
     def get_active_device_count(self, minutes: int = 5) -> int:
-        """Return count of devices active within *minutes*."""
+        """Return count of *client* devices active within *minutes*.
+
+        Excludes the monitoring host, so this agrees with the Devices page and
+        with the DB-side count.
+        """
         cutoff = time.time() - (minutes * 60)
         with self._lock:
-            return sum(1 for d in self._devices.values() if d.last_seen >= cutoff)
+            return sum(1 for d in self._devices.values()
+                       if d.last_seen >= cutoff and not self._is_host_device(d))
 
     def get_device_by_ip(self, ip: str, include_control: bool = False) -> Optional[dict]:
         """Look up a device by IP address and return a dict snapshot.
