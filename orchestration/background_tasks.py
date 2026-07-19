@@ -165,9 +165,18 @@ def apply_blocking_rules_now() -> dict:
         return {"applied": False, "reason": "packet blocker not running"}
     try:
         from database.queries.blocking_queries import get_rules
+        from packet_capture.sni_ip_learner import sni_ip_learner
         domains = {r.get('domain') for r in (get_rules() or [])
                    if r.get('enabled') and r.get('domain')}
-        domain_ips = _get_domain_blocklist().ips_for(domains) if domains else set()
+        blocklist = _get_domain_blocklist()
+        if domains:
+            # Arm the wire-side learner immediately so the very next connection
+            # the app makes reveals (and then blocks) its real CDN address.
+            sni_ip_learner.set_blocked_domains(blocklist.expand(domains))
+            domain_ips = blocklist.ips_for(domains) | sni_ip_learner.learned_ips()
+        else:
+            sni_ip_learner.set_blocked_domains(set())
+            domain_ips = set()
 
         # Preserve any device-level blocks (pause/quota) already enforced, so
         # applying a domain rule never accidentally un-pauses a device.
@@ -184,7 +193,11 @@ def apply_blocking_rules_now() -> dict:
         return {"applied": False, "reason": str(exc)}
 
 
-def start_policy_enforcer(interval: int = 30):
+def start_policy_enforcer(interval: int = 5):
+    # 5s, not 30s: the SNI learner discovers a blocked app's real CDN addresses
+    # continuously, and each one only takes effect on the next sweep. A 30s
+    # sweep left the app working for half a minute after it was "blocked".
+    # The sweep is cheap — small indexed queries plus a TTL-cached resolve.
     """Evaluate device policies (parental controls / quotas, W5) and push the
     currently-blocked MAC set to the DNS blocker. Daemon thread; cheap."""
     def _macs_to_ips(macs):
@@ -219,9 +232,20 @@ def start_policy_enforcer(interval: int = 30):
         """
         try:
             from database.queries.blocking_queries import get_rules
+            from packet_capture.sni_ip_learner import sni_ip_learner
             domains = {r.get('domain') for r in (get_rules() or [])
                        if r.get('enabled') and r.get('domain')}
-            return blocklist.ips_for(domains) if domains else set()
+            if not domains:
+                sni_ip_learner.set_blocked_domains(set())
+                return set()
+            # Watch the whole app family on the wire, so the SNI learner picks
+            # up CDN hosts (scontent.cdninstagram.com) our own resolver never
+            # sees — that is what actually stops the app.
+            family = blocklist.expand(domains)
+            sni_ip_learner.set_blocked_domains(family)
+            # Resolved IPs (immediate, approximate) + observed IPs (accurate,
+            # learned from the client's real connections).
+            return blocklist.ips_for(domains) | sni_ip_learner.learned_ips()
         except Exception as exc:
             logger.debug("domain blocklist resolve failed: %s", exc)
             return set()

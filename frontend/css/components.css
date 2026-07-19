@@ -2008,6 +2008,11 @@
 }
 .activity-domain--blocked .activity-domain__time { color: var(--color-error); }
 
+/* `display: flex` beats the UA stylesheet's [hidden] { display: none }, so
+   without the explicit rule below the collapsed panel still painted as an
+   empty bordered box under the toolbar. */
+.activity__rules[hidden] { display: none; }
+
 .activity__rules {
   border: 1px solid var(--color-border);
   border-radius: var(--border-radius);
