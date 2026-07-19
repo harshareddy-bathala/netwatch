@@ -69,6 +69,45 @@ class TestHostExcludedFromCount:
         stats = state.snapshot()
         assert stats["active_devices"] == state.get_active_device_count() == 1
 
+    def test_same_phone_in_mixed_mac_case_counts_once(self):
+        """The real cause of "Dashboard: 2, Devices: 1".
+
+        Scapy hands up upper-case MACs while the discovery path stores
+        lower-case. Keying the in-memory map by the raw value filed ONE phone
+        under two keys, so the dashboard counted it twice while the DB-backed
+        Devices page (which dedupes) showed one.
+        """
+        state = _hotspot_state()
+        pkt = {
+            # Dest is an internet endpoint, so only the phone is a device.
+            "source_mac": PHONE_MAC.upper(), "dest_mac": "aa:bb:cc:dd:ee:99",
+            "source_ip": PHONE_IP, "dest_ip": "57.144.52.34",
+            "bytes": 1500, "protocol": "TCP", "direction": "upload",
+            "device_name": "Nothing-Phone-2a-Plus", "vendor": "",
+            "dest_vendor": "", "timestamp": "2026-07-19 20:00:00",
+        }
+        state.update_from_batch([pkt])
+        # Same device, now lower-case as the discovery path would report it.
+        state.upsert_discovered_device(
+            mac_address=PHONE_MAC.lower(), ip_address=PHONE_IP,
+            hostname="Nothing-Phone-2a-Plus", vendor="",
+        )
+        assert state.get_active_device_count() == 1
+        macs = {m.lower() for m in state._devices}
+        assert len(macs) == len(state._devices), "MAC keys must be normalised"
+
+    def test_broadcast_never_tracked(self):
+        """192.168.137.255 / ff:ff:ff:ff:ff:ff is not a device."""
+        state = _hotspot_state()
+        state.update_from_batch([{
+            "source_mac": PHONE_MAC, "dest_mac": "ff:ff:ff:ff:ff:ff",
+            "source_ip": PHONE_IP, "dest_ip": "192.168.137.255",
+            "bytes": 300, "protocol": "UDP", "direction": "upload",
+            "device_name": "", "vendor": "", "dest_vendor": "",
+            "timestamp": "2026-07-19 20:00:00",
+        }])
+        assert state.get_active_device_count() == 1
+
     def test_own_traffic_mode_still_counts_host(self):
         """public_network mode monitors THIS machine — it must stay visible."""
         state = InMemoryDashboardState()
