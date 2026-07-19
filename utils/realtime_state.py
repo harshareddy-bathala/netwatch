@@ -556,20 +556,24 @@ class InMemoryDashboardState:
                         elif not self._own_traffic_only and self._our_ip and source_ip == self._our_ip:
                             pass  # host IP — hotspot host = gateway, skip (not in own-traffic mode)
                         else:
-                            dev = self._devices.get(source_mac)
+                            # Key by the LOWERCASED mac. Scapy yields upper-case
+                            # MACs while the discovery path stores lower-case,
+                            # so keying by the raw value filed one phone under
+                            # two keys and the dashboard counted it twice.
+                            dev = self._devices.get(src_lower)
                             if dev is None:
                                 # Create device for private IPv4 or local IPv6.
                                 # Public-IP-only packets must not spawn phantom
                                 # device entries.
                                 if (_src_is_private_v4 or _src_is_local_ipv6) and len(self._devices) < self.MAX_DEVICES:
                                     dev = DeviceInfo(
-                                        mac_address=source_mac,
+                                        mac_address=src_lower,
                                         ip_address=source_ip,
                                         device_name=device_name,
                                         vendor=vendor,
                                         first_seen=now,
                                     )
-                                    self._devices[source_mac] = dev
+                                    self._devices[src_lower] = dev
                                 else:
                                     dev = None
                             if dev is not None:
@@ -618,16 +622,17 @@ class InMemoryDashboardState:
                         elif not self._own_traffic_only and self._our_ip and dest_ip == self._our_ip:
                             pass  # host IP — hotspot host = gateway, skip (not in own-traffic mode)
                         else:
-                            dev = self._devices.get(dest_mac)
+                            # Lower-cased key — same reason as the source path.
+                            dev = self._devices.get(dst_lower)
                             if dev is None:
                                 if (_dst_is_private_v4 or _dst_is_local_ipv6) and len(self._devices) < self.MAX_DEVICES:
                                     dev = DeviceInfo(
-                                        mac_address=dest_mac,
+                                        mac_address=dst_lower,
                                         ip_address=dest_ip,
                                         vendor=pkt.get("dest_vendor") or "",
                                         first_seen=now,
                                     )
-                                    self._devices[dest_mac] = dev
+                                    self._devices[dst_lower] = dev
                                 else:
                                     dev = None
                             if dev is not None:
