@@ -34,14 +34,26 @@ def _get_blocker():
 
 
 def _reload_blocker() -> None:
-    """Push rule changes into the running blocker (no-op when not capturing)."""
+    """Push rule changes into the running blockers (no-op when not capturing).
+
+    Two enforcement layers, both refreshed here so a rule takes effect on the
+    next packet rather than at the next 30s policy sweep:
+      * DNS sinkhole — forges NXDOMAIN for plaintext lookups.
+      * Packet blocker — drops the domain's server IPs, which is the only
+        layer that stops DoH/QUIC apps (Instagram, YouTube) that never ask us
+        to resolve anything.
+    """
     blocker = _get_blocker()
-    if blocker is None:
-        return
+    if blocker is not None:
+        try:
+            blocker.reload()
+        except Exception as e:
+            logger.error("Could not reload DNS blocker rules: %s", e)
     try:
-        blocker.reload()
+        from orchestration.background_tasks import apply_blocking_rules_now
+        apply_blocking_rules_now()
     except Exception as e:
-        logger.error("Could not reload DNS blocker rules: %s", e)
+        logger.error("Could not apply packet-level blocking rules: %s", e)
 
 
 def _enforcement_status() -> dict:
@@ -63,9 +75,27 @@ def _enforcement_status() -> dict:
     except Exception:
         mode = None
 
-    active = blocker is not None and mode == "hotspot"
-    if active:
+    # Packet-level enforcement (WinDivert) is what actually stops DoH/QUIC
+    # apps; DNS sinkholing alone only catches plaintext lookups.
+    traffic = getattr(state, 'traffic_blocker', None)
+    packet_mode = None
+    if traffic is not None:
+        try:
+            packet_mode = traffic.get_status().get("mode")
+        except Exception:
+            packet_mode = None
+    packet_active = packet_mode == "windivert"
+
+    active = (blocker is not None and mode == "hotspot") or packet_active
+    if packet_active:
         reason = None
+    elif blocker is not None and mode == "hotspot":
+        reason = (
+            "Enforcing by DNS only. Apps using encrypted DNS (DoH) or cached "
+            "IPs over QUIC — Instagram, YouTube, Brave — can bypass this. "
+            "Install pydivert and run as Administrator for packet-level "
+            "blocking that they cannot bypass."
+        )
     elif blocker is None:
         reason = "Capture is not running, so blocking rules are not being enforced."
     else:
@@ -74,7 +104,9 @@ def _enforcement_status() -> dict:
             f"through this host. Current mode is '{mode or 'unknown'}', so "
             f"rules are saved but not enforced."
         )
-    return {"enforcing": active, "mode": mode, "reason": reason}
+    return {"enforcing": active, "mode": mode, "reason": reason,
+            "packet_mode": packet_mode, "level": "packet" if packet_active
+            else ("dns" if blocker is not None and mode == "hotspot" else "none")}
 
 
 @blocking_bp.route('/api/blocking/rules', methods=['GET'])

@@ -135,7 +135,69 @@ def start_vpn_detector(alert_engine):
         return False
 
 
-def start_policy_enforcer(interval: int = 30):
+# Shared domain→IP resolver cache. Used by both the periodic policy sweep and
+# the immediate apply below, so a rule added from the UI reuses (and warms) the
+# same cache the enforcer reads.
+_domain_blocklist = None
+_domain_blocklist_lock = threading.Lock()
+
+
+def _get_domain_blocklist():
+    global _domain_blocklist
+    with _domain_blocklist_lock:
+        if _domain_blocklist is None:
+            from packet_capture.domain_blocklist import DomainBlocklist
+            _domain_blocklist = DomainBlocklist()
+        return _domain_blocklist
+
+
+def apply_blocking_rules_now() -> dict:
+    """Re-resolve enabled domain rules and push them to the packet blocker
+    immediately, instead of waiting up to a full policy-sweep interval.
+
+    Called on every blocking-rule mutation so "Block" visibly takes effect at
+    once — a 30s delay reads as "blocking is broken". Returns a small status
+    dict for the API to surface. Never raises.
+    """
+    from orchestration import state
+    traffic = getattr(state, 'traffic_blocker', None)
+    if traffic is None:
+        return {"applied": False, "reason": "packet blocker not running"}
+    try:
+        from database.queries.blocking_queries import get_rules
+        from packet_capture.sni_ip_learner import sni_ip_learner
+        domains = {r.get('domain') for r in (get_rules() or [])
+                   if r.get('enabled') and r.get('domain')}
+        blocklist = _get_domain_blocklist()
+        if domains:
+            # Arm the wire-side learner immediately so the very next connection
+            # the app makes reveals (and then blocks) its real CDN address.
+            sni_ip_learner.set_blocked_domains(blocklist.expand(domains))
+            domain_ips = blocklist.ips_for(domains) | sni_ip_learner.learned_ips()
+        else:
+            sni_ip_learner.set_blocked_domains(set())
+            domain_ips = set()
+
+        # Preserve any device-level blocks (pause/quota) already enforced, so
+        # applying a domain rule never accidentally un-pauses a device.
+        existing = set(traffic.get_status().get("blocked_ips") or [])
+        prior_domain_ips = getattr(traffic, "_domain_ips", set())
+        device_ips = existing - prior_domain_ips
+
+        traffic.set_blocked_ips(device_ips | domain_ips)
+        traffic._domain_ips = domain_ips
+        return {"applied": True, "domains": len(domains), "ips": len(domain_ips),
+                "mode": traffic.get_status().get("mode")}
+    except Exception as exc:
+        logger.warning("Immediate blocking-rule apply failed: %s", exc)
+        return {"applied": False, "reason": str(exc)}
+
+
+def start_policy_enforcer(interval: int = 5):
+    # 5s, not 30s: the SNI learner discovers a blocked app's real CDN addresses
+    # continuously, and each one only takes effect on the next sweep. A 30s
+    # sweep left the app working for half a minute after it was "blocked".
+    # The sweep is cheap — small indexed queries plus a TTL-cached resolve.
     """Evaluate device policies (parental controls / quotas, W5) and push the
     currently-blocked MAC set to the DNS blocker. Daemon thread; cheap."""
     def _macs_to_ips(macs):
@@ -161,28 +223,68 @@ def start_policy_enforcer(interval: int = 30):
         except Exception:
             return set()
 
+    def _domain_rule_ips(blocklist):
+        """Resolve enabled domain-blocking rules → server IPs to drop.
+
+        DNS sinkholing alone does not block a phone that uses DoH or reconnects
+        over QUIC to a cached IP (observed: blocking instagram.com left the app
+        working). Dropping the domain's server IPs at the packet level does.
+        """
+        try:
+            from database.queries.blocking_queries import get_rules
+            from packet_capture.sni_ip_learner import sni_ip_learner
+            domains = {r.get('domain') for r in (get_rules() or [])
+                       if r.get('enabled') and r.get('domain')}
+            if not domains:
+                sni_ip_learner.set_blocked_domains(set())
+                return set()
+            # Watch the whole app family on the wire, so the SNI learner picks
+            # up CDN hosts (scontent.cdninstagram.com) our own resolver never
+            # sees — that is what actually stops the app.
+            family = blocklist.expand(domains)
+            sni_ip_learner.set_blocked_domains(family)
+            # Resolved IPs (immediate, approximate) + observed IPs (accurate,
+            # learned from the client's real connections).
+            return blocklist.ips_for(domains) | sni_ip_learner.learned_ips()
+        except Exception as exc:
+            logger.debug("domain blocklist resolve failed: %s", exc)
+            return set()
+
     def _loop():
         from database.queries.policy_queries import (
             get_policies, get_usage_today_by_mac, evaluate_blocked_macs,
         )
-        logger.info("Policy enforcer started (device quotas / schedules / pause)")
+        blocklist = _get_domain_blocklist()
+        logger.info("Policy enforcer started (device quotas / schedules / pause "
+                    "/ domain blocking)")
         while not state.shutdown_event.wait(timeout=interval):
             try:
                 policies = get_policies()
                 dns = getattr(state, 'dns_blocker', None)
                 traffic = getattr(state, 'traffic_blocker', None)
+
+                # Domain rules are enforced whether or not any device policy
+                # exists — they are independent features.
+                domain_ips = _domain_rule_ips(blocklist) if traffic else set()
+
+                if traffic:
+                    # Remember which IPs came from domain rules so an immediate
+                    # apply can tell them apart from device-level blocks.
+                    traffic._domain_ips = domain_ips
+
                 if not policies:
                     if dns: dns.set_blocked_macs(set())
-                    if traffic: traffic.set_blocked_ips(set())
+                    if traffic: traffic.set_blocked_ips(domain_ips)
                     continue
                 usage = get_usage_today_by_mac()
                 blocked = evaluate_blocked_macs(policies, usage)
                 macs = set(blocked.keys())
-                # DNS sinkhole (fast, name-level) + real packet drop (IP-level).
+                # DNS sinkhole (fast, name-level) + real packet drop (IP-level):
+                # paused/over-quota client IPs UNION blocked domains' server IPs.
                 if dns:
                     dns.set_blocked_macs(macs)
                 if traffic:
-                    traffic.set_blocked_ips(_macs_to_ips(macs))
+                    traffic.set_blocked_ips(_macs_to_ips(macs) | domain_ips)
             except Exception as e:
                 logger.debug("Policy enforcer error: %s", e)
 

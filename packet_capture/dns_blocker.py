@@ -56,6 +56,14 @@ _SEND_QUEUE_SIZE = 500
 # client retries aggressively and we won't write to SQLite on every retry.
 _HIT_FLUSH_SECONDS = 5.0
 
+# A browser resolving one hostname emits TWO DNS questions — an A and an AAAA
+# — so counting raw blocked queries made every single visit register as 2 hits.
+# Collapse repeats of the same (rule, client, name) inside this window into one
+# logical "blocked once" event.
+_HIT_DEDUP_SECONDS = 5.0
+# Bound the dedup map so a client cycling many names can't grow it unboundedly.
+_MAX_RECENT_HITS = 2000
+
 _NXDOMAIN = 3
 
 
@@ -89,6 +97,9 @@ class DNSBlocker:
         self._thread: Optional[threading.Thread] = None
         self._hits: Dict[int, int] = {}
         self._blocked_count = 0
+        # (rule_id, client_ip, qname) -> last counted time; collapses the
+        # A/AAAA pair a browser sends for one hostname into a single hit.
+        self._recent_hits: Dict[tuple, float] = {}
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -221,13 +232,39 @@ class DNSBlocker:
                 try:
                     self._send_nxdomain(pkt)
                     self._blocked_count += 1
-                    self._hits[rule_id] = self._hits.get(rule_id, 0) + 1
+                    if self._is_new_hit(pkt, rule_id):
+                        self._hits[rule_id] = self._hits.get(rule_id, 0) + 1
                 except Exception as exc:
                     logger.debug("DNS blocker send failed: %s", exc)
 
             if time.time() - last_flush >= _HIT_FLUSH_SECONDS:
                 self._flush_hits()
                 last_flush = time.time()
+
+    def _is_new_hit(self, pkt, rule_id) -> bool:
+        """True when this block should count as a *new* hit.
+
+        One page visit makes a browser resolve the same hostname twice (A and
+        AAAA), which previously scored 2 hits and made the counter look like it
+        double-increments on every site. Repeats of the same
+        (rule, client, name) within ``_HIT_DEDUP_SECONDS`` collapse into one.
+        On any parse failure it counts the hit — under-counting a real block is
+        worse than an occasional duplicate.
+        """
+        try:
+            qname = bytes(pkt[DNS].qd.qname).decode("ascii", "ignore").rstrip(".").lower()
+            src = pkt[IP].src
+        except Exception:
+            return True
+        now = time.time()
+        key = (rule_id, src, qname)
+        last = self._recent_hits.get(key)
+        if len(self._recent_hits) >= _MAX_RECENT_HITS:
+            cutoff = now - _HIT_DEDUP_SECONDS
+            self._recent_hits = {k: t for k, t in self._recent_hits.items()
+                                 if t > cutoff}
+        self._recent_hits[key] = now
+        return last is None or (now - last) > _HIT_DEDUP_SECONDS
 
     def _send_nxdomain(self, pkt) -> None:
         """Forge the 'this name does not exist' reply back to the client.

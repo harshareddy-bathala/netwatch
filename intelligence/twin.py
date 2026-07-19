@@ -238,10 +238,15 @@ class TwinBuilder:
             return "self"
         if ip and ip in self._host_ips:
             return "self"
+        # In hotspot/ICS the host IS the gateway: the same machine at the same
+        # address. Emitting a separate "gateway" node drew the host twice on
+        # the topology (a blue 192.168.137.1 and an orange 192.168.137.1 joined
+        # by a meaningless edge). Collapse them into the single self node.
+        host_is_gateway = bool(self._gateway_ip) and self._gateway_ip == self._our_ip
         if mac and mac == self._gateway_mac:
-            return "gateway"
+            return "self" if host_is_gateway else "gateway"
         if ip and ip == self._gateway_ip:
-            return "gateway"
+            return "self" if host_is_gateway else "gateway"
         return None
 
     # ------------------------------------------------------------------ #
@@ -589,17 +594,41 @@ class TwinBuilder:
             live_ids = {
                 nid for nid, n in self._nodes.items() if _is_live(n)
             }
+
+            # ---- collapse duplicate host nodes ---------------------------
+            # The host can produce several nodes: one per adapter, plus the
+            # gateway identity (in hotspot the host IS the gateway). They are
+            # one machine, so the map must draw one — previously it showed two
+            # 192.168.137.1 circles joined by a meaningless self-to-self edge.
+            self_ids = {nid for nid in live_ids
+                        if self._nodes[nid].node_type == "self"}
+            host_id = None
+            if len(self_ids) > 1:
+                def _host_rank(nid):
+                    n = self._nodes[nid]
+                    return (n.mac == self._our_mac, n.ip == self._our_ip,
+                            n.bytes_in + n.bytes_out)
+                host_id = max(self_ids, key=_host_rank)
+                live_ids -= (self_ids - {host_id})
+
+            def _canon(nid):
+                """Map any host-adapter node id onto the single host node."""
+                return host_id if (host_id and nid in self_ids) else nid
             # An edge is live only if both endpoints are live, so we never
             # draw a line to a node that has aged out of the view. The count
             # is over all live edges; the drawn list is additionally capped.
             live_edges = [
                 e for e in self._edges.values()
-                if e.source in live_ids and e.target in live_ids
+                if _canon(e.source) in live_ids and _canon(e.target) in live_ids
+                # A host adapter talking to another host adapter is the machine
+                # talking to itself — not a network link worth drawing.
+                and _canon(e.source) != _canon(e.target)
             ]
             edges = sorted(
                 live_edges, key=lambda e: e.bytes, reverse=True,
             )[:max_edges]
-            keep_ids = {e.source for e in edges} | {e.target for e in edges}
+            keep_ids = {_canon(e.source) for e in edges} | \
+                       {_canon(e.target) for e in edges}
             nodes = [
                 n.to_dict() for n in self._nodes.values()
                 if n.node_id in live_ids and (
@@ -632,8 +661,31 @@ class TwinBuilder:
                 },
                 "mode_timeline": list(self._mode_timeline)[-10:],
                 "nodes": nodes,
-                "edges": [e.to_dict() for e in edges],
+                "edges": self._serialize_edges(edges, _canon),
             }
+
+    @staticmethod
+    def _serialize_edges(edges, canon) -> list:
+        """Edge dicts with host-adapter ids collapsed onto the single host node.
+
+        Several adapter nodes can carry edges to the same peer; after collapsing
+        they become the same link, so their traffic is merged rather than drawn
+        as parallel lines.
+        """
+        merged = {}
+        for e in edges:
+            d = e.to_dict()
+            d["source"], d["target"] = canon(e.source), canon(e.target)
+            key = (d["source"], d["target"])
+            prev = merged.get(key)
+            if prev is None:
+                merged[key] = d
+                continue
+            prev["bytes"] = (prev.get("bytes") or 0) + (d.get("bytes") or 0)
+            prev["packets"] = (prev.get("packets") or 0) + (d.get("packets") or 0)
+            protos = set(prev.get("protocols") or []) | set(d.get("protocols") or [])
+            prev["protocols"] = sorted(protos)
+        return list(merged.values())
 
     def get_stats(self) -> dict:
         with self._lock:
