@@ -113,3 +113,23 @@ def app_and_org(qname: str):
     """Convenience: (app, org) or (None, None)."""
     s = classify_site(qname)
     return s["app"], s["org"]
+
+
+def domain_family(qname: str) -> set:
+    """Every catalog domain belonging to the same app as *qname*.
+
+    Blocking a consumer app by its headline domain alone does nothing: the
+    Instagram app never talks to ``instagram.com``, it talks to
+    ``i.instagram.com`` and ``scontent.cdninstagram.com``, which resolve to
+    *different* addresses. Expanding to the app's whole domain family is what
+    makes an IP-level block actually bite.
+
+    Returns ``{registered_domain(qname)}`` when the name isn't a known app, so
+    callers can use this unconditionally.
+    """
+    s = classify_site(qname)
+    app = s.get("app")
+    if not app:
+        d = s.get("domain") or (qname or "").lower().rstrip(".")
+        return {d} if d else set()
+    return {dom for dom, (a, _org) in _APP_MAP.items() if a == app}

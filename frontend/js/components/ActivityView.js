@@ -86,6 +86,7 @@ export default class ActivityView {
     this.el.querySelector('#activity-rules-toggle').addEventListener('click', () => {
       this._showRules = !this._showRules;
       this._renderRules();
+      this._renderSummary();     // flip the ▾/▴ caret with the panel
     });
 
     this._loadRules();
@@ -219,7 +220,13 @@ export default class ActivityView {
 
     if (toggle) {
       const active = this._rules.filter(r => r.enabled).length;
-      toggle.textContent = active ? `Blocked (${active})` : 'Blocked';
+      // Chevron shows which way the panel will move: ▾ opens, ▴ closes. A
+      // toggle that never changes appearance gives no hint it is expandable.
+      const caret = this._showRules ? '▴' : '▾';
+      toggle.textContent =
+        (active ? `Blocked (${active})` : 'Blocked') + ` ${caret}`;
+      toggle.setAttribute('aria-expanded', this._showRules ? 'true' : 'false');
+      toggle.title = this._showRules ? 'Hide blocked list' : 'Show blocked list';
     }
 
     if (hint) {

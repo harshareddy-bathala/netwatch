@@ -190,6 +190,38 @@ export default class TopologyView {
 
   /* ── SVG rendering (DOM API only) ───────────────── */
 
+  /** Edges to draw: the twin's real edges, plus a "routes through" link for
+   *  any client left with no visible connection.
+   *
+   *  A client's edges point at the internet endpoints it talked to, so hiding
+   *  external nodes (the default) left clients floating unconnected — the map
+   *  implied they weren't on the network. In hotspot every client's traffic
+   *  genuinely does traverse this host, so linking them to it is accurate, not
+   *  decorative. Drawn dashed to distinguish it from a measured flow. */
+  _withRoutingEdges(twin, drawn) {
+    const edges = [...(twin.edges || [])];
+    const drawnIds = new Set(drawn.map(n => n.id));
+    const host = drawn.find(n => n.type === 'self') ||
+                 drawn.find(n => n.type === 'gateway');
+    if (!host) return edges;
+
+    const connected = new Set();
+    for (const e of edges) {
+      if (drawnIds.has(e.source) && drawnIds.has(e.target)) {
+        connected.add(e.source); connected.add(e.target);
+      }
+    }
+    for (const node of drawn) {
+      if (node.type !== 'device' || connected.has(node.id)) continue;
+      edges.push({
+        source: node.id, target: host.id,
+        bytes: (node.bytes_in || 0) + (node.bytes_out || 0),
+        packets: 0, protocols: [], routed: true,
+      });
+    }
+    return edges;
+  }
+
   _renderGraph(twin) {
     const canvas = this.el.querySelector('#topology-canvas');
     const empty = this.el.querySelector('#topology-empty');
@@ -224,8 +256,9 @@ export default class TopologyView {
 
     // Edges under nodes — keep refs so dragging a node moves its lines.
     const edgeEls = [];
-    const maxBytes = Math.max(1, ...(twin.edges || []).map(e => e.bytes || 0));
-    for (const edge of twin.edges || []) {
+    const allEdges = this._withRoutingEdges(twin, drawn);
+    const maxBytes = Math.max(1, ...allEdges.map(e => e.bytes || 0));
+    for (const edge of allEdges) {
       const a = finalPos(edge.source);
       const b = finalPos(edge.target);
       if (!a || !b) continue;
@@ -234,7 +267,9 @@ export default class TopologyView {
       line.setAttribute('x2', b.x); line.setAttribute('y2', b.y);
       const weight = 0.75 + 3.5 * Math.log1p(edge.bytes || 0) / Math.log1p(maxBytes);
       line.setAttribute('stroke-width', weight.toFixed(2));
-      line.setAttribute('class', 'topology__edge');
+      line.setAttribute('class', 'topology__edge' +
+        (edge.routed ? ' topology__edge--routed' : ''));
+      if (edge.routed) line.setAttribute('stroke-dasharray', '4 4');
       this._hover(line, () => this._edgeTooltip(edge));
       view.appendChild(line);
       edgeEls.push({ el: line, source: edge.source, target: edge.target });
@@ -412,6 +447,14 @@ export default class TopologyView {
   }
 
   _edgeTooltip(edge) {
+    if (edge.routed) {
+      return [
+        'Routed through this host',
+        'This client reaches the internet through this machine.',
+        `Traffic: ${formatBytes(edge.bytes || 0)}`,
+        'Turn on “Show external” to see the sites it connected to.',
+      ];
+    }
     return [
       `${edge.source} → ${edge.target}`,
       `Bytes: ${formatBytes(edge.bytes || 0)} · Packets: ${edge.packets || 0}`,

@@ -82,10 +82,31 @@ class DomainBlocklist:
         # domain -> (expires_at, ips)
         self._cache: Dict[str, Tuple[float, Set[str]]] = {}
 
+    @staticmethod
+    def expand(domains: Iterable[str]) -> Set[str]:
+        """Grow each blocked domain into its whole app family.
+
+        Blocking ``instagram.com`` must also cover ``cdninstagram.com`` — the
+        app never contacts the headline domain, so resolving it alone blocks
+        nothing. Unknown domains expand to themselves.
+        """
+        out: Set[str] = set()
+        for d in (domains or []):
+            name = (d or "").strip().lower().rstrip(".")
+            if not name:
+                continue
+            try:
+                from intelligence.app_catalog import domain_family
+                out |= domain_family(name)
+            except Exception:
+                out.add(name)
+        return out
+
     def ips_for(self, domains: Iterable[str], now: float = None) -> Set[str]:
-        """Union of current IPs for *domains*, re-resolving expired entries."""
+        """Union of current IPs for *domains* (expanded to app families),
+        re-resolving expired entries."""
         now = time.time() if now is None else now
-        wanted = {(d or "").strip().lower().rstrip(".") for d in (domains or [])}
+        wanted = self.expand(domains)
         wanted.discard("")
 
         out: Set[str] = set()

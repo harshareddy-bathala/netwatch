@@ -81,6 +81,7 @@ except Exception:
 _TLS_SNI_PORTS = {443, 8443}
 
 from packet_capture.quic_sni import sni_from_client_hello, extract_quic_sni
+from packet_capture.sni_ip_learner import sni_ip_learner
 
 
 def extract_tls_sni(payload: bytes) -> Optional[str]:
@@ -364,6 +365,17 @@ class PacketProcessor:
                 if _sni:
                     extra["tls_sni"] = _sni
                     extra["tls_sni_proto"] = _sni_proto
+                    # Learn the real address behind a blocked app. Our own
+                    # resolution of instagram.com misses the CDN hosts the app
+                    # actually uses; the SNI on this packet names the site and
+                    # the packet names its IP, so we block what the client is
+                    # genuinely reaching. No-op (single frozenset check) when
+                    # nothing is blocked.
+                    if sni_ip_learner.active:
+                        try:
+                            sni_ip_learner.observe(_sni, dst_ip)
+                        except Exception:
+                            pass        # never break capture over enforcement
             if is_transition_packet:
                 extra["transition_phase"] = transition_phase
                 extra["is_transition_packet"] = True
