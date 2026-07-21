@@ -506,7 +506,16 @@ def _upsert_arp_cache_devices(
                         WHEN (vendor IS NULL OR vendor = '')
                         THEN COALESCE(NULLIF(excluded.vendor, ''), vendor)
                         ELSE vendor END,
-                    last_seen    = datetime('now'),
+                    -- Only a device with FRESH evidence may have its presence
+                    -- refreshed. The Windows ARP cache keeps listing a phone
+                    -- for minutes after it disconnects, and bumping last_seen
+                    -- from that made a departed device permanently "seen just
+                    -- now" — it never aged out of the Devices list, because
+                    -- the list selects on last_seen. Cache-only sightings may
+                    -- still enrich a row (hostname, vendor, IP); they may not
+                    -- claim the device is here.
+                    last_seen    = CASE WHEN ? = 1
+                                        THEN datetime('now') ELSE last_seen END,
                     detected_mode = COALESCE(detected_mode, excluded.detected_mode),
                     active_mode  = CASE
                         WHEN excluded.active_mode IS NOT NULL
@@ -522,6 +531,10 @@ def _upsert_arp_cache_devices(
                 vendor,
                 current_mode_name,
                 active_mode_val,
+                # Presence refresh: only for confirmed clients (set_active_mode)
+                # or ones this cycle actually probed. A cache-only sighting
+                # enriches the row without claiming the device is still here.
+                1 if (set_active_mode or normalized_mac in preserve_active_macs) else 0,
                 1 if clear_active_mode else 0,
             ))
 

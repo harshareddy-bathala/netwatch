@@ -5,10 +5,23 @@
  */
 
 import store from '../store.js';
+
 import StatsCard from './StatsCard.js';
 import BandwidthChart from './BandwidthChart.js';
 import ProtocolChart from './ProtocolChart.js';
 import { formatBytes, formatMbps, escapeHtml } from '../utils/formatters.js';
+
+/**
+ * Last briefing, kept at module scope so it survives navigating away and back.
+ *
+ * The router builds a NEW Dashboard on every visit, so per-instance state gave
+ * two bad behaviours: the paragraph vanished and was regenerated on every
+ * return, and each mount started its own 10-minute timer — several overlapping
+ * timers made it appear to refresh every 2-3 minutes. Anchoring on a shared
+ * timestamp means "every 10 minutes" is measured from the last *actual*
+ * briefing, no matter how many times the view has been mounted.
+ */
+const briefingCache = { at: 0, data: null };
 
 export default class Dashboard {
   /** How often the briefing re-reads the last 10 minutes on its own. */
@@ -18,9 +31,7 @@ export default class Dashboard {
     this.container = container;
     this._unsubs = [];
     this._briefingTimer = null;
-    this._briefingMetaTimer = null;
     this._briefingInFlight = false;
-    this._briefingAt = 0;
     this._cards = {};
     this._bandwidthChart = null;
     this._protocolChart = null;
@@ -180,14 +191,24 @@ export default class Dashboard {
 
     btn.addEventListener('click', () => this._refreshBriefing(true));
 
-    // First fill immediately (unforced, so a warm server cache answers fast).
-    this._refreshBriefing(false);
+    const age = Date.now() - briefingCache.at;
+    if (briefingCache.data && age < Dashboard.BRIEFING_INTERVAL_MS) {
+      // Still current — show it straight away. Returning to the dashboard
+      // should not throw the last answer away and run the model again.
+      this._renderBriefing(briefingCache.data);
+    } else {
+      this._refreshBriefing(false);
+    }
 
-    this._briefingTimer = setInterval(
-      () => this._refreshBriefing(true), Dashboard.BRIEFING_INTERVAL_MS,
-    );
-    // Keep the "updated N ago" label honest between refreshes.
-    this._briefingMetaTimer = setInterval(() => this._renderBriefingMeta(), 30000);
+    // Tick often, but only actually refresh once the interval has genuinely
+    // elapsed since the last briefing — so duplicate timers cannot compound
+    // into a faster cadence.
+    this._briefingTimer = setInterval(() => {
+      if (Date.now() - briefingCache.at >= Dashboard.BRIEFING_INTERVAL_MS) {
+        this._refreshBriefing(true);
+      }
+      this._renderBriefingMeta();
+    }, 30000);
   }
 
   async _refreshBriefing(force) {
@@ -220,7 +241,14 @@ export default class Dashboard {
       return;
     }
 
-    const d = resp.data;
+    briefingCache.data = resp.data;
+    briefingCache.at = Date.now();
+    this._renderBriefing(resp.data);
+  }
+
+  _renderBriefing(d) {
+    const body = this.container.querySelector('#briefing-body');
+    if (!body) return;
     body.innerHTML = '';
 
     const text = document.createElement('p');
@@ -237,16 +265,16 @@ export default class Dashboard {
       : 'Computed directly from live data';
     body.appendChild(src);
 
-    this._briefingAt = Date.now();
     this._renderBriefingMeta();
   }
 
   _renderBriefingMeta() {
     const meta = this.container.querySelector('#briefing-meta');
-    if (!meta || !this._briefingAt) return;
-    const ageMin = Math.floor((Date.now() - this._briefingAt) / 60000);
-    const nextMin = Math.max(0, Math.round(
-      (Dashboard.BRIEFING_INTERVAL_MS - (Date.now() - this._briefingAt)) / 60000));
+    if (!meta || !briefingCache.at) return;
+    const elapsed = Date.now() - briefingCache.at;
+    const ageMin = Math.floor(elapsed / 60000);
+    const nextMin = Math.max(0, Math.ceil(
+      (Dashboard.BRIEFING_INTERVAL_MS - elapsed) / 60000));
     const when = ageMin < 1 ? 'just now' : `${ageMin} min ago`;
     meta.textContent = `updated ${when} · auto-refresh in ${nextMin} min`;
   }
@@ -420,8 +448,7 @@ export default class Dashboard {
     // Timers outlive the DOM otherwise, and a navigated-away dashboard would
     // keep firing model calls in the background.
     if (this._briefingTimer) clearInterval(this._briefingTimer);
-    if (this._briefingMetaTimer) clearInterval(this._briefingMetaTimer);
-    this._briefingTimer = this._briefingMetaTimer = null;
+    this._briefingTimer = null;
     if (this._bandwidthChart) this._bandwidthChart.destroy();
     if (this._protocolChart) this._protocolChart.destroy();
   }

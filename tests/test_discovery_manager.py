@@ -442,3 +442,102 @@ class TestStorableMac:
     def test_real_device_accepted(self):
         from orchestration.discovery_manager import _is_storable_mac
         assert _is_storable_mac("22:5E:3E:1A:D0:F3") is True
+
+
+class TestPresenceNotRefreshedFromCache:
+    """A stale ARP entry must not keep a departed device "seen just now".
+
+    Reported live: one phone disconnected but stayed in the Devices list, and
+    the header kept counting it. `ARP cache scan found 2 devices on subnet`
+    repeated for minutes after only one client remained — Windows keeps a
+    departed client in its ARP table, and the upsert bumped `last_seen` from
+    it every cycle. The Devices list selects rows by `last_seen`, so the
+    device could never age out.
+
+    Cache-only sightings may still enrich a row (hostname, vendor, IP). They
+    may not claim the device is present.
+    """
+
+    def _seed(self, mac, ip, seconds_ago):
+        with get_connection() as conn:
+            conn.execute(
+                """INSERT INTO devices (mac_address, ip_address, ipv4_address,
+                                        detected_mode, active_mode,
+                                        first_seen, last_seen)
+                   VALUES (?, ?, ?, 'hotspot', 'hotspot',
+                           datetime('now'), datetime('now', ?))""",
+                (mac, ip, ip, f"-{seconds_ago} seconds"),
+            )
+            conn.commit()
+
+    def _last_seen_age(self, mac):
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT CAST((julianday('now') - julianday(last_seen)) * 86400 "
+                "AS INTEGER) FROM devices WHERE mac_address = ?", (mac,),
+            ).fetchone()
+        return row[0] if row else None
+
+    def test_cache_only_sighting_does_not_refresh_presence(
+            self, initialized_db, monkeypatch):
+        _set_current_mode(monkeypatch, ip_address="192.168.137.1",
+                          netmask="255.255.255.0")
+        mac, ip = "aa:bb:cc:dd:ee:80", "192.168.137.80"
+        self._seed(mac, ip, seconds_ago=600)
+
+        with patch("orchestration.discovery_manager.get_all_local_macs",
+                   return_value=set()), \
+             patch("orchestration.discovery_manager._enqueue_resolution"):
+            _upsert_arp_cache_devices(
+                [{"mac": mac.upper(), "ip": ip, "hostname": "", "vendor": ""}],
+                "hotspot",
+                set_active_mode=False,          # cache-only: weak evidence
+                local_ips=set(),
+            )
+
+        assert self._last_seen_age(mac) >= 500, (
+            "a stale ARP entry must not make a departed device look present"
+        )
+
+    def test_confirmed_client_does_refresh_presence(
+            self, initialized_db, monkeypatch):
+        _set_current_mode(monkeypatch, ip_address="192.168.137.1",
+                          netmask="255.255.255.0")
+        mac, ip = "aa:bb:cc:dd:ee:81", "192.168.137.81"
+        self._seed(mac, ip, seconds_ago=600)
+
+        with patch("orchestration.discovery_manager.get_all_local_macs",
+                   return_value=set()), \
+             patch("orchestration.discovery_manager._enqueue_resolution"):
+            _upsert_arp_cache_devices(
+                [{"mac": mac.upper(), "ip": ip, "hostname": "", "vendor": ""}],
+                "hotspot",
+                set_active_mode=True,           # fresh evidence
+                local_ips=set(),
+            )
+
+        assert self._last_seen_age(mac) <= 5
+
+    def test_cache_only_still_enriches_identity(
+            self, initialized_db, monkeypatch):
+        """Not refreshing presence must not mean discarding what we learned."""
+        _set_current_mode(monkeypatch, ip_address="192.168.137.1",
+                          netmask="255.255.255.0")
+        mac, ip = "aa:bb:cc:dd:ee:82", "192.168.137.82"
+        self._seed(mac, ip, seconds_ago=600)
+
+        with patch("orchestration.discovery_manager.get_all_local_macs",
+                   return_value=set()), \
+             patch("orchestration.discovery_manager._enqueue_resolution"):
+            _upsert_arp_cache_devices(
+                [{"mac": mac.upper(), "ip": ip, "hostname": "Galaxy-Tab",
+                  "vendor": "Samsung"}],
+                "hotspot", set_active_mode=False, local_ips=set(),
+            )
+
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT hostname, vendor FROM devices WHERE mac_address = ?",
+                (mac,)).fetchone()
+        assert row[0] == "Galaxy-Tab"
+        assert row[1] == "Samsung"
