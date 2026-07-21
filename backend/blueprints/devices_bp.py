@@ -202,6 +202,45 @@ def get_top_devices_endpoint():
     })
 
 
+def _apply_usage_today(devices: list) -> list:
+    """Report each device's usage **today**, from the same source Controls uses.
+
+    The Devices page and the Controls page disagreed wildly for the same phone
+    — 4.4 MB against 53.5 MB. Both were "right": in hotspot mode the device
+    list summed ``traffic_summary`` over the presence window, which is
+    HOTSPOT_STALE_DEVICE_SECONDS (180s), so its "Usage" column was really
+    "usage in the last three minutes". Nobody reads a column labelled Usage
+    that way.
+
+    The window is there to decide *which devices are still here*, which is a
+    different question from *how much have they used*. Row selection keeps it;
+    the number now comes from ``get_usage_today_by_mac`` — the one function
+    Controls and quota enforcement already use, so the two pages cannot drift
+    apart again.
+    """
+    if not devices:
+        return devices
+    try:
+        from database.queries.policy_queries import get_usage_today_by_mac
+        usage = get_usage_today_by_mac()
+    except Exception as exc:
+        logger.debug("usage-today enrichment unavailable: %s", exc)
+        return devices
+
+    for d in devices:
+        mac = (d.get('mac_address') or '').lower().replace('-', ':')
+        if not mac or mac not in usage:
+            continue
+        today = int(usage[mac])
+        d['usage_today_bytes'] = today
+        # The list's headline number. Keep the raw windowed figures under
+        # their own keys so nothing that wants "recent activity" is lost.
+        d['total_bytes_window'] = d.get('total_bytes')
+        d['total_bytes'] = today
+        d['total_bytes_app'] = today
+    return devices
+
+
 @devices_bp.route('/api/devices')
 @handle_errors
 def get_devices():
@@ -222,6 +261,7 @@ def get_devices():
     )
     devices = _drop_host_rows(devices)
     devices = _dedupe_by_hostname(devices)
+    devices = _apply_usage_today(devices)
     devices = devices[offset:offset + limit]
 
     return jsonify({

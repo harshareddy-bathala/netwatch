@@ -163,7 +163,13 @@ class TestDiscoveredIdleDevices:
         )
 
         with state._lock:
-            state._devices["aa:bb:cc:dd:ee:66"].last_seen = time.time() - 15
+            dev = state._devices["aa:bb:cc:dd:ee:66"]
+            # This device has never put a packet on the wire, so the clock that
+            # governs it is first_seen (when discovery first reported it) — not
+            # last_seen, which discovery keeps refreshing from the ARP cache and
+            # which therefore cannot express "it went quiet".
+            dev.last_seen = time.time() - 15
+            dev.first_seen = time.time() - 15
 
         assert state.get_top_devices_memory(limit=10) == []
 

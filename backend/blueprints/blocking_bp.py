@@ -125,8 +125,11 @@ def create_rule():
     domain = payload.get('domain') or ''
     mac = payload.get('device_mac') or None
     note = payload.get('note') or None
+    # 'device' (default) drops only this client's traffic to the domain;
+    # 'network' drops it for every client and for this host too.
+    scope = payload.get('scope') or None
 
-    rule = add_rule(domain, device_mac=mac, note=note)
+    rule = add_rule(domain, device_mac=mac, note=note, scope=scope)
     if rule is None:
         return jsonify({
             'error': f"'{domain}' is not a valid domain name.",

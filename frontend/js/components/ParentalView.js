@@ -70,6 +70,12 @@ export default class ParentalView {
     return dev ? (dev.hostname || dev.device_name || dev.ip_address || mac) : mac;
   }
 
+  _shortTime(ts) {
+    // Stored as 'YYYY-MM-DD HH:MM:SS' local time; show just the clock.
+    const m = /(\d{2}):(\d{2})/.exec(String(ts || ''));
+    return m ? `${m[1]}:${m[2]}` : String(ts || '');
+  }
+
   _renderHint() {
     const hint = this.el.querySelector('#parental-hint');
     if (!hint) return;
@@ -155,7 +161,15 @@ export default class ParentalView {
     state.className = 'parental-card__state';
     if (p.blocked_now) {
       const reasons = { paused: 'Paused', quota_exceeded: 'Over data cap', schedule: 'Bedtime' };
-      state.textContent = reasons[p.block_reason] || 'Blocked';
+      let label = reasons[p.block_reason] || 'Blocked';
+      // Say when a pause ends. A block with no visible end is how a device
+      // stayed cut off for hours after a demo with nothing explaining it.
+      if (p.block_reason === 'paused') {
+        label += p.pause_expires_at
+          ? ` until ${this._shortTime(p.pause_expires_at)}`
+          : ' (until resumed)';
+      }
+      state.textContent = label;
       state.classList.add('parental-card__state--blocked');
     } else {
       state.textContent = 'Allowed';

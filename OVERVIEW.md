@@ -2,7 +2,7 @@
 
 # NetWatch — Intelligent Network Traffic Analysis System
 
-> *A self-hosted, real-time network monitoring platform with machine learning–driven anomaly detection, built entirely without cloud dependencies.*
+> *A self-hosted, real-time network monitoring platform that detects, explains, and lets you act on what happens on your network — with the AI running locally and no cloud dependency anywhere.*
 
 ---
 
@@ -30,15 +30,28 @@ All existing approaches either require heavy infrastructure, send data to the cl
 NetWatch is a Python-based monitoring daemon that runs locally on any machine connected to a network. It captures raw packets using Scapy, processes them in real-time, stores data in SQLite, and serves a live web dashboard — all without any external services.
 
 **Core pipeline:**  
-Packet capture (Scapy/Npcap) → Packet processor → SQLite storage → Flask REST + SSE → Vanilla JS dashboard
+Packet capture (Scapy/Npcap) → Packet processor → Event bus → Intelligence layer → SQLite storage → Flask REST + SSE → Vanilla JS dashboard
 
 **Key capabilities:**
 - **Automatic mode detection** — Identifies whether the host is a hotspot, wired node, Wi-Fi client, or port-mirror tap, and adjusts capture strategy accordingly.
 - **Real-time bandwidth charts** — Per-device upload/download pushed to browser every 3 seconds via Server-Sent Events.
-- **Device tracking** — MAC-address–based fingerprinting with hostname resolution (DNS + mDNS) and GeoIP for external IPs.
-- **ML anomaly detection** — Isolation Forest model trained continuously on live traffic features (packet rate, byte rate, connection count, protocol mix). Flags statistically abnormal behaviour automatically.
-- **Alert engine** — Threshold + ML alerts with deduplication, lifecycle management, and a composite 0–100 network health score.
-- **641 automated tests** — Unit, integration, and performance coverage across all modules.
+- **Device tracking** — MAC-address–based identity with passive fingerprinting (phone / laptop / TV / IoT / printer), hostname resolution (DNS + mDNS) and GeoIP for external IPs.
+- **Activity attribution** — Resolves which *site and app* a client is using, entirely offline, from DNS and TLS/QUIC SNI matched against a bundled catalog.
+- **Threat detection** — Rule-based detectors for port scanning, C2 beaconing, DNS tunnelling, rogue devices and lateral movement, each alert carrying its evidence and a confidence score.
+- **Behavioural baselines** — Per-device hour-of-week profiles; deviations flagged by z-score, so "2 GB transferred" is only an alert if it is unusual *for that device, at that hour*.
+- **ML anomaly detection** — Isolation Forest model trained continuously on live traffic features (packet rate, byte rate, connection count, protocol mix).
+- **Incident fusion** — Related alerts collapse into risk-scored incidents, turning hundreds of notifications into a handful of things to triage.
+- **Forecasting** — Holt double-exponential smoothing projects bandwidth forward with confidence bands and a link-saturation ETA.
+- **Natural-language investigation** — "Ask NetWatch" answers questions about your own traffic via a tool-calling loop over read-only queries, returning the full tool trace alongside the answer.
+- **Enforcement** — Per-device domain blocking, data quotas, blocked time windows and bounded pauses, via DNS sinkhole or kernel-level packet drop.
+- **1304 automated tests** — Unit, integration, performance and evaluation coverage across all modules.
+
+**The AI boundary.** All detection, attribution and forecasting above is
+deterministic. A language model is used only to *narrate* facts and *recommend*
+actions — never to decide. Recommendations are proposals a human approves;
+answers ship with the queries that produced them; and every AI feature has a
+deterministic fallback, so NetWatch works fully with no model installed. The
+model itself runs locally via Ollama, so this adds no cloud dependency.
 
 ---
 
@@ -69,14 +82,13 @@ The core motivation is **privacy and accessibility**. Every byte of traffic data
 
 ## Future Directions
 
-- **Active network mapping** — Integrate Nmap-style OS fingerprinting to auto-classify device types (IoT, mobile, server).
-- **Threat intelligence feeds** — Correlate captured IPs against public blocklists (abuse.ch, Feodo Tracker) for automatic threat tagging.
+- **Threat intelligence feeds** — Correlate captured IPs against public blocklists (abuse.ch, Feodo Tracker) for automatic threat tagging, without breaking the offline-by-default guarantee.
 - **Distributed agents** — A lightweight agent model where multiple hosts report to a central NetWatch instance, enabling full network-wide visibility without a managed switch.
 - **eBPF capture backend** — Replace Scapy/libpcap with eBPF on Linux for near-zero-overhead capture at scale.
 - **Mobile dashboard** — Progressive Web App wrapper for on-the-go monitoring from a phone.
 
 ---
 
-*NetWatch v3.0.0 · Python 3.11+ · MIT License · Local-first · 641 tests*
+*NetWatch · Python 3.11+ · MIT License · Local-first · 1304 tests*
 
 </div>

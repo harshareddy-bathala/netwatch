@@ -144,9 +144,14 @@ def _create_capture_engine(mode):
         "Creating Scapy/Npcap capture engine on '%s' (strategy=%s)",
         iface, type(strategy).__name__ if strategy else 'None',
     )
+    _mode_name = None
+    try:
+        _mode_name = mode.get_mode_name().value
+    except Exception:
+        pass
     engine = CaptureEngine(
         mode, interface=iface, strategy=strategy,
-        dns_blocker=_create_dns_blocker(iface),
+        dns_blocker=_create_dns_blocker(iface, _mode_name),
     )
 
     # Register callbacks
@@ -156,14 +161,30 @@ def _create_capture_engine(mode):
     return engine
 
 
-def _create_dns_blocker(iface):
+def _create_dns_blocker(iface, mode_name=None):
     """Build the DNS blocker for this capture mode and publish it on state.
 
-    Enforcement only works where we sit between the client and its resolver,
-    which in practice means hotspot mode (this host is the AP/NAT gateway).
-    The blocker is still created in other modes so the rules UI stays
-    readable and consistent; it simply won't see client queries there.
+    **Hotspot only.** The sinkhole works by forging an NXDOMAIN onto the LAN
+    faster than the real resolver answers, which is legitimate when this host
+    *is* the AP/NAT gateway and every client's DNS is ours to answer.
+
+    Anywhere else it is both useless and harmful. Field logs show it starting
+    on ``Wi-Fi`` in public_network mode, where the only lookups crossing that
+    interface are **this machine's own** — so a network-wide rule NXDOMAINed
+    the admin's own browsing — and where the forged L2 replies land on a
+    network full of other people's devices that we have no business answering
+    for.
+
+    The rules UI stays readable without it: ``_enforcement_status()`` reports
+    that rules are saved but not enforced, and says why.
     """
+    if mode_name != "hotspot":
+        logger.info(
+            "DNS blocker not started in '%s' mode — sinkholing only applies "
+            "where this host is the clients' gateway", mode_name or "unknown",
+        )
+        state.dns_blocker = None
+        return None
     try:
         from packet_capture.dns_blocker import DNSBlocker
         blocker = DNSBlocker(iface=iface)

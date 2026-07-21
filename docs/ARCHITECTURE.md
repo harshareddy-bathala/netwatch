@@ -20,13 +20,15 @@ This document describes the architecture of the NetWatch network traffic analysi
 
 ## Overview
 
-NetWatch is a monolithic application that runs entirely on a single machine. It consists of seven main component groups that work together to capture, store, analyze, and visualize network traffic data.
+NetWatch is a monolithic application that runs entirely on a single machine. It consists of eight main component groups that work together to capture, store, analyze, explain, and visualize network traffic data.
 
 **Design Principles:**
-- **Local-only:** No cloud dependencies, no external services
+- **Local-only:** No cloud dependencies, no external services. The optional AI features run against a local Ollama server — there is no API key and no outbound traffic.
 - **Real-time:** Data flows from capture to display in under 3 seconds
 - **Modular:** Each component has clear responsibilities and interfaces
 - **Simple:** Uses SQLite for storage, Flask for API, vanilla JavaScript for frontend
+- **Event-driven above the capture layer:** analysis consumes an in-process event bus rather than polling the database, and never blocks the capture thread
+- **AI narrates, humans decide:** the language model explains and recommends; every state change is an explicit operator action, and every AI feature has a deterministic fallback
 - **24/7 Production-ready:** Adaptive retention, connection pool validation, disk monitoring, and graceful shutdown with watchdog
 
 ---
@@ -111,20 +113,46 @@ netwatchd/
 │   ├── anomaly_detector.py         # Isolation Forest ML anomaly detection
 │   └── deduplication.py            # Alert deduplication logic
 │
+├── intelligence/                   # AI-first analysis layer
+│   ├── event_bus.py                # In-process pub/sub, drop-oldest backpressure
+│   ├── flow_normalizer.py          # packet.batch -> flow records + DNS log
+│   ├── twin.py                     # Live network graph (digital twin)
+│   ├── behavior.py                 # Hour-of-week baselines, z-score deviations
+│   ├── threats.py                  # Port scan, beaconing, DNS tunnel, lateral
+│   ├── vpn_detector.py             # Tunnel classification
+│   ├── incidents.py                # Alert -> incident fusion, risk scoring
+│   ├── forecast.py                 # Holt smoothing, saturation ETA
+│   ├── device_fingerprint.py       # Passive device typing
+│   ├── app_catalog.py              # Hostname -> app / owning org
+│   ├── ip_org.py                   # Offline IP -> org lookup
+│   ├── investigator.py             # Ask NetWatch tool-calling loop
+│   ├── investigator_tools.py       # Read-only tools the model may call
+│   ├── responder.py                # Incident verdicts + rule fallback
+│   ├── briefing.py                 # "What just happened" narrative
+│   └── llm_runtime.py              # Local Ollama client (None when absent)
+│
 ├── backend/                        # REST API (Flask)
 │   ├── __init__.py
-│   ├── app.py                      # Flask application factory, CORS, SSE
+│   ├── app.py                      # Flask application factory, CORS, error handlers
 │   ├── helpers.py                  # Shared API helper functions
-│   ├── middleware.py               # Request/response middleware
+│   ├── middleware.py               # Request/response middleware, API-key auth
 │   └── blueprints/                 # Modular API endpoint groups
 │       ├── __init__.py
-│       ├── bandwidth_bp.py         # /api/bandwidth/* endpoints
+│       ├── bandwidth_bp.py         # /api/bandwidth/*, /api/dashboard, /api/stream (SSE)
 │       ├── devices_bp.py           # /api/devices/* endpoints
-│       ├── alerts_bp.py            # /api/alerts/* endpoints
+│       ├── alerts_bp.py            # /api/alerts/*, /api/alert-rules/*
 │       ├── system_bp.py            # /api/system/* endpoints (health, status)
-│       ├── discovery_bp.py         # /api/discovery/* endpoints
+│       ├── discovery_bp.py         # /api/discovery/*, /api/geoip/*
 │       ├── export_bp.py            # /api/export/* endpoints
-│       └── interface_bp.py         # /api/interface/* endpoints
+│       ├── interface_bp.py         # /api/interface/* endpoints
+│       ├── health.py               # /api/health/idle-client-baseline
+│       ├── twin_bp.py              # /api/twin, /api/flows, /api/dns, /api/activity
+│       ├── forecast_bp.py          # /api/forecast/* endpoints
+│       ├── incidents_bp.py         # /api/incidents/*, assess & apply
+│       ├── investigate_bp.py       # /api/investigate/* (Ask NetWatch)
+│       ├── blocking_bp.py          # /api/blocking/rules/*
+│       ├── parental_bp.py          # /api/parental/policies/*
+│       └── briefing_bp.py          # /api/briefing
 │
 ├── frontend/                       # Web dashboard (vanilla JS SPA)
 │   ├── index.html                  # Single-page application shell
@@ -380,21 +408,86 @@ netwatchd/
 **Input:** Bandwidth/traffic data from database
 **Output:** Alert records saved to database
 
-### 5. Backend Module (`backend/`)
+### 5. Intelligence Module (`intelligence/`)
+
+**Purpose:** Turn raw capture into understanding — flows, behaviour, threats,
+incidents, forecasts, and plain-English explanations.
+
+Everything here hangs off an in-process **event bus** rather than polling the
+database. Publishers never block: each subscription has a bounded queue and
+drops its oldest event under pressure, so a slow consumer degrades its own
+analysis instead of stalling the capture thread.
+
+**Topics:** `packet.batch` · `flow.completed` · `dns.query` · `mode.changed`
+
+#### Deterministic analysis
+
+| File | Responsibility |
+|------|---------------|
+| `event_bus.py` | Thread-safe pub/sub, dotted topics with `prefix.*` wildcards, drop-oldest backpressure |
+| `flow_normalizer.py` | Consumes `packet.batch`, maintains an active-flow table keyed by 6-tuple, flushes to `flows` on idle/max-age, emits `flow.completed`; also writes `dns_queries` and owns flow retention |
+| `twin.py` | Live network graph (nodes = devices/gateway/self/external, directed edges with byte/packet/protocol stats); re-seeds from `flows` on startup |
+| `behavior.py` | Per-device hour-of-week baselines via Welford accumulation; flags z-score deviations once a bucket has enough samples |
+| `threats.py` | Detector pack: port scan, beaconing, DNS tunnelling, rogue device, lateral movement — each alert carries `evidence[]` and a `confidence` |
+| `vpn_detector.py` | Tunnel classification from port signatures (WireGuard, OpenVPN, IKE, L2TP) plus sustained-volume heuristics; deliberately never fused into incidents |
+| `incidents.py` | Fuses alerts into incidents by device and time window; computes risk score and band |
+| `forecast.py` | Holt double-exponential smoothing over per-minute Mbps buckets, ±1.96·σ·√k bands, saturation ETA, device-count trend |
+| `device_fingerprint.py` | Passive device typing from OUI, DHCP option 12/55, mDNS/SSDP names |
+| `app_catalog.py` | Hostname → registered domain → friendly app and owning org |
+| `ip_org.py` | Offline destination-IP → org lookup (optional MaxMind ASN DB, else a bundled CIDR map) |
+
+None of the above uses a language model. Detection, forecasting and attribution
+work identically whether or not Ollama is installed.
+
+#### Language-model features
+
+| File | Responsibility |
+|------|---------------|
+| `llm_runtime.py` | Thin client for a local Ollama server over stdlib `urllib`; returns `None` (not an error) when no server answers |
+| `investigator.py` | "Ask NetWatch": tool-calling loop — the model emits `{"action":"tool"}` / `{"action":"answer"}` JSON, tools execute, results feed back, stop at first answer or `LLM_MAX_STEPS` |
+| `investigator_tools.py` | The only data surface the model may touch: three read-only, provenance-tagged tools |
+| `responder.py` | Incident verdicts (`assessment`, `confidence`, `indicators_matched`, `recommended_action`) with a deterministic `_rule_verdict()` fallback and a containment floor bounding model output |
+| `briefing.py` | Gathers window facts deterministically, then asks the model only to *narrate* them |
+
+**Three rules govern this boundary:**
+
+1. **The model narrates and recommends; it never decides.** Applying a
+   recommendation is a separate, explicit operator action routed through the
+   ordinary policy path, so it is visible on the Controls page and reversible
+   by the same button that releases any other block.
+2. **Every answer is grounded and traceable.** The investigator returns its
+   full tool trace; the briefing ships the raw facts alongside the prose.
+   Responses state their `source` (`model` vs `rules`) because those deserve
+   different trust.
+3. **Absence of a model is a supported state, not an error.** Each feature has
+   a deterministic fallback, and endpoints report `available: false` with a
+   reason rather than failing.
+
+**Input:** Events from the capture pipeline
+**Output:** Flow/DNS records, alerts, incidents, graph snapshots, forecasts, narratives
+
+### 6. Backend Module (`backend/`)
 
 **Purpose:** REST API and SSE push for frontend data access.
 
 | File | Responsibility |
 |------|---------------|
-| `app.py` | Flask application factory, CORS setup, SSE endpoint registration |
-| `helpers.py` | Shared API helper functions |
-| `middleware.py` | Request/response middleware |
-| `blueprints/` | Modular API endpoint definitions: `bandwidth_bp`, `devices_bp`, `alerts_bp`, `system_bp`, `discovery_bp`, `export_bp`, `interface_bp` |
+| `app.py` | Flask application factory, CORS setup, blueprint registration, error handlers |
+| `helpers.py` | Shared API helper functions (`success_detail`, `success_list`, `error_response`, `handle_errors`) |
+| `middleware.py` | Request/response middleware, API-key auth |
+| `blueprints/` | 15 blueprints, each registering full paths (no `url_prefix`) |
+
+Blueprints, in registration order: `devices`, `alerts`, `bandwidth`,
+`discovery`, `interface`, `system`, `export`, `health` (idle baseline), `twin`,
+`forecast`, `incidents`, `investigate`, `blocking`, `parental`, `briefing`.
+
+There is exactly one SSE endpoint — `GET /api/stream` in `bandwidth_bp` —
+bounded by `SSE_MAX_CONNECTIONS`.
 
 **Input:** HTTP requests from frontend
 **Output:** JSON responses, SSE event streams
 
-### 6. Frontend Module (`frontend/`)
+### 7. Frontend Module (`frontend/`)
 
 **Purpose:** Single-page web dashboard for visualization.
 
@@ -406,12 +499,16 @@ netwatchd/
 | `js/api.js` | API client with fetch wrappers |
 | `js/store.js` | Reactive state management |
 | `js/router.js` | Client-side hash routing |
-| `js/components/` | Dashboard, DeviceList, DeviceDetail, BandwidthChart, ProtocolChart, AlertFeed, AlertRules, Sidebar, StatsCard |
+| `js/components/` | Dashboard, DeviceList, DeviceDetail, BandwidthChart, ProtocolChart, AlertFeed, AlertRules, TopologyView, IncidentsView, ThreatsView, ForecastView, BehaviorView, ActivityView, ParentalView, AskView, Sidebar, StatsCard |
+
+Routes: `/` · `/devices` · `/alerts` · `/topology` · `/security` · `/forecast` ·
+`/behavior` · `/activity` · `/controls` · `/ask`. `/incidents` and `/threats`
+are back-compat aliases that both resolve to the merged `/security` view.
 
 **Input:** JSON data from API, SSE events
 **Output:** Visual dashboard in browser
 
-### 7. Utilities Module (`utils/`)
+### 8. Utilities Module (`utils/`)
 
 **Purpose:** Shared cross-cutting concerns.
 
@@ -458,6 +555,54 @@ netwatchd/
 5. store.js updates reactive state; components re-render
 ```
 
+### Intelligence Flow (event bus)
+
+```
+1. packet_processor publishes `packet.batch` to the event bus
+2. Subscribers fan out, each with its own bounded queue:
+   a. FlowNormalizer  — folds packets into active flows
+   b. TwinBuilder     — updates the live network graph
+3. FlowNormalizer flushes an idle/aged flow:
+   a. row written to `flows`
+   b. publishes `flow.completed`
+   c. DNS packets additionally write `dns_queries` and publish `dns.query`
+4. `flow.completed` / `dns.query` subscribers:
+   a. BehaviorAnalyzer — accumulates a 10-min window, compares to the
+      hour-of-week baseline, alerts on z-score deviation
+   b. ThreatDetector   — port scan, beaconing, DNS tunnel, rogue device,
+      lateral movement; each alert carries evidence[] + confidence
+   c. VpnDetector      — tunnel classification (never fused into incidents)
+5. Any alert reaching AlertEngine is offered to IncidentManager.triage():
+   joins an open incident for the same device within INCIDENT_WINDOW_MINUTES,
+   or opens a new one; severity, categories and risk score roll up
+6. A background assessor pre-computes a verdict for open incidents, so the
+   Security page has an assessment ready before anyone opens it
+```
+
+Publishers never block. Each subscription drops its oldest event when its queue
+fills, so a slow analyzer degrades only its own view — capture keeps running.
+`/api/twin/stats` exposes per-consumer pending/delivered/dropped counters.
+
+### AI Request Flow (Ask NetWatch)
+
+```
+1. POST /api/investigate with a natural-language question
+2. build_investigator() probes the local Ollama server
+   → not reachable? return {available: false, reason} — no failure
+3. Model receives the question plus the schema of three read-only tools
+4. Loop, up to LLM_MAX_STEPS (default 6):
+   a. model emits {"action": "tool", ...}
+   b. investigator_tools executes it against the database
+   c. provenance-tagged JSON result is fed back
+5. Model emits {"action": "answer", ...} → loop stops
+6. Response carries the answer AND the full tool trace, so every claim can be
+   checked against the data it came from
+```
+
+The same degradation contract applies everywhere: the briefing falls back to
+`compose_fallback()`, and the responder to `_rule_verdict()` with
+`source: "rules"`.
+
 ### Anomaly Detection Flow
 
 ```
@@ -502,10 +647,19 @@ netwatchd/
 | Web Framework | Flask 3.0 / Waitress | REST API (dev / production) |
 | Database | SQLite 3 (WAL mode) | Local data storage with connection pooling |
 | ML | scikit-learn (Isolation Forest) | Anomaly detection |
+| Baselines | Welford's online algorithm (stdlib) | Per-device hour-of-week profiles |
+| Forecasting | Holt double-exponential smoothing (stdlib `math`) | Bandwidth projection, saturation ETA |
+| Language model | Local Ollama over stdlib `urllib` | Narration and recommendations — optional |
+| Geo/Org lookup | MaxMind GeoLite2-ASN (optional) or bundled CIDR map | Offline destination attribution |
+| Enforcement | pydivert / WinDivert (optional), DNS sinkhole | Packet-level and DNS-level blocking |
 | Frontend | HTML5 / CSS3 / Vanilla JS | Single-page application |
 | Charts | Chart.js | Data visualization |
 | Hostname Resolver | dnspython, zeroconf | DNS and mDNS resolution |
 | System Info | psutil | CPU, memory, disk, NIC enumeration |
+
+No cloud SDK appears anywhere in this stack. The Ollama client is ~100 lines of
+`urllib` against `127.0.0.1:11434`, and every dependency above marked optional
+has a working path when it is absent.
 
 ---
 

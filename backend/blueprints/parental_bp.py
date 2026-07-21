@@ -16,6 +16,7 @@ blocking, they only apply in **hotspot** mode; the response says so plainly.
 """
 
 import logging
+from datetime import datetime, timedelta
 
 from flask import Blueprint, jsonify, request
 
@@ -110,10 +111,39 @@ def set_policy(mac):
     return jsonify({'data': get_policy(mac), 'status': _enforcement_status()})
 
 
+# A pause with no end outlives the session that created it: the live database
+# carried one set at 10:12 that was still dropping a phone's traffic hours
+# later, across restarts, with nothing in the UI to explain it. Pauses are
+# therefore bounded by default; open-ended is still available, but only by
+# asking for it.
+DEFAULT_PAUSE_MINUTES = 60
+MAX_PAUSE_MINUTES = 24 * 60
+
+
 @parental_bp.route('/api/parental/policies/<mac>/pause', methods=['POST'])
 @handle_errors
 def pause_device(mac):
-    upsert_policy(mac, paused=True)
+    payload = request.get_json(silent=True) or {}
+    minutes = payload.get('minutes', DEFAULT_PAUSE_MINUTES)
+    until = None
+
+    if minutes is None:
+        # Explicit null = "until I resume it". Deliberate, not the default.
+        pass
+    else:
+        try:
+            minutes = int(minutes)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'minutes must be a number or null'}), 400
+        if minutes < 1 or minutes > MAX_PAUSE_MINUTES:
+            return jsonify({
+                'error': f'minutes must be between 1 and {MAX_PAUSE_MINUTES}',
+            }), 400
+        until = (datetime.now() + timedelta(minutes=minutes)).strftime(
+            '%Y-%m-%d %H:%M:%S')
+
+    upsert_policy(mac, paused=True, pause_expires_at=until,
+                  clear_pause_expiry=(until is None))
     _kick_enforcer()
     return jsonify({'data': get_policy(mac), 'status': _enforcement_status()})
 

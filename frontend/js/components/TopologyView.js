@@ -391,8 +391,19 @@ export default class TopologyView {
     });
   }
 
+  /**
+   * The label under a node is always its **IP**.
+   *
+   * Labels used to prefer the hostname, which made the map inconsistent: a
+   * device whose name had resolved showed "Nothing-Phone-2a-…" while one whose
+   * name hadn't showed "192.168.137.109", so two identical devices looked like
+   * different kinds of thing. The IP is the one identifier every node on a
+   * local network always has, so it is the stable choice — and it's also what
+   * you need when cross-referencing the Devices page. The friendly name is
+   * still the first line of the hover tooltip, where there is room for it.
+   */
   _label(node) {
-    const raw = node.hostname || node.ip || node.mac || node.id;
+    const raw = node.ip || node.mac || node.hostname || node.id;
     return raw.length > 18 ? raw.slice(0, 17) + '…' : raw;
   }
 
@@ -429,9 +440,16 @@ export default class TopologyView {
     // Lead with a friendly name: hostname, or a role label for host/gateway.
     const roleName = node.type === 'self' ? 'This host'
       : node.type === 'gateway' ? 'Gateway (this host)' : null;
+    // The node label under the dot is the IP, so the tooltip leads with the
+    // friendly name — the thing the map cannot show for every node.
     const name = node.hostname || roleName || node.ip || node.mac;
     lines.push(name);
-    if (name !== node.ip && node.ip) lines.push(`IP: ${node.ip}`);
+    if (node.hostname && node.hostname !== node.ip) {
+      lines.push(`Hostname: ${node.hostname}`);
+    } else if (!node.hostname && node.type === 'device') {
+      lines.push('Hostname: not resolved yet');
+    }
+    if (node.ip) lines.push(`IP: ${node.ip}`);
     if (node.mac) lines.push(`MAC: ${node.mac}`);
     if (node.vendor) lines.push(`Vendor: ${node.vendor}`);
     const typeLabel = { self: 'This host', gateway: 'Gateway', device: 'Device',

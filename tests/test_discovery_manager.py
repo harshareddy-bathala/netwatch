@@ -51,7 +51,7 @@ class TestDiscoveryManagerUpserts:
                     INSERT INTO devices (mac_address, ip_address, ipv4_address, detected_mode, active_mode)
                     VALUES (?, ?, ?, ?, ?)
                     """,
-                    ("AA:BB:CC:DD:EE:01", "192.168.50.10", "192.168.50.10", "hotspot", None),
+                    ("aa:bb:cc:dd:ee:01", "192.168.50.10", "192.168.50.10", "hotspot", None),
                 )
                 conn.commit()
 
@@ -65,7 +65,7 @@ class TestDiscoveryManagerUpserts:
             with get_connection() as conn:
                 row = conn.execute(
                     "SELECT ip_address, ipv4_address, active_mode FROM devices WHERE mac_address = ?",
-                    ("AA:BB:CC:DD:EE:01",),
+                    ("aa:bb:cc:dd:ee:01",),
                 ).fetchone()
 
         assert row is not None
@@ -94,11 +94,11 @@ class TestDiscoveryManagerUpserts:
             with get_connection() as conn:
                 in_subnet = conn.execute(
                     "SELECT COUNT(*) AS c FROM devices WHERE mac_address = ?",
-                    ("AA:BB:CC:DD:EE:02",),
+                    ("aa:bb:cc:dd:ee:02",),
                 ).fetchone()["c"]
                 out_subnet = conn.execute(
                     "SELECT COUNT(*) AS c FROM devices WHERE mac_address = ?",
-                    ("AA:BB:CC:DD:EE:03",),
+                    ("aa:bb:cc:dd:ee:03",),
                 ).fetchone()["c"]
 
         assert in_subnet == 1
@@ -136,7 +136,7 @@ class TestDiscoveryManagerUpserts:
             with get_connection() as conn:
                 row = conn.execute(
                     "SELECT COUNT(*) AS c FROM devices WHERE mac_address = ?",
-                    ("AA:BB:CC:DD:EE:50",),
+                    ("aa:bb:cc:dd:ee:50",),
                 ).fetchone()
 
         assert row["c"] == 0
@@ -152,7 +152,7 @@ class TestDiscoveryManagerUpserts:
                     INSERT INTO devices (mac_address, ip_address, ipv4_address, detected_mode, active_mode)
                     VALUES (?, ?, ?, ?, ?)
                     """,
-                    ("AA:BB:CC:DD:EE:60", "192.168.50.66", "192.168.50.66", "public_network", "public_network"),
+                    ("aa:bb:cc:dd:ee:60", "192.168.50.66", "192.168.50.66", "public_network", "public_network"),
                 )
                 conn.commit()
 
@@ -166,7 +166,7 @@ class TestDiscoveryManagerUpserts:
             with get_connection() as conn:
                 row = conn.execute(
                     "SELECT active_mode FROM devices WHERE mac_address = ?",
-                    ("AA:BB:CC:DD:EE:60",),
+                    ("aa:bb:cc:dd:ee:60",),
                 ).fetchone()
 
         assert row["active_mode"] == "hotspot"
@@ -182,7 +182,7 @@ class TestDiscoveryManagerUpserts:
                     INSERT INTO devices (mac_address, ip_address, ipv4_address, detected_mode, active_mode)
                     VALUES (?, ?, ?, ?, ?)
                     """,
-                    ("AA:BB:CC:DD:EE:70", "192.168.50.70", "192.168.50.70", "hotspot", "hotspot"),
+                    ("aa:bb:cc:dd:ee:70", "192.168.50.70", "192.168.50.70", "hotspot", "hotspot"),
                 )
                 conn.commit()
 
@@ -197,7 +197,7 @@ class TestDiscoveryManagerUpserts:
             with get_connection() as conn:
                 row = conn.execute(
                     "SELECT active_mode FROM devices WHERE mac_address = ?",
-                    ("AA:BB:CC:DD:EE:70",),
+                    ("aa:bb:cc:dd:ee:70",),
                 ).fetchone()
 
         assert row["active_mode"] is None
@@ -213,7 +213,7 @@ class TestDiscoveryManagerUpserts:
                     INSERT INTO devices (mac_address, ip_address, ipv4_address, detected_mode, active_mode)
                     VALUES (?, ?, ?, ?, ?)
                     """,
-                    ("AA:BB:CC:DD:EE:71", "192.168.50.71", "192.168.50.71", "hotspot", "hotspot"),
+                    ("aa:bb:cc:dd:ee:71", "192.168.50.71", "192.168.50.71", "hotspot", "hotspot"),
                 )
                 conn.commit()
 
@@ -229,7 +229,7 @@ class TestDiscoveryManagerUpserts:
             with get_connection() as conn:
                 row = conn.execute(
                     "SELECT active_mode FROM devices WHERE mac_address = ?",
-                    ("AA:BB:CC:DD:EE:71",),
+                    ("aa:bb:cc:dd:ee:71",),
                 ).fetchone()
 
         assert row["active_mode"] == "hotspot"
@@ -244,7 +244,7 @@ class TestDiscoveryManagerUpserts:
                 )
                 VALUES (?, ?, ?, ?, ?, datetime('now', '-5 minutes'), datetime('now', '-5 minutes'))
                 """,
-                ("AA:BB:CC:DD:EE:72", "192.168.50.72", "192.168.50.72", "hotspot", "hotspot"),
+                ("aa:bb:cc:dd:ee:72", "192.168.50.72", "192.168.50.72", "hotspot", "hotspot"),
             )
             conn.execute(
                 """
@@ -254,7 +254,7 @@ class TestDiscoveryManagerUpserts:
                 )
                 VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                 """,
-                ("AA:BB:CC:DD:EE:73", "192.168.50.73", "192.168.50.73", "hotspot", "hotspot"),
+                ("aa:bb:cc:dd:ee:73", "192.168.50.73", "192.168.50.73", "hotspot", "hotspot"),
             )
             conn.commit()
 
@@ -264,11 +264,11 @@ class TestDiscoveryManagerUpserts:
         with get_connection() as conn:
             stale = conn.execute(
                 "SELECT active_mode FROM devices WHERE mac_address = ?",
-                ("AA:BB:CC:DD:EE:72",),
+                ("aa:bb:cc:dd:ee:72",),
             ).fetchone()["active_mode"]
             fresh = conn.execute(
                 "SELECT active_mode FROM devices WHERE mac_address = ?",
-                ("AA:BB:CC:DD:EE:73",),
+                ("aa:bb:cc:dd:ee:73",),
             ).fetchone()["active_mode"]
 
         assert stale is None
@@ -290,7 +290,7 @@ class TestDiscoveryManagerUpserts:
                 )
                 VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                 """,
-                ("AA:BB:CC:DD:EE:74", "192.168.50.74", "192.168.50.74", "hotspot", "hotspot"),
+                ("aa:bb:cc:dd:ee:74", "192.168.50.74", "192.168.50.74", "hotspot", "hotspot"),
             )
             conn.commit()
 
@@ -385,3 +385,159 @@ class TestHotspotCachePromotion:
             "source": "hostednetwork",
         }
         assert _should_promote_hotspot_cache_client(client, {"192.168.137.22"}) is False
+
+
+class TestHotspotLivenessGate:
+    """Only evidence a departed device cannot produce may mark it active.
+
+    The old gate accepted `bool(ip_val)` or `source == "hostednetwork"`.
+    Neither is freshness: Windows 10/11 Mobile Hotspot does not use the legacy
+    hosted network, so `netsh` reports no peers and the client list falls back
+    to the ARP table — where every entry carries an IP. The gate was therefore
+    always true, and a phone that left an hour ago was re-promoted on every
+    discovery cycle.
+    """
+
+    def test_wire_traffic_promotes(self):
+        from orchestration.discovery_manager import (
+            _should_promote_hotspot_cache_client,
+        )
+        client = {"mac": "22:5E:3E:1A:D0:F3", "ip": "192.168.137.142",
+                  "status": "arp", "source": "arp"}
+        assert _should_promote_hotspot_cache_client(
+            client, set(), {"22:5E:3E:1A:D0:F3"},
+        ) is True
+
+    def test_stale_arp_entry_alone_does_not_promote(self):
+        from orchestration.discovery_manager import (
+            _should_promote_hotspot_cache_client,
+        )
+        client = {"mac": "22:5E:3E:1A:D0:F3", "ip": "192.168.137.142",
+                  "status": "arp", "source": "arp"}
+        # No wire traffic, no active probe this cycle -> not here.
+        assert _should_promote_hotspot_cache_client(client, set(), set()) is False
+
+    def test_active_probe_still_promotes(self):
+        """Non-hotspot modes do probe, and that evidence remains valid."""
+        from orchestration.discovery_manager import (
+            _should_promote_hotspot_cache_client,
+        )
+        client = {"mac": "22:5E:3E:1A:D0:F3", "ip": "192.168.137.142",
+                  "status": "arp", "source": "arp"}
+        assert _should_promote_hotspot_cache_client(
+            client, {"192.168.137.142"}, set(),
+        ) is True
+
+
+class TestStorableMac:
+    def test_frame_addresses_rejected(self):
+        from orchestration.discovery_manager import _is_storable_mac
+        assert _is_storable_mac("FF:FF:FF:FF:FF:FF") is False
+        assert _is_storable_mac("00:00:00:00:00:00") is False
+        assert _is_storable_mac("01:00:5E:00:00:FB") is False   # IPv4 multicast
+        assert _is_storable_mac("33:33:00:00:00:01") is False   # IPv6 multicast
+        assert _is_storable_mac("01:80:C2:00:00:00") is False   # STP
+        assert _is_storable_mac("") is False
+
+    def test_real_device_accepted(self):
+        from orchestration.discovery_manager import _is_storable_mac
+        assert _is_storable_mac("22:5E:3E:1A:D0:F3") is True
+
+
+class TestPresenceNotRefreshedFromCache:
+    """A stale ARP entry must not keep a departed device "seen just now".
+
+    Reported live: one phone disconnected but stayed in the Devices list, and
+    the header kept counting it. `ARP cache scan found 2 devices on subnet`
+    repeated for minutes after only one client remained — Windows keeps a
+    departed client in its ARP table, and the upsert bumped `last_seen` from
+    it every cycle. The Devices list selects rows by `last_seen`, so the
+    device could never age out.
+
+    Cache-only sightings may still enrich a row (hostname, vendor, IP). They
+    may not claim the device is present.
+    """
+
+    def _seed(self, mac, ip, seconds_ago):
+        with get_connection() as conn:
+            conn.execute(
+                """INSERT INTO devices (mac_address, ip_address, ipv4_address,
+                                        detected_mode, active_mode,
+                                        first_seen, last_seen)
+                   VALUES (?, ?, ?, 'hotspot', 'hotspot',
+                           datetime('now'), datetime('now', ?))""",
+                (mac, ip, ip, f"-{seconds_ago} seconds"),
+            )
+            conn.commit()
+
+    def _last_seen_age(self, mac):
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT CAST((julianday('now') - julianday(last_seen)) * 86400 "
+                "AS INTEGER) FROM devices WHERE mac_address = ?", (mac,),
+            ).fetchone()
+        return row[0] if row else None
+
+    def test_cache_only_sighting_does_not_refresh_presence(
+            self, initialized_db, monkeypatch):
+        _set_current_mode(monkeypatch, ip_address="192.168.137.1",
+                          netmask="255.255.255.0")
+        mac, ip = "aa:bb:cc:dd:ee:80", "192.168.137.80"
+        self._seed(mac, ip, seconds_ago=600)
+
+        with patch("orchestration.discovery_manager.get_all_local_macs",
+                   return_value=set()), \
+             patch("orchestration.discovery_manager._enqueue_resolution"):
+            _upsert_arp_cache_devices(
+                [{"mac": mac.upper(), "ip": ip, "hostname": "", "vendor": ""}],
+                "hotspot",
+                set_active_mode=False,          # cache-only: weak evidence
+                local_ips=set(),
+            )
+
+        assert self._last_seen_age(mac) >= 500, (
+            "a stale ARP entry must not make a departed device look present"
+        )
+
+    def test_confirmed_client_does_refresh_presence(
+            self, initialized_db, monkeypatch):
+        _set_current_mode(monkeypatch, ip_address="192.168.137.1",
+                          netmask="255.255.255.0")
+        mac, ip = "aa:bb:cc:dd:ee:81", "192.168.137.81"
+        self._seed(mac, ip, seconds_ago=600)
+
+        with patch("orchestration.discovery_manager.get_all_local_macs",
+                   return_value=set()), \
+             patch("orchestration.discovery_manager._enqueue_resolution"):
+            _upsert_arp_cache_devices(
+                [{"mac": mac.upper(), "ip": ip, "hostname": "", "vendor": ""}],
+                "hotspot",
+                set_active_mode=True,           # fresh evidence
+                local_ips=set(),
+            )
+
+        assert self._last_seen_age(mac) <= 5
+
+    def test_cache_only_still_enriches_identity(
+            self, initialized_db, monkeypatch):
+        """Not refreshing presence must not mean discarding what we learned."""
+        _set_current_mode(monkeypatch, ip_address="192.168.137.1",
+                          netmask="255.255.255.0")
+        mac, ip = "aa:bb:cc:dd:ee:82", "192.168.137.82"
+        self._seed(mac, ip, seconds_ago=600)
+
+        with patch("orchestration.discovery_manager.get_all_local_macs",
+                   return_value=set()), \
+             patch("orchestration.discovery_manager._enqueue_resolution"):
+            _upsert_arp_cache_devices(
+                [{"mac": mac.upper(), "ip": ip, "hostname": "Galaxy-Tab",
+                  "vendor": "Samsung"}],
+                "hotspot", set_active_mode=False, local_ips=set(),
+            )
+
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT hostname, vendor FROM devices WHERE mac_address = ?",
+                (mac,)).fetchone()
+        assert row[0] == "Galaxy-Tab"
+        assert row[1] == "Samsung"

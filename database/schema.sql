@@ -129,7 +129,12 @@ CREATE TABLE IF NOT EXISTS blocking_rules (
     enabled INTEGER NOT NULL DEFAULT 1,
     hit_count INTEGER NOT NULL DEFAULT 0,
     last_hit TIMESTAMP DEFAULT NULL,
-    note TEXT DEFAULT NULL
+    note TEXT DEFAULT NULL,
+    -- How widely the packet-level block applies: 'device' drops only this
+    -- client's conversation with the domain's servers; 'network' drops those
+    -- servers for every client and for this host too. Meaningful only when
+    -- device_mac is set — a rule with no MAC is network-wide by definition.
+    scope TEXT NOT NULL DEFAULT 'device'
 );
 
 -- COALESCE keeps the network-wide rule distinct from per-device ones: NULLs
@@ -373,6 +378,12 @@ CREATE TABLE IF NOT EXISTS device_policies (
     daily_quota_mb INTEGER DEFAULT NULL,
     blocked_windows TEXT DEFAULT NULL,   -- JSON: [{"start":"22:00","end":"07:00"}]
     note TEXT DEFAULT NULL,
+    -- When a manual pause stops applying (UTC). A pause with no expiry
+    -- survives restarts silently and blackholes a device indefinitely — a
+    -- device paused during a demo was still cut off hours later, with nothing
+    -- in the UI to explain why. NULL means "until manually resumed", which is
+    -- allowed but must be chosen deliberately.
+    pause_expires_at TIMESTAMP DEFAULT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

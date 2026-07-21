@@ -77,7 +77,8 @@ export default class IncidentsView {
   destroy() {
     this._destroyed = true;
     if (this._timer) clearInterval(this._timer);
-    this._timer = null;
+    if (this._assessTimer) clearTimeout(this._assessTimer);
+    this._timer = this._assessTimer = null;
   }
 
   async _load() {
@@ -261,6 +262,15 @@ export default class IncidentsView {
     }
     panel.appendChild(timeline);
 
+    // AI assessment — loaded lazily, because it may call a local model and
+    // must never hold up the timeline the operator asked to see.
+    const ai = document.createElement('div');
+    ai.className = 'incident-ai';
+    ai.id = `incident-ai-${inc.id}`;
+    ai.innerHTML = '<div class="incident-ai__pending">Assessing…</div>';
+    panel.appendChild(ai);
+    this._loadAssessment(inc, ai);
+
     // Resolve action (open incidents only)
     if (inc.status === 'open') {
       const actions = document.createElement('div');
@@ -283,6 +293,133 @@ export default class IncidentsView {
       actions.appendChild(btn);
       panel.appendChild(actions);
     }
+  }
+
+  /**
+   * Fetch and render the AI verdict for one incident.
+   *
+   * Generous timeout and no retries: a local 3B model on CPU takes several
+   * seconds, and a retry would launch a *second* generation rather than
+   * rescue the first.
+   */
+  async _loadAssessment(inc, host, attempt = 0) {
+    const resp = await api.assessIncident(inc.id);
+    if (this._destroyed || !host.isConnected) return;
+
+    if (!resp || resp.error || !resp.data) {
+      host.innerHTML = '<div class="incident-ai__pending">Assessment unavailable.</div>';
+      return;
+    }
+    const v = resp.data;
+
+    // The background assessor hasn't reached this one yet (it was created
+    // seconds ago, or a new alert just changed it). Wait for it rather than
+    // starting a competing model run from the browser.
+    if (v.pending) {
+      host.innerHTML =
+        '<div class="incident-ai__pending">Preparing assessment…</div>';
+      if (attempt < 20) {
+        this._assessTimer = setTimeout(
+          () => this._loadAssessment(inc, host, attempt + 1), 3000);
+      } else {
+        host.innerHTML =
+          '<div class="incident-ai__pending">Assessment is taking longer '
+          + 'than usual.</div>';
+      }
+      return;
+    }
+
+    host.innerHTML = '';
+
+    const head = document.createElement('div');
+    head.className = 'incident-ai__head';
+    const label = document.createElement('span');
+    label.className = 'incident-ai__label';
+    // Say plainly whether a model wrote this or the rules did — a generated
+    // paragraph and a computed one deserve different trust.
+    label.textContent = v.source === 'model'
+      ? 'AI assessment (local model)'
+      : 'Assessment (evidence rules)';
+    head.appendChild(label);
+
+    const conf = document.createElement('span');
+    conf.className = `incident-ai__conf incident-ai__conf--${v.confidence || 'low'}`;
+    conf.textContent = `${v.confidence || 'low'} confidence`;
+    head.appendChild(conf);
+    host.appendChild(head);
+
+    const body = document.createElement('p');
+    body.className = 'incident-ai__text';
+    body.textContent = v.assessment || '';
+    host.appendChild(body);
+
+    if ((v.indicators_matched || []).length) {
+      const ind = document.createElement('div');
+      ind.className = 'incident-ai__indicators';
+      ind.textContent = `Indicators: ${v.indicators_matched.join(', ')}`;
+      host.appendChild(ind);
+    }
+
+    if (v.overruled) {
+      // Plain English. The previous wording ("the evidence requires stronger
+      // containment, so it was not lowered") described the mechanism rather
+      // than what happened, and read as jargon to anyone who hadn't written it.
+      const note = document.createElement('div');
+      note.className = 'incident-ai__overruled';
+      note.textContent =
+        `The AI wanted to ${this._plainAction(v.overruled.model_recommended)}, `
+        + `but the evidence is strong enough that NetWatch kept the safer `
+        + `action instead. The AI can raise the response, never lower it.`;
+      host.appendChild(note);
+    }
+
+    // Proposal, not action. Nothing has happened until this is clicked.
+    if (inc.status === 'open') {
+      const actions = document.createElement('div');
+      actions.className = 'incident-ai__actions';
+
+      const apply = document.createElement('button');
+      apply.className = 'btn btn--primary btn--sm';
+      apply.textContent = this._actionLabel(v.recommended_action);
+      apply.addEventListener('click', async () => {
+        apply.disabled = true;
+        apply.textContent = 'Applying…';
+        const res = await api.applyIncidentAction(inc.id, v.recommended_action);
+        if (res && !res.error) {
+          this._load();
+          this._loadDetail(inc.id);
+        } else {
+          apply.disabled = false;
+          apply.textContent = 'Failed — retry';
+        }
+      });
+      actions.appendChild(apply);
+
+      const hint = document.createElement('span');
+      hint.className = 'incident-ai__hint';
+      hint.textContent = 'Nothing is applied until you choose.';
+      actions.appendChild(hint);
+      host.appendChild(actions);
+    }
+  }
+
+  _actionLabel(action) {
+    return {
+      quarantine: 'Quarantine device (1 hour)',
+      dismiss_benign: 'Dismiss as benign',
+      monitor: 'Keep monitoring',
+      throttle: 'Throttle device',
+    }[action] || 'Apply recommendation';
+  }
+
+  /** Verb form, for use mid-sentence. */
+  _plainAction(action) {
+    return {
+      quarantine: 'cut this device off',
+      dismiss_benign: 'dismiss this as harmless',
+      monitor: 'just keep watching',
+      throttle: 'slow this device down',
+    }[action] || 'take a different action';
   }
 
   /** Merge runs of consecutive alerts that share the same type + message

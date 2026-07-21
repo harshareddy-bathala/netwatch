@@ -34,10 +34,18 @@ def _hotspot_state():
     return state
 
 
-def _add(state, mac, ip):
+def _add(state, mac, ip, seen_on_wire=True):
+    """Register a device as the packet path would.
+
+    ``last_packet_seen`` is what makes a device *active* — presence in an OS
+    cache alone no longer counts (see TestLivenessRequiresTraffic below).
+    """
+    now = time.time()
     with state._lock:
         state._devices[mac] = DeviceInfo(
-            mac_address=mac, ip_address=ip, last_seen=time.time(),
+            mac_address=mac, ip_address=ip, last_seen=now,
+            first_seen=now,
+            last_packet_seen=now if seen_on_wire else 0.0,
         )
 
 
@@ -118,3 +126,160 @@ class TestHostExcludedFromCount:
         )
         _add(state, HOST_MAC, "192.168.1.68")
         assert state.get_active_device_count() == 1
+
+
+class TestLivenessRequiresTraffic:
+    """The count must reflect who is *here*, not who the OS still remembers.
+
+    Reported live: with no phone connected the header read "1 device" forever.
+    The Windows ARP table and `netsh wlan show hostednetwork` keep listing a
+    client for minutes after it leaves, and the discovery loop re-stamped
+    `last_seen` from them on every cycle, so the ghost never aged out of the
+    active window. Traffic is the signal that cannot be faked: in hotspot mode
+    this host is the gateway, so a client that is genuinely connected puts ARP,
+    DHCP renewals and DNS on the adapter we already sniff.
+    """
+
+    def test_departed_client_still_in_arp_cache_is_not_counted(self):
+        state = _hotspot_state()
+        now = time.time()
+        with state._lock:
+            state._devices[PHONE_MAC] = DeviceInfo(
+                mac_address=PHONE_MAC, ip_address=PHONE_IP,
+                first_seen=now - 3600,
+                # Discovery keeps refreshing this from the stale ARP entry...
+                last_seen=now,
+                # ...but nothing has crossed the wire in twenty minutes.
+                last_packet_seen=now - 1200,
+            )
+        assert state.get_active_device_count() == 0
+        assert state.snapshot()["active_devices"] == 0
+
+    def test_just_joined_client_counts_before_its_first_packet(self):
+        """A phone that has associated but not yet DHCPed must not blink out."""
+        state = _hotspot_state()
+        with state._lock:
+            state._devices[PHONE_MAC] = DeviceInfo(
+                mac_address=PHONE_MAC, ip_address=PHONE_IP,
+                first_seen=time.time(), last_seen=time.time(),
+                last_packet_seen=0.0,          # never seen on the wire yet
+            )
+        assert state.get_active_device_count() == 1
+
+    def test_discovery_grace_expires(self):
+        """...but that grace is bounded by first_seen, which discovery never
+        refreshes — so a silent device cannot ride it forever."""
+        state = _hotspot_state()
+        now = time.time()
+        with state._lock:
+            state._devices[PHONE_MAC] = DeviceInfo(
+                mac_address=PHONE_MAC, ip_address=PHONE_IP,
+                first_seen=now - (state.DISCOVERY_GRACE_SECONDS + 60),
+                last_seen=now,                 # discovery keeps this fresh
+                last_packet_seen=0.0,
+            )
+        assert state.get_active_device_count() == 0
+
+    def test_active_client_is_counted(self):
+        state = _hotspot_state()
+        _add(state, PHONE_MAC, PHONE_IP, seen_on_wire=True)
+        assert state.get_active_device_count() == 1
+
+    def test_packet_path_stamps_the_wire_timestamp(self):
+        """End-to-end: a real packet must make the device count."""
+        state = _hotspot_state()
+        state.update_from_batch([{
+            "source_mac": PHONE_MAC, "dest_mac": "aa:bb:cc:dd:ee:99",
+            "source_ip": PHONE_IP, "dest_ip": "57.144.52.34",
+            "bytes": 1500, "protocol": "TCP", "direction": "upload",
+            "device_name": "", "vendor": "", "dest_vendor": "",
+            "timestamp": "2026-07-20 20:00:00",
+        }])
+        dev = state._devices[PHONE_MAC]
+        assert dev.last_packet_seen > 0
+        assert state.get_active_device_count() == 1
+
+    def test_discovery_upsert_does_not_stamp_the_wire_timestamp(self):
+        """Discovery may make a device visible; it may not vouch for liveness."""
+        state = _hotspot_state()
+        state.upsert_discovered_device(
+            mac_address=PHONE_MAC, ip_address=PHONE_IP,
+            hostname="Nothing-Phone-2a-Plus", vendor="",
+        )
+        assert state._devices[PHONE_MAC].last_packet_seen == 0.0
+
+    def test_packet_active_macs_reports_only_wire_traffic(self):
+        state = _hotspot_state()
+        _add(state, PHONE_MAC, PHONE_IP, seen_on_wire=True)
+        _add(state, "16:c9:99:2b:3a:27", "192.168.137.178", seen_on_wire=False)
+        assert state.get_packet_active_macs(300) == {PHONE_MAC}
+
+
+class TestHostIdentityRefresh:
+    """The host must be recognised even if its adapter appeared after startup.
+
+    Reported live: dashboard read "2 devices" with one phone connected. The
+    hotspot's ICS adapter is created when the hotspot is switched on, which is
+    normally AFTER NetWatch starts — so the one-shot `get_all_local_macs()`
+    taken at startup did not contain it, and the host counted itself as a
+    client for the whole session.
+
+    The IP fallback could not catch it either: the host's entry is created from
+    its own IPv6 link-local traffic, so its address is `fe80::…` and never
+    equals the `our_ip` (192.168.137.1) being compared against.
+    """
+
+    HOST_ICS_MAC = "2e:d0:43:a5:22:70"
+    HOST_LINK_LOCAL = "fe80::8bea:fca5:1f82:816b"
+
+    def _state_started_before_hotspot(self, monkeypatch):
+        state = InMemoryDashboardState()
+        # Startup: hotspot adapter does not exist yet.
+        state.set_mode_context(
+            host_macs=set(), our_mac="", gateway_mac="",
+            own_traffic_only=False, gateway_mac_exclude=True,
+            our_ip=HOST_IP,
+        )
+        # Later: the adapter exists, so a live enumeration would see it.
+        monkeypatch.setattr(
+            state, "_refresh_local_identity_locked",
+            lambda: (setattr(state, "_local_macs", {self.HOST_ICS_MAC}),
+                     setattr(state, "_local_ips", {HOST_IP, self.HOST_LINK_LOCAL})),
+        )
+        return state
+
+    def test_host_excluded_by_late_appearing_adapter_mac(self, monkeypatch):
+        state = self._state_started_before_hotspot(monkeypatch)
+        _add(state, self.HOST_ICS_MAC, self.HOST_LINK_LOCAL)
+        _add(state, PHONE_MAC, PHONE_IP)
+        assert state.get_active_device_count() == 1
+        assert state.snapshot()["active_devices"] == 1
+
+    def test_host_excluded_by_its_ipv6_link_local(self, monkeypatch):
+        """Even under an unrecognised MAC, a local address gives it away."""
+        state = self._state_started_before_hotspot(monkeypatch)
+        _add(state, "aa:bb:cc:00:00:99", self.HOST_LINK_LOCAL)
+        _add(state, PHONE_MAC, PHONE_IP)
+        assert state.get_active_device_count() == 1
+
+    def test_discovery_cannot_readd_the_host(self, monkeypatch):
+        state = self._state_started_before_hotspot(monkeypatch)
+        state.upsert_discovered_device(
+            mac_address=self.HOST_ICS_MAC, ip_address=HOST_IP, hostname="me",
+        )
+        assert self.HOST_ICS_MAC not in state._devices
+
+    def test_a_real_client_is_still_counted(self, monkeypatch):
+        state = self._state_started_before_hotspot(monkeypatch)
+        _add(state, PHONE_MAC, PHONE_IP)
+        assert state.get_active_device_count() == 1
+
+    def test_failed_enumeration_does_not_unmask_the_host(self):
+        """A psutil failure must not suddenly make the host look like a client."""
+        state = InMemoryDashboardState()
+        state.set_mode_context(
+            host_macs={self.HOST_ICS_MAC}, our_mac="", gateway_mac="",
+            own_traffic_only=False, gateway_mac_exclude=True, our_ip=HOST_IP,
+        )
+        _add(state, self.HOST_ICS_MAC, self.HOST_LINK_LOCAL)
+        assert state.get_active_device_count() == 0

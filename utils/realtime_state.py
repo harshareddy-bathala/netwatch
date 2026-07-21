@@ -50,6 +50,13 @@ class DeviceInfo:
     packet_count: int = 0
     control_packet_count: int = 0
     last_seen: float = 0.0  # time.time()
+    # Last time a PACKET from/to this device crossed the wire. Deliberately
+    # separate from ``last_seen``, which discovery also stamps: the Windows ARP
+    # table and ``netsh`` keep reporting a phone for minutes after it leaves, so
+    # a single timestamp could not tell "this client is here" apart from "the OS
+    # still remembers it". Presence makes a device *visible*; only traffic makes
+    # it *active*. 0.0 means "never seen on the wire" (discovery-only row).
+    last_packet_seen: float = 0.0
     first_seen: float = 0.0
     today_bytes: int = 0
     today_sent: int = 0
@@ -119,11 +126,25 @@ class InMemoryDashboardState:
     # Maximum devices to track in memory
     MAX_DEVICES = 10_000
 
+    # A device discovery has found but that has never sent a packet still counts
+    # as active for this long after it first appeared, so a phone that has just
+    # associated is not briefly missing from the header count while it DHCPs.
+    # Bounded by ``first_seen``, which is stamped once at creation and never
+    # refreshed — a departed client therefore ages out of the grace and cannot
+    # be kept alive by discovery re-reading it from the ARP table.
+    DISCOVERY_GRACE_SECONDS = 30
+
     def __init__(self):
         self._lock = threading.Lock()
 
         # Device registry: MAC → DeviceInfo
         self._devices: Dict[str, DeviceInfo] = {}
+
+        # Live view of this machine's own adapters, refreshed on a TTL so an
+        # adapter created after startup (the hotspot's) is still recognised.
+        self._local_macs: set = set()
+        self._local_ips: set = set()
+        self._local_ident_at: float = 0.0
 
         # Today's running totals
         self._today_bytes: int = 0
@@ -234,6 +255,9 @@ class InMemoryDashboardState:
                 self._gateway_macs = set()
             # Host IP for IP-based exclusion (hotspot: host = gateway)
             self._our_ip = our_ip or ""
+            # A new mode means new adapters — re-read local identity now
+            # rather than trusting whatever was cached for the old one.
+            self._local_ident_at = 0.0
             # Cache local hostname for device_name leak filtering
             try:
                 import socket
@@ -280,6 +304,50 @@ class InMemoryDashboardState:
             pass
         return {"macs": macs, "ips": ips, "hostname": hostname}
 
+    # How long a local-adapter enumeration stays trusted. Cheap enough to
+    # redo periodically, and adapters genuinely come and go: the hotspot's
+    # ICS adapter only exists while the hotspot is on.
+    _LOCAL_IDENT_TTL = 30.0
+
+    def _refresh_local_identity_locked(self) -> None:
+        """Re-read this machine's own adapter MACs and IPs, on a TTL.
+
+        Host identity used to be captured **once at startup**. If NetWatch was
+        started before the hotspot adapter finished appearing — the normal
+        order, since you start the app and then connect a phone — the ICS
+        adapter's MAC was missing from the exclusion set for the entire
+        session. The host then counted itself as a client and the dashboard
+        read "2 devices" with one phone connected.
+
+        The IP fallback could not save it either: the host's entry is created
+        from its own IPv6 link-local traffic, so its address is ``fe80::…``
+        and never equals the ``our_ip`` we compare against. Hence matching on
+        *every* local address, not just the capture interface's.
+
+        Caller must hold ``self._lock``.
+        """
+        now = time.time()
+        if (now - self._local_ident_at) < self._LOCAL_IDENT_TTL:
+            return
+        self._local_ident_at = now
+        macs, ips = set(), set()
+        try:
+            import psutil
+            for _name, addrs in psutil.net_if_addrs().items():
+                for a in addrs:
+                    fam = getattr(a.family, "name", "")
+                    if fam in ("AF_LINK", "AF_PACKET") and a.address:
+                        macs.add(a.address.lower().replace("-", ":"))
+                    elif fam in ("AF_INET", "AF_INET6") and a.address:
+                        ips.add(a.address.split("%")[0].lower())
+        except Exception:
+            # Keep whatever we had; a failed enumeration must not suddenly
+            # make the host look like a client.
+            return
+        macs.discard("00:00:00:00:00:00")
+        ips.discard("0.0.0.0")
+        self._local_macs, self._local_ips = macs, ips
+
     def _is_host_device(self, dev) -> bool:
         """True when this in-memory device row is the monitoring host itself.
 
@@ -299,10 +367,50 @@ class InMemoryDashboardState:
         # whole method exists to fix.
         if self._own_traffic_only and mac and mac in self._allowed_macs:
             return False
+
+        # Identity captured at mode-set time.
         if mac and (mac in self._host_macs or mac in self._gateway_macs):
             return True
         if ip and self._our_ip and ip == self._our_ip:
             return True
+
+        # Live identity: catches adapters that appeared after startup (the
+        # hotspot's ICS adapter is created when the hotspot is turned on) and
+        # matches on every local address, so the host's own IPv6 link-local
+        # traffic is recognised as the host rather than as a new client.
+        self._refresh_local_identity_locked()
+        if mac and mac in self._local_macs:
+            return True
+        if ip and ip.lower() in self._local_ips:
+            return True
+        return False
+
+    def _is_active_device(self, dev, cutoff: float, now: float = None) -> bool:
+        """True when *dev* is genuinely present, not merely remembered.
+
+        Presence in an OS table is not liveness. The Windows ARP cache and
+        ``netsh wlan show hostednetwork`` keep listing a phone for minutes after
+        it disconnects, and the discovery loop re-stamps ``last_seen`` from them
+        every cycle — which is why the dashboard read "1 device" with nothing
+        connected, forever, once any phone had ever joined.
+
+        Traffic is the evidence that settles it: in hotspot mode this host is
+        the gateway, so every client's ARP, DHCP renewal, DNS and keepalive
+        crosses the adapter we sniff. A device that is really there cannot stay
+        silent for a whole window; one that has left cannot fake a packet.
+
+        Caller must hold ``self._lock``.
+        """
+        if dev.last_packet_seen >= cutoff:
+            return True
+        # Just-discovered client that has not transmitted yet.
+        if dev.last_packet_seen == 0.0:
+            now = time.time() if now is None else now
+            # Never let the grace outlive the caller's own active window — a
+            # caller asking "who was here in the last second" must not be told
+            # about a device that has been silent for half a minute.
+            grace = min(self.DISCOVERY_GRACE_SECONDS, max(0.0, now - cutoff))
+            return (now - dev.first_seen) <= grace
         return False
 
     def set_device_active_window(self, seconds: int) -> None:
@@ -314,12 +422,34 @@ class InMemoryDashboardState:
         with self._lock:
             self._device_active_window = max(10, seconds)
 
+    def get_packet_active_macs(self, max_age_seconds: int) -> set:
+        """MACs that have actually put a packet on the wire recently.
+
+        This is the authoritative "is it really there" signal, and the only one
+        not derived from an OS cache that outlives the device. The discovery
+        loop uses it to decide which hotspot clients may be marked active.
+        """
+        cutoff = time.time() - max(1, int(max_age_seconds))
+        with self._lock:
+            return {
+                mac for mac, dev in self._devices.items()
+                if dev.last_packet_seen >= cutoff
+            }
+
     def remove_stale_devices(self, max_age_seconds: int = 60) -> int:
         """Remove devices not seen within *max_age_seconds*.
 
         Called periodically by the discovery loop in hotspot mode so that
         disconnected clients disappear from the dashboard within a minute.
         Returns the number of devices removed.
+
+        Deliberately keyed on ``last_seen`` (which discovery also refreshes)
+        rather than the stricter packet signal used for *counting*. Evicting on
+        packet evidence would let discovery immediately re-create the row from
+        the same stale ARP entry with a fresh ``first_seen``, handing it a new
+        grace period and making a departed phone flicker in and out of the
+        count. Ghost rows instead linger, uncounted and invisible, until
+        ``prune_stale_devices`` collects them.
         """
         now = time.time()
         cutoff = now - max_age_seconds
@@ -401,6 +531,13 @@ class InMemoryDashboardState:
 
         with self._lock:
             if mac_norm in self._host_macs or mac_norm in self._gateway_macs:
+                return
+            # Same live-identity check the count uses, so discovery cannot
+            # re-add the host under an adapter that appeared after startup.
+            self._refresh_local_identity_locked()
+            if mac_norm in self._local_macs:
+                return
+            if ip_address and ip_address.lower() in self._local_ips:
                 return
             if self._own_traffic_only and mac_norm not in self._allowed_macs:
                 return
@@ -584,6 +721,7 @@ class InMemoryDashboardState:
                                     dev.bytes_sent += byte_count
                                     dev.packet_count += 1
                                 dev.last_seen = now
+                                dev.last_packet_seen = now
                                 if is_control_traffic:
                                     dev.today_control_sent += byte_count
                                     dev.today_control_bytes += byte_count
@@ -643,6 +781,7 @@ class InMemoryDashboardState:
                                     dev.bytes_received += byte_count
                                     dev.packet_count += 1
                                 dev.last_seen = now
+                                dev.last_packet_seen = now
                                 if is_control_traffic:
                                     dev.today_control_received += byte_count
                                     dev.today_control_bytes += byte_count
@@ -734,7 +873,8 @@ class InMemoryDashboardState:
             # counted itself and read one higher than the Devices page.
             active_devices = [
                 d for d in self._devices.values()
-                if d.last_seen >= cutoff and not self._is_host_device(d)
+                if self._is_active_device(d, cutoff, now)
+                and not self._is_host_device(d)
             ]
             active_count = len(active_devices)
 
@@ -794,7 +934,7 @@ class InMemoryDashboardState:
         with self._lock:
             active = [
                 d for d in self._devices.values()
-                if d.last_seen >= cutoff
+                if self._is_active_device(d, cutoff, now)
             ]
             active.sort(
                 key=lambda d: d.bytes_total_app,
@@ -811,10 +951,12 @@ class InMemoryDashboardState:
         Excludes the monitoring host, so this agrees with the Devices page and
         with the DB-side count.
         """
-        cutoff = time.time() - (minutes * 60)
+        now = time.time()
+        cutoff = now - (minutes * 60)
         with self._lock:
             return sum(1 for d in self._devices.values()
-                       if d.last_seen >= cutoff and not self._is_host_device(d))
+                       if self._is_active_device(d, cutoff, now)
+                       and not self._is_host_device(d))
 
     def get_device_by_ip(self, ip: str, include_control: bool = False) -> Optional[dict]:
         """Look up a device by IP address and return a dict snapshot.

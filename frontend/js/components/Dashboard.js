@@ -5,15 +5,33 @@
  */
 
 import store from '../store.js';
+
 import StatsCard from './StatsCard.js';
 import BandwidthChart from './BandwidthChart.js';
 import ProtocolChart from './ProtocolChart.js';
 import { formatBytes, formatMbps, escapeHtml } from '../utils/formatters.js';
 
+/**
+ * Last briefing, kept at module scope so it survives navigating away and back.
+ *
+ * The router builds a NEW Dashboard on every visit, so per-instance state gave
+ * two bad behaviours: the paragraph vanished and was regenerated on every
+ * return, and each mount started its own 10-minute timer — several overlapping
+ * timers made it appear to refresh every 2-3 minutes. Anchoring on a shared
+ * timestamp means "every 10 minutes" is measured from the last *actual*
+ * briefing, no matter how many times the view has been mounted.
+ */
+const briefingCache = { at: 0, data: null };
+
 export default class Dashboard {
+  /** How often the briefing re-reads the last 10 minutes on its own. */
+  static BRIEFING_INTERVAL_MS = 10 * 60 * 1000;
+
   constructor(container) {
     this.container = container;
     this._unsubs = [];
+    this._briefingTimer = null;
+    this._briefingInFlight = false;
     this._cards = {};
     this._bandwidthChart = null;
     this._protocolChart = null;
@@ -79,6 +97,19 @@ export default class Dashboard {
           </div>
         </div>
 
+        <div class="briefing-card" id="briefing-card">
+          <div class="briefing-card__head">
+            <div class="briefing-card__title-group">
+              <span class="briefing-card__title">What just happened?</span>
+              <span class="briefing-card__meta" id="briefing-meta"></span>
+            </div>
+            <button class="btn btn--sm" id="briefing-btn">Refresh now</button>
+          </div>
+          <div class="briefing-card__body" id="briefing-body">
+            <span class="briefing-card__hint">Reading the last 10 minutes…</span>
+          </div>
+        </div>
+
         <div class="dashboard-grid__bottom">
           <div class="top-devices" id="top-devices-widget">
             <div class="top-devices__title">Top Devices</div>
@@ -94,6 +125,7 @@ export default class Dashboard {
     // (subscription is deferred until charts are ready to prevent
     // data arriving before chart objects exist)
     requestAnimationFrame(() => {
+      this._wireBriefing();
       this._bandwidthChart = new BandwidthChart('bandwidth-canvas');
       this._bandwidthChart.init();
 
@@ -139,6 +171,113 @@ export default class Dashboard {
   }
 
   /* ── Store handlers ──────────────────────────── */
+
+  /**
+   * Wire the "What just happened?" briefing.
+   *
+   * Refreshes itself every 10 minutes so the card always reflects the last 10
+   * minutes without anyone asking — it is a status panel, not a chat prompt.
+   * "Refresh now" is there for the moment you actually want to look, e.g.
+   * right after something happened on stage.
+   *
+   * Not tied to the SSE tick: generating a paragraph can take seconds on a
+   * local model, and regenerating it every few seconds would queue model
+   * calls behind each other and make the text flicker.
+   */
+  _wireBriefing() {
+    const btn = this.container.querySelector('#briefing-btn');
+    const body = this.container.querySelector('#briefing-body');
+    if (!btn || !body) return;
+
+    btn.addEventListener('click', () => this._refreshBriefing(true));
+
+    const age = Date.now() - briefingCache.at;
+    if (briefingCache.data && age < Dashboard.BRIEFING_INTERVAL_MS) {
+      // Still current — show it straight away. Returning to the dashboard
+      // should not throw the last answer away and run the model again.
+      this._renderBriefing(briefingCache.data);
+    } else {
+      this._refreshBriefing(false);
+    }
+
+    // Tick often, but only actually refresh once the interval has genuinely
+    // elapsed since the last briefing — so duplicate timers cannot compound
+    // into a faster cadence.
+    this._briefingTimer = setInterval(() => {
+      if (Date.now() - briefingCache.at >= Dashboard.BRIEFING_INTERVAL_MS) {
+        this._refreshBriefing(true);
+      }
+      this._renderBriefingMeta();
+    }, 30000);
+  }
+
+  async _refreshBriefing(force) {
+    const btn = this.container.querySelector('#briefing-btn');
+    const body = this.container.querySelector('#briefing-body');
+    if (!btn || !body || this._briefingInFlight) return;
+
+    this._briefingInFlight = true;
+    btn.disabled = true;
+    if (force) btn.textContent = 'Thinking…';
+    body.classList.add('briefing-card__body--loading');
+
+    let resp;
+    try {
+      const api = (await import('../api.js')).default;
+      resp = await api.getBriefing(10, force);
+    } finally {
+      this._briefingInFlight = false;
+    }
+
+    // The view may have been torn down while the model was thinking.
+    if (!body.isConnected) return;
+    btn.disabled = false;
+    btn.textContent = 'Refresh now';
+    body.classList.remove('briefing-card__body--loading');
+
+    if (!resp || resp.error || !resp.data) {
+      body.innerHTML =
+        '<span class="briefing-card__hint">Briefing unavailable.</span>';
+      return;
+    }
+
+    briefingCache.data = resp.data;
+    briefingCache.at = Date.now();
+    this._renderBriefing(resp.data);
+  }
+
+  _renderBriefing(d) {
+    const body = this.container.querySelector('#briefing-body');
+    if (!body) return;
+    body.innerHTML = '';
+
+    const text = document.createElement('p');
+    text.className = 'briefing-card__text';
+    text.textContent = d.narrative || '';
+    body.appendChild(text);
+
+    // Name the author. A model-written paragraph and a computed one are both
+    // fine to show, but the viewer should know which they are reading.
+    const src = document.createElement('span');
+    src.className = 'briefing-card__source';
+    src.textContent = d.source === 'model'
+      ? 'Written by the local model from live data'
+      : 'Computed directly from live data';
+    body.appendChild(src);
+
+    this._renderBriefingMeta();
+  }
+
+  _renderBriefingMeta() {
+    const meta = this.container.querySelector('#briefing-meta');
+    if (!meta || !briefingCache.at) return;
+    const elapsed = Date.now() - briefingCache.at;
+    const ageMin = Math.floor(elapsed / 60000);
+    const nextMin = Math.max(0, Math.ceil(
+      (Dashboard.BRIEFING_INTERVAL_MS - elapsed) / 60000));
+    const when = ageMin < 1 ? 'just now' : `${ageMin} min ago`;
+    meta.textContent = `updated ${when} · auto-refresh in ${nextMin} min`;
+  }
 
   _onStats(stats) {
     if (!stats) return;
@@ -306,6 +445,10 @@ export default class Dashboard {
 
   destroy() {
     this._unsubs.forEach(fn => fn());
+    // Timers outlive the DOM otherwise, and a navigated-away dashboard would
+    // keep firing model calls in the background.
+    if (this._briefingTimer) clearInterval(this._briefingTimer);
+    this._briefingTimer = null;
     if (this._bandwidthChart) this._bandwidthChart.destroy();
     if (this._protocolChart) this._protocolChart.destroy();
   }

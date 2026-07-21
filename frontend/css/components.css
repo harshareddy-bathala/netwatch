@@ -2061,3 +2061,151 @@
   font-size: var(--font-size-xs);
   white-space: nowrap;
 }
+
+
+/* ==========================================================================
+   AI assessment card (Security page) + briefing card (Dashboard)
+   ==========================================================================
+   NOTE: this project's tokens are --color-bg-*, --spacing-*, --border-radius*
+   and --color-accent-primary. An earlier version of this block invented
+   --color-surface / --space-4 / --color-accent, none of which exist, so the
+   cards rendered completely unstyled. */
+
+.incident-ai {
+  margin-top: var(--spacing-md);
+  padding: var(--spacing-md);
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--color-accent-primary);
+  border-radius: var(--border-radius);
+  background: var(--color-bg-tertiary);
+}
+
+.incident-ai__pending {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.incident-ai__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-sm);
+}
+
+.incident-ai__label {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+}
+
+.incident-ai__conf {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  padding: 2px 8px;
+  border-radius: var(--border-radius-sm);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.incident-ai__conf--high   { background: rgba(239, 68, 68, 0.15);   color: var(--color-error); }
+.incident-ai__conf--medium { background: rgba(245, 158, 11, 0.15);  color: var(--color-warning); }
+.incident-ai__conf--low    { background: rgba(160, 160, 160, 0.15); color: var(--color-text-secondary); }
+
+.incident-ai__text {
+  margin: 0 0 var(--spacing-sm);
+  font-size: var(--font-size-base);
+  line-height: 1.6;
+  color: var(--color-text-primary);
+}
+
+.incident-ai__indicators {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+}
+
+.incident-ai__overruled {
+  margin-top: var(--spacing-sm);
+  padding: var(--spacing-sm);
+  border-radius: var(--border-radius-sm);
+  background: rgba(245, 158, 11, 0.10);
+  color: var(--color-warning);
+  font-size: var(--font-size-xs);
+  line-height: 1.5;
+}
+
+.incident-ai__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  margin-top: var(--spacing-md);
+  flex-wrap: wrap;
+}
+
+.incident-ai__hint {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+}
+
+/* -- Dashboard briefing --------------------------------------------------- */
+
+.briefing-card {
+  grid-column: 1 / -1;
+  padding: var(--spacing-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-lg);
+  background: var(--color-bg-secondary);
+}
+
+.briefing-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-sm);
+}
+
+.briefing-card__title-group {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-sm);
+  min-width: 0;
+}
+
+.briefing-card__title {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+/* "Updated 2 min ago · next in 8 min" — the card refreshes itself, so it has
+   to say when it last did, or a stale paragraph reads as a live one. */
+.briefing-card__meta {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+}
+
+.briefing-card__body {
+  min-height: 1.5rem;
+}
+
+.briefing-card__text {
+  margin: 0 0 var(--spacing-sm);
+  font-size: var(--font-size-base);
+  line-height: 1.65;
+  color: var(--color-text-primary);
+}
+
+.briefing-card__hint,
+.briefing-card__source {
+  display: block;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+}
+
+.briefing-card__body--loading .briefing-card__text {
+  opacity: 0.55;
+}

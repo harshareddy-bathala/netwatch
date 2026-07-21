@@ -59,14 +59,33 @@ def normalize_mac(raw: Optional[str]) -> Optional[str]:
     return m
 
 
+VALID_SCOPES = ("device", "network")
+
+
+def normalize_scope(raw: Optional[str], device_mac: Optional[str]) -> str:
+    """Resolve the requested enforcement breadth.
+
+    A rule with no MAC is network-wide by definition — there is no device to
+    scope it to — so it reports 'network' whatever was asked for. Otherwise an
+    unrecognised value falls back to 'device': the narrow reading, because
+    over-blocking silently is the failure that hurts.
+    """
+    if not device_mac:
+        return "network"
+    s = (raw or "").strip().lower()
+    return s if s in VALID_SCOPES else "device"
+
+
 def add_rule(domain: str, device_mac: Optional[str] = None,
-             note: Optional[str] = None) -> Optional[dict]:
+             note: Optional[str] = None,
+             scope: Optional[str] = None) -> Optional[dict]:
     """Create (or re-enable) a blocking rule.  Returns the rule, or None if
     *domain* isn't a valid DNS name."""
     d = normalize_domain(domain)
     if not d:
         return None
     mac = normalize_mac(device_mac)
+    scope_val = normalize_scope(scope, mac)
     try:
         with get_connection() as conn:
             cur = conn.cursor()
@@ -74,13 +93,14 @@ def add_rule(domain: str, device_mac: Optional[str] = None,
             # that is what "block this again" means from the UI.
             cur.execute(
                 """
-                INSERT INTO blocking_rules (domain, device_mac, note)
-                VALUES (?, ?, ?)
+                INSERT INTO blocking_rules (domain, device_mac, note, scope)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT(domain, COALESCE(device_mac, '')) DO UPDATE SET
                     enabled = 1,
-                    note = COALESCE(excluded.note, note)
+                    note = COALESCE(excluded.note, note),
+                    scope = excluded.scope
                 """,
-                (d, mac, note),
+                (d, mac, note, scope_val),
             )
             conn.commit()
             cur.execute(
@@ -131,6 +151,9 @@ def get_rules(enabled_only: bool = False) -> List[dict]:
             cur.execute(f"""
                 SELECT r.id, r.created_at, r.domain, r.device_mac, r.enabled,
                        r.hit_count, r.last_hit, r.note,
+                       -- A MAC-less rule is network-wide however it is stored.
+                       CASE WHEN r.device_mac IS NULL OR r.device_mac = ''
+                            THEN 'network' ELSE r.scope END AS scope,
                        COALESCE(NULLIF(d.hostname, ''),
                                 NULLIF(d.device_name, '')) AS device_name
                 FROM blocking_rules r

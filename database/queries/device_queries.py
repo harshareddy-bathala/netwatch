@@ -151,10 +151,8 @@ logger = logging.getLogger(__name__)
 _device_cache = TTLCache(ttl_seconds=15)
 
 
-def _normalize_mac(mac: str) -> str:
-    if not mac:
-        return ""
-    return mac.lower().replace("-", ":")
+# Canonical storage form for a MAC — the one definition, in utils.
+from utils.network_utils import normalize_mac as _normalize_mac  # noqa: E402
 
 
 def _to_int(value) -> int:

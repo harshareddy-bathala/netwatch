@@ -151,6 +151,109 @@ def _get_domain_blocklist():
         return _domain_blocklist
 
 
+def _mac_ip_map(macs) -> dict:
+    """Resolve MACs → their *current* IPs for packet-level blocking.
+
+    Bounded by ``last_seen``: a lease is only usable while the device that
+    holds it is still around. Without the bound we would enforce against
+    whatever address the device had days ago — and DHCP hands those out again,
+    so the block would land on an innocent device that inherited the IP.
+    """
+    if not macs:
+        return {}
+    try:
+        from database.connection import get_connection
+        from config import HOTSPOT_STALE_DEVICE_SECONDS
+        out = {}
+        with get_connection() as conn:
+            cur = conn.cursor()
+            ph = ",".join("?" for _ in macs)
+            cur.execute(
+                f"""SELECT LOWER(mac_address),
+                           COALESCE(ipv4_address, ip_address) AS ip
+                    FROM devices
+                    WHERE LOWER(mac_address) IN ({ph})
+                      AND last_seen >= datetime('now', ?)""",
+                (*(m.lower() for m in macs),
+                 f"-{max(60, int(HOTSPOT_STALE_DEVICE_SECONDS))} seconds"),
+            )
+            for mac, ip in cur.fetchall():
+                if ip:
+                    out[mac] = ip
+        return out
+    except Exception:
+        return {}
+
+
+def _macs_to_ips(macs) -> set:
+    """Blocked MACs → the set of their current IPs."""
+    return set(_mac_ip_map(macs).values())
+
+
+def _resolve_domain_targets(blocklist=None):
+    """Resolve enabled domain rules → (pairs, network_wide_server_ips).
+
+    DNS sinkholing alone does not block a phone that uses DoH or reconnects
+    over QUIC to a cached IP (observed: blocking instagram.com left the app
+    working). Dropping the domain's server IPs at the packet level does.
+
+    The split is what keeps that from being collateral. A rule naming a device
+    yields ``(client_ip, server_ip)`` pairs, so only that client's conversation
+    dies; a rule with no device — or one explicitly scoped 'network' — yields
+    bare server IPs that drop for everyone, this host included. Previously
+    every rule produced the second kind, which is why blocking a site for one
+    phone also cut it off for the laptop running NetWatch.
+    """
+    pairs, network_ips = set(), set()
+    blocklist = blocklist or _get_domain_blocklist()
+    try:
+        from database.queries.blocking_queries import get_rules
+        from packet_capture.sni_ip_learner import sni_ip_learner
+
+        rules = [r for r in (get_rules() or [])
+                 if r.get('enabled') and r.get('domain')]
+        if not rules:
+            sni_ip_learner.set_blocked_domains(set())
+            return pairs, network_ips
+
+        # Watch the whole app family on the wire, so the SNI learner picks up
+        # CDN hosts (scontent.cdninstagram.com) our own resolver never sees —
+        # that is what actually stops the app.
+        all_domains = {r['domain'] for r in rules}
+        sni_ip_learner.set_blocked_domains(blocklist.expand(all_domains))
+
+        # One lookup for every device named by a rule, recency-bounded.
+        rule_macs = {(r.get('device_mac') or '').lower()
+                     for r in rules if r.get('device_mac')}
+        mac_ips = _mac_ip_map(rule_macs) if rule_macs else {}
+
+        for rule in rules:
+            domain = rule['domain']
+            family = blocklist.expand({domain})
+            # Resolved IPs (immediate, approximate) + observed IPs (accurate,
+            # learned from this family's real connections).
+            servers = (blocklist.ips_for({domain})
+                       | sni_ip_learner.learned_ips(family))
+            if not servers:
+                continue
+
+            mac = (rule.get('device_mac') or '').lower()
+            scope = (rule.get('scope') or '').lower()
+            if mac and scope != 'network':
+                client_ip = mac_ips.get(mac)
+                if not client_ip:
+                    # Device not currently present — nothing to enforce
+                    # against, and guessing an address would block someone
+                    # else. The DNS sinkhole still covers it if it returns.
+                    continue
+                pairs.update((client_ip, s) for s in servers)
+            else:
+                network_ips |= servers
+    except Exception as exc:
+        logger.debug("domain blocklist resolve failed: %s", exc)
+    return pairs, network_ips
+
+
 def apply_blocking_rules_now() -> dict:
     """Re-resolve enabled domain rules and push them to the packet blocker
     immediately, instead of waiting up to a full policy-sweep interval.
@@ -164,29 +267,19 @@ def apply_blocking_rules_now() -> dict:
     if traffic is None:
         return {"applied": False, "reason": "packet blocker not running"}
     try:
-        from database.queries.blocking_queries import get_rules
-        from packet_capture.sni_ip_learner import sni_ip_learner
-        domains = {r.get('domain') for r in (get_rules() or [])
-                   if r.get('enabled') and r.get('domain')}
-        blocklist = _get_domain_blocklist()
-        if domains:
-            # Arm the wire-side learner immediately so the very next connection
-            # the app makes reveals (and then blocks) its real CDN address.
-            sni_ip_learner.set_blocked_domains(blocklist.expand(domains))
-            domain_ips = blocklist.ips_for(domains) | sni_ip_learner.learned_ips()
-        else:
-            sni_ip_learner.set_blocked_domains(set())
-            domain_ips = set()
+        pairs, network_ips = _resolve_domain_targets()
 
-        # Preserve any device-level blocks (pause/quota) already enforced, so
-        # applying a domain rule never accidentally un-pauses a device.
-        existing = set(traffic.get_status().get("blocked_ips") or [])
-        prior_domain_ips = getattr(traffic, "_domain_ips", set())
-        device_ips = existing - prior_domain_ips
+        # Preserve device-level blocks (pause/quota) already enforced, so
+        # applying a domain rule never accidentally un-pauses a device. Those
+        # live in their own bucket now, so this is a plain read-back rather
+        # than the old subtract-the-domain-IPs guesswork.
+        device_ips = set(traffic.get_status().get("blocked_ips") or [])
 
-        traffic.set_blocked_ips(device_ips | domain_ips)
-        traffic._domain_ips = domain_ips
-        return {"applied": True, "domains": len(domains), "ips": len(domain_ips),
+        traffic.set_policy(device_ips=device_ips, pairs=pairs,
+                           server_ips=network_ips)
+        return {"applied": True,
+                "device_scoped_pairs": len(pairs),
+                "network_wide_ips": len(network_ips),
                 "mode": traffic.get_status().get("mode")}
     except Exception as exc:
         logger.warning("Immediate blocking-rule apply failed: %s", exc)
@@ -198,57 +291,14 @@ def start_policy_enforcer(interval: int = 5):
     # continuously, and each one only takes effect on the next sweep. A 30s
     # sweep left the app working for half a minute after it was "blocked".
     # The sweep is cheap — small indexed queries plus a TTL-cached resolve.
-    """Evaluate device policies (parental controls / quotas, W5) and push the
-    currently-blocked MAC set to the DNS blocker. Daemon thread; cheap."""
-    def _macs_to_ips(macs):
-        """Resolve blocked MACs → their current IPs for packet-level blocking."""
-        if not macs:
-            return set()
-        try:
-            from database.connection import get_connection
-            ips = set()
-            with get_connection() as conn:
-                cur = conn.cursor()
-                ph = ",".join("?" for _ in macs)
-                cur.execute(
-                    f"SELECT COALESCE(ipv4_address, ip_address) AS ip FROM devices "
-                    f"WHERE LOWER(mac_address) IN ({ph})",
-                    tuple(m.lower() for m in macs),
-                )
-                for row in cur.fetchall():
-                    ip = row[0]
-                    if ip:
-                        ips.add(ip)
-            return ips
-        except Exception:
-            return set()
+    """Evaluate device policies (parental controls / quotas, W5) and push
+    the currently-blocked set to both blockers. Daemon thread; cheap.
 
-    def _domain_rule_ips(blocklist):
-        """Resolve enabled domain-blocking rules → server IPs to drop.
-
-        DNS sinkholing alone does not block a phone that uses DoH or reconnects
-        over QUIC to a cached IP (observed: blocking instagram.com left the app
-        working). Dropping the domain's server IPs at the packet level does.
-        """
-        try:
-            from database.queries.blocking_queries import get_rules
-            from packet_capture.sni_ip_learner import sni_ip_learner
-            domains = {r.get('domain') for r in (get_rules() or [])
-                       if r.get('enabled') and r.get('domain')}
-            if not domains:
-                sni_ip_learner.set_blocked_domains(set())
-                return set()
-            # Watch the whole app family on the wire, so the SNI learner picks
-            # up CDN hosts (scontent.cdninstagram.com) our own resolver never
-            # sees — that is what actually stops the app.
-            family = blocklist.expand(domains)
-            sni_ip_learner.set_blocked_domains(family)
-            # Resolved IPs (immediate, approximate) + observed IPs (accurate,
-            # learned from the client's real connections).
-            return blocklist.ips_for(domains) | sni_ip_learner.learned_ips()
-        except Exception as exc:
-            logger.debug("domain blocklist resolve failed: %s", exc)
-            return set()
+    Resolution helpers live at module level so the immediate-apply path
+    (``apply_blocking_rules_now``) uses exactly the same logic as the
+    sweep — the two drifting apart is how "Block" behaved differently
+    depending on whether you had waited for a sweep.
+    """
 
     def _loop():
         from database.queries.policy_queries import (
@@ -265,32 +315,94 @@ def start_policy_enforcer(interval: int = 5):
 
                 # Domain rules are enforced whether or not any device policy
                 # exists — they are independent features.
-                domain_ips = _domain_rule_ips(blocklist) if traffic else set()
+                pairs, network_ips = (
+                    _resolve_domain_targets(blocklist) if traffic else (set(), set())
+                )
 
-                if traffic:
-                    # Remember which IPs came from domain rules so an immediate
-                    # apply can tell them apart from device-level blocks.
-                    traffic._domain_ips = domain_ips
+                # Device-level blocks: pause / quota / bedtime. These are
+                # whole-device by intent, unlike domain rules.
+                device_ips = set()
+                if policies:
+                    usage = get_usage_today_by_mac()
+                    blocked = evaluate_blocked_macs(policies, usage)
+                    macs = set(blocked.keys())
+                    device_ips = _macs_to_ips(macs)
+                else:
+                    macs = set()
 
-                if not policies:
-                    if dns: dns.set_blocked_macs(set())
-                    if traffic: traffic.set_blocked_ips(domain_ips)
-                    continue
-                usage = get_usage_today_by_mac()
-                blocked = evaluate_blocked_macs(policies, usage)
-                macs = set(blocked.keys())
-                # DNS sinkhole (fast, name-level) + real packet drop (IP-level):
-                # paused/over-quota client IPs UNION blocked domains' server IPs.
+                # DNS sinkhole (fast, name-level) + real packet drop.
                 if dns:
                     dns.set_blocked_macs(macs)
                 if traffic:
-                    traffic.set_blocked_ips(_macs_to_ips(macs) | domain_ips)
+                    traffic.set_policy(device_ips=device_ips, pairs=pairs,
+                                       server_ips=network_ips)
+                    # Apply any widening the blocker deferred to protect the
+                    # kernel handle from per-sweep churn.
+                    traffic.flush_pending()
             except Exception as e:
                 logger.debug("Policy enforcer error: %s", e)
 
     t = threading.Thread(target=_loop, name="PolicyEnforcer", daemon=True)
     t.start()
     state.policy_enforcer_thread = t
+    return True
+
+
+def start_incident_assessor(interval: int = 20):
+    """Assess new and updated security incidents in the background.
+
+    An assessment that only starts when someone opens the incident means
+    staring at "Assessing…" for several seconds at exactly the moment you
+    wanted an answer. Since a verdict depends only on the incident's evidence,
+    it can be produced the moment that evidence appears.
+
+    Work is driven by the content fingerprint, so this runs the model only for
+    an incident that is genuinely new or has just had another alert fused into
+    it — an idle network costs nothing.
+    """
+    def _loop():
+        from database.queries import incident_queries
+        from intelligence.responder import (
+            assessment_store, build_responder, incident_fingerprint,
+        )
+
+        responder = None
+        logger.info("Incident assessor started (AI verdicts prepared in background)")
+        while not state.shutdown_event.wait(timeout=interval):
+            try:
+                open_incidents = incident_queries.get_incidents(
+                    status="open", limit=25) or []
+                if not open_incidents:
+                    continue
+
+                for row in open_incidents:
+                    if state.shutdown_event.is_set():
+                        return
+                    incident = incident_queries.get_incident(row["id"])
+                    if not incident:
+                        continue
+                    fp = incident_fingerprint(incident)
+                    if assessment_store.get(incident["id"], fp) is not None:
+                        continue        # current verdict already stored
+
+                    # Build the responder lazily: probing for a local model on
+                    # every sweep would be wasteful when nothing has changed.
+                    if responder is None:
+                        responder = build_responder()
+                    verdict = responder.assess(incident)
+                    verdict["cached"] = False
+                    assessment_store.put(incident["id"], fp, verdict)
+                    logger.info(
+                        "Assessed incident #%s -> %s (%s)",
+                        incident["id"], verdict.get("recommended_action"),
+                        verdict.get("source"),
+                    )
+            except Exception as e:
+                logger.debug("Incident assessor error: %s", e)
+
+    t = threading.Thread(target=_loop, name="IncidentAssessor", daemon=True)
+    t.start()
+    state.incident_assessor_thread = t
     return True
 
 

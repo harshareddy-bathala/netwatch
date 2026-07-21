@@ -1,257 +1,317 @@
-# NetWatch v3.0.0 — Intelligent Network Traffic Analysis System
+# NetWatch — AI-First Network Intelligence
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-641-green.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-1304-green.svg)](#testing)
 
-## What's New in v3.0.0
+NetWatch watches your network, explains what it sees in plain English, and lets
+you act on it — entirely on your own machine. It captures packets with Scapy,
+tracks devices, fuses alerts into incidents, forecasts congestion, answers
+questions about your own traffic, and enforces per-device controls.
 
-- **Accurate per-mode device filtering** — Multicast MACs (IPv4/IPv6/STP) are now rejected by the device tracker, eliminating phantom devices in WiFi Client and other modes.
-- **Public IP exclusion** — Public IPs are no longer assigned to device objects in the SSE top-devices payload; only private/RFC1918 addresses are shown.
-- **Stable bandwidth charts** — The DB-to-live data boundary uses a rounded 10-second cutoff, eliminating oscillation. The false zero-point bridge insertion has been removed.
-- **Graceful Ctrl+C shutdown** — The signal handler now raises `KeyboardInterrupt` to break out of blocking server calls, ensuring clean shutdown within 2–3 seconds on all platforms.
-- **CSS variable fix** — Corrected `--text-secondary` to `--color-text-secondary` for consistent theming.
-- **Hostname resolver improvement** — The local machine's own IP is resolved instantly to its hostname without DNS lookup.
+**Nothing leaves your network.** Storage is local SQLite. The optional AI
+features run against a local [Ollama](https://ollama.com) model. There is no
+cloud account, no API key, and no telemetry.
+
+---
 
 ## Overview
 
-NetWatch is a production-ready, real-time network traffic monitoring and analysis system. It automatically detects your network connection type, captures packets with Scapy, tracks devices, calculates bandwidth, detects anomalies with machine learning, and displays everything on a live web dashboard.
+```
+Packets (Scapy/Npcap)
+   → packet_capture/   capture, parse, batch, write
+   → event bus         packet.batch · flow.completed · dns.query · mode.changed
+   → intelligence/     flows · twin · behavior · threats · incidents · forecast
+   → backend/          Flask REST + SSE
+   → frontend/         vanilla-JS SPA
+```
 
-### Key Features
+Everything above the event bus is *deterministic*. The language model is used
+only to **narrate and recommend** — never to decide. Every AI answer is
+grounded in tool output the UI shows you, every recommendation is a proposal a
+human approves, and every AI feature degrades to a deterministic fallback when
+no model is running.
 
-- **Auto Mode Detection** — Hotspot, Ethernet, Public Network, Port Mirror
-- **Real-time Dashboard** — Bandwidth charts (SSE push @ 3s), device list, protocol distribution, alert feed
-- **New Device Alerts** — MAC-based detection of unknown devices connecting to your hotspot
-- **Anomaly Detection** — Isolation Forest ML algorithm flags unusual traffic patterns
-- **Health Score** — Composite 0–100 network health rating
-- **Alert System** — Threshold + ML alerts with deduplication and lifecycle management
-- **Disconnected Detection** — Gracefully pauses capture when network drops (e.g., hotspot turned off)
-- **Cross-platform** — Windows, Linux, macOS with platform-specific deployment packages
-- **Zero Cloud** — Everything runs locally with SQLite; no external services required
+### Monitoring
+
+- **Auto mode detection** — Hotspot, Ethernet, Wi-Fi Client, Port Mirror, Public Network
+- **Real-time dashboard** — bandwidth, devices, protocols and alerts pushed over SSE
+- **Device tracking** — MAC-keyed identity, OUI vendor, hostname resolution, passive fingerprinting (phone / laptop / TV / IoT / printer …)
+- **Flow + DNS telemetry** — connections normalised into flow records with retention
+- **Activity attribution** — which *site and app* a client is using, resolved offline from SNI/DNS via a bundled app catalog
+- **Digital twin** — live who-talks-to-whom graph, rendered on the Topology page
+
+### Detection
+
+- **Threat detectors** — port scan, C2 beaconing, DNS tunnelling, rogue device, lateral movement — each alert carries its evidence and a confidence
+- **Behavior baselines** — per-device hour-of-week profiles (Welford); deviations flagged by z-score
+- **Anomaly detection** — Isolation Forest over traffic features
+- **VPN / tunnel detection** — port signatures plus sustained-volume heuristics against an offline org database
+- **Incident fusion** — related alerts for a device collapse into one incident with a risk score and band, so you triage 3 incidents instead of 300 alerts
+
+### Intelligence
+
+- **Ask NetWatch** — natural-language questions answered by a tool-calling loop over three read-only tools; the answer ships with the full tool trace so you can check it
+- **Incident assessment** — the responder proposes `monitor` / `throttle` / `quarantine` / `dismiss_benign` with matched indicators; **nothing is auto-applied**
+- **Briefing** — "what just happened in the last 10 minutes", facts gathered deterministically and only narrated by the model
+- **Forecasting** — Holt double-exponential smoothing with confidence bands and a link-saturation ETA (pure math, no ML dependency)
+
+### Control
+
+- **Domain blocking** — per-device or network-wide, enforced by DNS sinkhole and, where available, kernel-level packet drop (WinDivert)
+- **Parental controls** — daily data quotas, blocked time windows, and bounded pauses per device
+- **Honest enforcement status** — every control endpoint reports whether it is *actually* being enforced and why not, rather than silently doing nothing
 
 ---
 
 ## Prerequisites
 
-> **Python 3.11 or later is required.** NetWatch has been tested and validated with Python 3.11+. Earlier versions are not supported.
-
-### Required Software
+> **Python 3.11 or later is required.**
 
 | Software | Platform | Purpose | Download |
 |----------|----------|---------|----------|
 | **Python 3.11+** | All | Runtime | [python.org](https://www.python.org/downloads/) |
 | **Npcap** | Windows | Packet capture driver | [npcap.com](https://npcap.com/) |
-| **pip** | All | Package manager | Bundled with Python 3.11 |
+| **Ollama** | All | *Optional* — local LLM for AI features | [ollama.com](https://ollama.com) |
+| **pydivert** | Windows | *Optional* — packet-level blocking | `pip install pydivert` |
 
-### Platform Notes
+### Platform notes
 
-- **Windows:** Install Npcap with **"WinPcap API-compatible Mode"** checked. **Run NetWatch as Administrator** (right-click terminal → "Run as administrator"). Packet capture requires raw socket access which is only available with elevated privileges.
-- **Linux:** **Run with `sudo`**. Install `libpcap-dev` if not present (`apt install libpcap-dev`). Root is required for raw packet capture.
-- **macOS:** **Run with `sudo`**. Xcode command-line tools may be required (`xcode-select --install`).
+- **Windows:** install Npcap with **"WinPcap API-compatible Mode"** checked, and run NetWatch from a terminal launched **as Administrator**.
+- **Linux:** run with `sudo`; install `libpcap-dev` if missing (`apt install libpcap-dev`).
+- **macOS:** run with `sudo`; Xcode command-line tools may be required (`xcode-select --install`).
 
-> **Important:** NetWatch will refuse to start without Administrator/root privileges. This is a hard requirement for packet capture and cannot be bypassed.
+> NetWatch refuses to start without Administrator/root privileges. Raw packet
+> capture requires it and this cannot be bypassed.
 
 ---
 
 ## Quick Start
 
-### 1. Verify Python 3.11
-
-```bash
-python --version
-# Expected: Python 3.11.x
-```
-
-If you have multiple Python versions, use the specific Python 3.11 path:
-```bash
-# Windows
-py -3.11 --version
-
-# Linux / macOS
-python3.11 --version
-```
-
-### 2. Clone & Create Virtual Environment
-
 ```bash
 git clone https://github.com/your-team/netwatch.git
 cd netwatch
 
-# Create venv with Python 3.11 specifically
-python -m venv venv               # If 'python' is 3.11
-py -3.11 -m venv venv             # Windows with multiple Python versions
-python3.11 -m venv venv           # Linux / macOS with multiple versions
-```
-
-### 3. Activate & Install
-
-```bash
-# Activate the virtual environment
-venv\Scripts\activate             # Windows (cmd)
-venv\Scripts\Activate.ps1         # Windows (PowerShell)
+# Virtual environment (use py -3.11 / python3.11 if you have several Pythons)
+python -m venv venv
+venv\Scripts\activate             # Windows
 source venv/bin/activate          # Linux / macOS
 
-# Install dependencies
 pip install -r requirements.txt
-
-# Initialize the database
 python database/init_db.py
 ```
 
-### 4. Run NetWatch
-
-> **Administrator / root access is mandatory.** Packet capture requires raw socket
-> privileges. NetWatch will exit with an error if not elevated.
+Run it (elevated):
 
 ```bash
-# Windows — Run terminal as Administrator first
-python main.py
-
-# Linux / macOS
-sudo venv/bin/python main.py
-
-# With options
-python main.py --port 8080 --log-level DEBUG --no-capture
+python main.py                    # Windows — Administrator terminal
+sudo venv/bin/python main.py      # Linux / macOS
 ```
 
-Open **http://localhost:5000** in your browser.
+Open **http://localhost:5000**.
+
+### Enabling the AI features (optional)
+
+The dashboard works fully without this. Ask NetWatch, incident assessment and
+the briefing narrative need a local model:
+
+```bash
+# Install Ollama from ollama.com, then:
+ollama pull llama3.2:3b
+```
+
+That is the whole setup — NetWatch talks to `http://127.0.0.1:11434` over plain
+HTTP with no SDK and no API key. `GET /api/investigate/status` tells you whether
+a model is reachable. When it isn't:
+
+| Feature | Without a model |
+|---|---|
+| Ask NetWatch | reports `available: false` with install instructions |
+| Incident assessment | deterministic rule verdict (`source: "rules"`) |
+| Briefing | facts composed into a sentence without narration |
+| Everything else | unaffected — detection and forecasting never use the model |
 
 ### Docker
 
-> Packet capture requires `network_mode: host` and `NET_ADMIN` + `NET_RAW`
-> capabilities. Bridge networking will **not** see host traffic.
+> Packet capture requires `network_mode: host` and `NET_ADMIN` + `NET_RAW`.
+> Bridge networking will **not** see host traffic.
 
 ```bash
-# Set a secret key (required in production)
 export SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
-
-# Build and start
 docker compose up -d
-
-# View logs
 docker compose logs -f netwatch
 ```
 
-The included `docker-compose.yml` already sets `network_mode: host`,
-`cap_add: [NET_ADMIN, NET_RAW]`, and persists the database in a named
-volume.  If you use a custom compose file, ensure those settings are
-present or NetWatch will not be able to capture packets.
+The bundled `docker-compose.yml` already sets those and persists the database in
+a named volume.
 
-### CLI Options
+### CLI options
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--port` | 5000 | Web server port |
 | `--host` | 127.0.0.1 | Bind address |
-| `--no-capture` | off | Start without packet capture |
+| `--mode` | auto | Pin capture mode: `auto`, `hotspot`, `ethernet`, `public_network`, `port_mirror` |
+| `--no-capture` | off | Dashboard only, no packet capture |
+| `--reset-db` | off | Clear all stored data before starting |
 | `--log-level` | INFO | DEBUG, INFO, WARNING, ERROR |
-| `--log-file` | auto | Custom log file path |
+| `--log-file` | auto | Log to a specific file path |
+
+`--mode` exists because port-mirror auto-detection is unreliable; pin it for
+SPAN setups and for demos. It can also be set via `NETWATCH_FORCE_MODE`.
 
 ---
 
 ## Project Structure
 
 ```
-netWatch/
-├── main.py                    # Entry point (CLI, logging, server start)
-├── config.py                  # Central configuration (all settings)
-├── requirements.txt           # Dependencies
-├── orchestration/             # Application lifecycle management
-│   ├── state.py               # Shared singletons & sync primitives
-│   ├── shutdown.py            # Graceful shutdown with watchdog
-│   ├── mode_handler.py        # Mode change callbacks, capture lifecycle
-│   ├── discovery_manager.py   # Device discovery loop, ARP/ping scanning
-│   └── background_tasks.py    # Cleanup, anomaly detector, watchdog
+netwatch/
+├── main.py                    # Entry point (CLI, logging, startup wiring)
+├── config.py                  # Central configuration — every setting, env-overridable
+├── orchestration/             # Application lifecycle
+│   ├── state.py               #   Shared singletons & sync primitives
+│   ├── shutdown.py            #   Graceful shutdown with watchdog
+│   ├── mode_handler.py        #   Mode-change callbacks, capture lifecycle
+│   ├── discovery_manager.py   #   Device discovery loop, ARP/ping scanning
+│   └── background_tasks.py    #   Intelligence startup, cleanup, policy enforcement
 ├── packet_capture/            # Capture engine & mode detection
-│   ├── capture_engine.py      # Scapy-based packet sniffing
-│   ├── database_writer.py     # Async DB writer thread
-│   ├── packet_processor.py    # Batch processing & queue
-│   ├── bandwidth_calculator.py# Sliding-window bandwidth
-│   ├── parser.py              # Protocol identification
-│   ├── mode_detector.py       # Auto network mode detection
-│   ├── interface_manager.py   # Interface enumeration & callbacks
-│   ├── filter_manager.py      # BPF filter validation
-│   ├── network_discovery.py   # ARP scanning
-│   └── modes/                 # Mode implementations
-│       ├── base_mode.py       #   Abstract base
-│       ├── hotspot_mode.py    #   Mobile hotspot
-│       ├── ethernet_mode.py   #   Wired connection
-│       ├── public_network_mode.py # WiFi client / public Wi-Fi
-│       └── port_mirror_mode.py#   SPAN port
+│   ├── capture_engine.py      #   Scapy-based sniffing
+│   ├── packet_processor.py    #   Batch processing & queue
+│   ├── database_writer.py     #   Async DB writer thread
+│   ├── parser.py              #   Protocol identification
+│   ├── quic_sni.py            #   QUIC/TLS SNI extraction
+│   ├── sni_ip_learner.py      #   Maps server IPs back to domains
+│   ├── dns_blocker.py         #   DNS sinkhole enforcement
+│   ├── traffic_blocker.py     #   Packet-level blocking (WinDivert/ARP)
+│   ├── mode_detector.py       #   Auto network mode detection
+│   └── modes/                 #   hotspot · ethernet · public_network · port_mirror
+├── intelligence/              # The AI-first layer  (see docs/ARCHITECTURE.md)
+│   ├── event_bus.py           #   In-process pub/sub, drop-oldest, never blocks
+│   ├── flow_normalizer.py     #   packet.batch → flow records + DNS log
+│   ├── twin.py                #   Live network graph
+│   ├── behavior.py            #   Hour-of-week baselines, z-score deviations
+│   ├── threats.py             #   Detector pack with evidence + confidence
+│   ├── vpn_detector.py        #   Tunnel classification
+│   ├── incidents.py           #   Alert→incident fusion, risk scoring
+│   ├── forecast.py            #   Holt smoothing, saturation ETA
+│   ├── device_fingerprint.py  #   Passive device typing
+│   ├── app_catalog.py         #   Hostname → app/org
+│   ├── ip_org.py              #   Offline IP → owning org
+│   ├── investigator.py        #   Ask NetWatch tool-calling loop
+│   ├── investigator_tools.py  #   The only data the model may touch
+│   ├── responder.py           #   Incident verdicts + rule fallback
+│   ├── briefing.py            #   "What just happened"
+│   └── llm_runtime.py         #   Local Ollama client; None when unavailable
 ├── database/                  # Data layer
-│   ├── connection.py          # SQLite connection pool (WAL)
-│   ├── models.py              # Data models
-│   ├── schema.sql             # Table definitions
-│   ├── init_db.py             # DB initialization
-│   ├── rollup.py              # Traffic data rollup
-│   └── queries/               # Separated query modules
-│       ├── device_queries.py  #   Device CRUD & counting
-│       ├── network_filters.py #   Subnet/IP/MAC validation
-│       ├── packet_store.py    #   Packet batch writes
-│       ├── stats_queries.py   #   Statistics queries
-│       ├── traffic_queries.py #   Traffic data queries
-│       └── maintenance.py     #   Cleanup & retention
-├── alerts/                    # Alert system
-│   ├── alert_engine.py        # Threshold engine
-│   ├── deduplication.py       # Cooldown-based throttle
-│   └── anomaly_detector.py    # IsolationForest ML
+│   ├── connection.py          #   SQLite connection pool (WAL)
+│   ├── schema.sql             #   Table definitions
+│   ├── migrations/            #   Ordered schema migrations
+│   └── queries/               #   device · flow · incident · blocking · policy · stats …
+├── alerts/                    # Threshold engine, dedup, IsolationForest anomalies
 ├── backend/                   # Flask REST API
-│   ├── app.py                 # Application factory
-│   └── blueprints/            # Modular API endpoints
-├── frontend/                  # SPA dashboard
-│   ├── index.html             # Single page app
-│   ├── css/                   # Modular CSS
-│   └── js/                    # Components & utils
-├── utils/                     # Shared utilities
-│   ├── health_monitor.py      # System health metrics
-│   ├── realtime_state.py      # In-memory dashboard state
-│   └── query_cache.py         # TTL cache for queries
-├── tests/                     # 624 pytest tests
-├── deploy/                    # Deployment scripts
-│   ├── create_windows_installer.py
-│   ├── create_deb_package.sh
-│   └── create_macos_app.sh
+│   ├── app.py                 #   Application factory
+│   └── blueprints/            #   15 blueprints — see docs/API_REFERENCE.md
+├── frontend/                  # Vanilla-JS SPA
+│   ├── index.html
+│   ├── css/
+│   └── js/components/         #   Dashboard · Devices · Alerts · Topology · Security
+│                              #   · Forecast · Behavior · Activity · Controls · Ask
+├── utils/                     # Health monitor, realtime state, cache, metrics
+├── tests/                     # 1304 pytest tests
+├── scripts/                   # Demo preflight, detector eval, red-team demo
+├── evaluation/                # Detector & faithfulness evaluation harness
+├── deploy/                    # Windows installer, .deb, .app, systemd, nginx
 └── docs/                      # Documentation
 ```
 
 ---
 
+## Dashboard Pages
+
+| Page | Route | What it shows |
+|---|---|---|
+| Dashboard | `/` | Live bandwidth, protocol mix, top devices, health score, briefing |
+| Devices | `/devices` | Every known device — vendor, type, usage; rename them |
+| Alerts | `/alerts` | Raw alert feed with filters, plus custom alert rules |
+| Topology | `/topology` | Digital-twin graph of who talks to whom |
+| Security | `/security` | Incidents ranked by risk, with evidence and AI assessment |
+| Forecast | `/forecast` | Bandwidth projection, confidence band, saturation ETA |
+| Behavior | `/behavior` | Learned per-device baselines and deviations |
+| Activity | `/activity` | Live per-client site/app feed |
+| Controls | `/controls` | Blocking rules, quotas, schedules, pauses |
+| Ask NetWatch | `/ask` | Natural-language questions with the tool trace |
+
+`/incidents` and `/threats` are back-compat aliases for `/security`, which
+merges both.
+
+---
+
 ## Network Modes
 
-NetWatch auto-detects your connection and optimizes capture:
+NetWatch auto-detects your connection and adapts its capture strategy:
 
-| Mode | Trigger | Visibility | Promiscuous | ARP Scan | ARP Cache |
-|------|---------|------------|-------------|----------|-----------|
-| **Hotspot** | Mobile hotspot / ICS active | All connected client devices | ON | Yes | Yes |
-| **Wi-Fi Client** | Connected to WiFi or phone hotspot | Own traffic only (OS filters other stations) | OFF | No | Yes |
-| **Ethernet** | Wired NIC with default gateway | Local subnet traffic via ARP discovery | ON | Yes | Yes |
-| **Port Mirror** | SPAN port detected (>50% foreign MACs in captured traffic) | Full network segment — all devices and all traffic | ON | Yes | Yes |
-| **Public Network** | Campus/hotel WiFi (fallback when no other mode matches) | Own traffic only; passive ARP cache only, no active probing | OFF | No | Yes |
-| **Disconnected** | No active network interface or no IP address | Capture paused; dashboard remains accessible | — | No | No |
+| Mode | Trigger | Visibility | Promiscuous | ARP Scan |
+|------|---------|------------|-------------|----------|
+| **Hotspot** | Mobile hotspot / ICS active | All connected clients | ON | Yes |
+| **Wi-Fi Client** | Connected to WiFi or phone hotspot | Own traffic only (OS filters other stations) | OFF | No |
+| **Ethernet** | Wired NIC with default gateway | Local subnet via ARP discovery | ON | Yes |
+| **Port Mirror** | SPAN port (>50% foreign MACs seen) | Full segment — all devices, all traffic | ON | Yes |
+| **Public Network** | Campus/hotel WiFi (fallback) | Own traffic only; passive ARP cache, no probing | OFF | No |
+| **Disconnected** | No interface or no IP | Capture paused; dashboard stays up | — | No |
 
-**Supported connection types:**
-- WiFi client (connecting to any WiFi/hotspot)
-- Mobile hotspot (sharing internet from your phone/laptop)
-- Ethernet cable (host, client, or direct link)
-- USB tethering (RNDIS/NCM — detected as Ethernet)
-- Switch port mirroring (SPAN)
-- Public/campus WiFi networks
-- VPN connections (tunnels classified correctly, captures on physical interface)
+**Enforcement caveat:** blocking and parental controls only bite when clients
+route *through* this host — i.e. **hotspot mode** — unless packet-level blocking
+(WinDivert) is available. The API says so explicitly in the `status.reason`
+field of every control response rather than pretending a saved rule is an
+applied one.
+
+**Supported connections:** Wi-Fi client, mobile hotspot, Ethernet (host, client
+or direct link), USB tethering (RNDIS/NCM → detected as Ethernet), switch port
+mirroring, public/campus Wi-Fi, and VPN tunnels (classified correctly, captured
+on the physical interface).
+
+---
+
+## Configuration
+
+Every setting lives in `config.py` and can be overridden by an environment
+variable or a `.env` file. Copy `.env.example` to `.env` to start. Common ones:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `NETWATCH_ENV` | development | `development` \| `production` \| `testing` |
+| `FLASK_HOST` / `FLASK_PORT` | 127.0.0.1 / 5000 | Bind address |
+| `SECRET_KEY` | — | **Required in production** |
+| `NETWATCH_AUTH_ENABLED` | false | Require an API key on the API |
+| `NETWATCH_API_KEY` | — | The key, when auth is on |
+| `DATABASE_PATH` | `netwatch.db` | SQLite location |
+| `NETWATCH_FORCE_MODE` | — | Pin capture mode (same as `--mode`) |
+| `NETWATCH_LLM_MODEL` | `llama3.2:3b` | Ollama model for AI features |
+| `NETWATCH_LLM_TIMEOUT` | 180 | Seconds before giving up on the model |
+| `NETWATCH_LLM_MAX_STEPS` | 6 | Tool-call budget per question |
+| `FORECAST_LINK_CAPACITY_MBPS` | 0 | Set your link speed to get saturation ETAs |
+| `INCIDENT_WINDOW_MINUTES` | 30 | How long an incident stays open to new alerts |
+
+Threat thresholds, flow timeouts, behavior windows, retention limits and pool
+sizes are likewise env-overridable — see the grouped sections in `config.py`.
 
 ---
 
 ## Testing
 
 ```bash
-# Full suite
-pytest tests/ -v
+pytest tests/ -v                                    # full suite (1304 tests)
+pytest tests/ --cov=. --cov-report=term-missing     # with coverage
+pytest tests/test_threats.py -v                     # one module
+```
 
-# With coverage
-pytest tests/ --cov=. --cov-report=term-missing
+Evaluation and demo harnesses live in `scripts/`:
 
-# Specific category
-pytest tests/test_mode_detection.py -v
-pytest tests/test_performance.py -v
+```bash
+python scripts/eval_detectors.py       # detector precision/recall
+python scripts/eval_faithfulness.py    # are AI answers grounded in tool output?
+python scripts/demo_preflight.py       # pre-demo environment check
+python scripts/redteam_demo.py         # synthetic attack traffic
 ```
 
 ---
@@ -260,24 +320,29 @@ pytest tests/test_performance.py -v
 
 | Platform | Method | Script |
 |----------|--------|--------|
-| Windows | PyInstaller → .exe + installer batch | `deploy/create_windows_installer.py` |
-| Linux | .deb package + systemd service | `deploy/create_deb_package.sh` |
+| Windows | PyInstaller → .exe + installer | `deploy/create_windows_installer.py` |
+| Linux | .deb package + systemd unit | `deploy/create_deb_package.sh` |
 | macOS | .app bundle | `deploy/create_macos_app.sh` |
 
-See [Production Deployment Guide](docs/PRODUCTION_DEPLOYMENT.md) for details.
+See the [Production Deployment Guide](docs/PRODUCTION_DEPLOYMENT.md).
 
 ---
 
 ## Documentation
 
 | Document | Description |
-|----------|-------------|
-| [Architecture](docs/ARCHITECTURE.md) | System design, data flow, component diagram |
-| [API Reference](docs/API_REFERENCE.md) | All REST endpoints with request/response examples |
-| [User Manual](docs/USER_MANUAL.md) | Dashboard walkthrough, modes, alerts, FAQ |
-| [Production Deployment](docs/PRODUCTION_DEPLOYMENT.md) | Installation, services, security, backups |
-| [Troubleshooting](docs/TROUBLESHOOTING.md) | Common issues and platform-specific fixes |
+|---|---|
+| [Architecture](docs/ARCHITECTURE.md) | System design, event flow, intelligence layer, threading |
+| [API Reference](docs/API_REFERENCE.md) | Every REST endpoint with request/response examples |
+| [User Manual](docs/USER_MANUAL.md) | Dashboard walkthrough, pages, alerts, FAQ |
 | [Setup Guide](docs/SETUP_GUIDE.md) | Detailed installation for all connection types |
+| [Production Deployment](docs/PRODUCTION_DEPLOYMENT.md) | Services, security, backups |
+| [Security](docs/SECURITY.md) | Threat model, auth, hardening |
+| [Troubleshooting](docs/TROUBLESHOOTING.md) | Common issues and platform fixes |
+| [Port Mirror Setup](docs/PORT_MIRROR_SETUP.md) | Configuring a SPAN port |
+| [Ethernet Cable Guide](docs/ETHERNET_CABLE_GUIDE.md) | Direct-link and wired setups |
+| [Idle Client Baseline](docs/IDLE_CLIENT_BASELINE.md) | What "idle" should look like |
+| [Demo Runbook](docs/DEMO_RUNBOOK.md) | Running a live demo |
 | [Contributing](CONTRIBUTING.md) | Dev workflow, code style, PR process |
 
 ---
@@ -286,13 +351,17 @@ See [Production Deployment Guide](docs/PRODUCTION_DEPLOYMENT.md) for details.
 
 | Layer | Technology |
 |-------|-----------|
-| Capture | **Python 3.11**, Scapy 2.5 |
-| API | Flask 3.0 |
-| Database | SQLite (WAL mode) with connection pool |
-| ML | scikit-learn (Isolation Forest) |
-| Frontend | Vanilla JS SPA, CSS custom properties, SSE real-time push |
+| Capture | Python 3.11, Scapy 2.5, Npcap (Windows) |
+| API | Flask 3.0, Waitress |
+| Database | SQLite (WAL) with connection pool |
+| Detection | scikit-learn (Isolation Forest), Welford baselines, rule detectors |
+| Forecasting | Holt double-exponential smoothing (stdlib math) |
+| AI | Local Ollama (`llama3.2:3b` by default) over plain HTTP — optional |
+| Frontend | Vanilla JS SPA, CSS custom properties, SSE |
 | Data | pandas, numpy |
-| System | psutil (monitoring), Npcap (Windows capture driver) |
+| System | psutil |
+
+---
 
 ## Meet the Team
 
