@@ -126,10 +126,17 @@ def normalize_mac(mac: str) -> str:
     """Normalize MAC to lowercase colon-separated format (xx:xx:xx:xx:xx:xx).
 
     Handles both dash-separated (Windows style) and colon-separated formats.
+
+    **Every writer of ``devices.mac_address`` must go through this.** That
+    column is the table's primary key (migration 008), so case is not
+    cosmetic: writing ``EE:C6:…`` from one path and ``ee:c6:…`` from another
+    files a single phone as two rows, splitting its traffic totals and its
+    policy/quota accounting. That is exactly what happened between the
+    discovery writer and the packet writer.
     """
     if not mac:
         return ""
-    return mac.lower().replace("-", ":")
+    return mac.strip().lower().replace("-", ":")
 
 
 def is_valid_mac(mac: Optional[str]) -> bool:

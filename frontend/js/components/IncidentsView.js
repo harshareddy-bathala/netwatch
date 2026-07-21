@@ -261,6 +261,15 @@ export default class IncidentsView {
     }
     panel.appendChild(timeline);
 
+    // AI assessment — loaded lazily, because it may call a local model and
+    // must never hold up the timeline the operator asked to see.
+    const ai = document.createElement('div');
+    ai.className = 'incident-ai';
+    ai.id = `incident-ai-${inc.id}`;
+    ai.innerHTML = '<div class="incident-ai__pending">Assessing…</div>';
+    panel.appendChild(ai);
+    this._loadAssessment(inc, ai);
+
     // Resolve action (open incidents only)
     if (inc.status === 'open') {
       const actions = document.createElement('div');
@@ -283,6 +292,101 @@ export default class IncidentsView {
       actions.appendChild(btn);
       panel.appendChild(actions);
     }
+  }
+
+  /**
+   * Fetch and render the AI verdict for one incident.
+   *
+   * Generous timeout and no retries: a local 3B model on CPU takes several
+   * seconds, and a retry would launch a *second* generation rather than
+   * rescue the first.
+   */
+  async _loadAssessment(inc, host) {
+    const resp = await api.assessIncident(inc.id);
+    if (this._destroyed || !host.isConnected) return;
+    host.innerHTML = '';
+
+    if (!resp || resp.error || !resp.data) {
+      host.innerHTML = '<div class="incident-ai__pending">Assessment unavailable.</div>';
+      return;
+    }
+    const v = resp.data;
+
+    const head = document.createElement('div');
+    head.className = 'incident-ai__head';
+    const label = document.createElement('span');
+    label.className = 'incident-ai__label';
+    // Say plainly whether a model wrote this or the rules did — a generated
+    // paragraph and a computed one deserve different trust.
+    label.textContent = v.source === 'model'
+      ? 'AI assessment (local model)'
+      : 'Assessment (evidence rules)';
+    head.appendChild(label);
+
+    const conf = document.createElement('span');
+    conf.className = `incident-ai__conf incident-ai__conf--${v.confidence || 'low'}`;
+    conf.textContent = `${v.confidence || 'low'} confidence`;
+    head.appendChild(conf);
+    host.appendChild(head);
+
+    const body = document.createElement('p');
+    body.className = 'incident-ai__text';
+    body.textContent = v.assessment || '';
+    host.appendChild(body);
+
+    if ((v.indicators_matched || []).length) {
+      const ind = document.createElement('div');
+      ind.className = 'incident-ai__indicators';
+      ind.textContent = `Indicators: ${v.indicators_matched.join(', ')}`;
+      host.appendChild(ind);
+    }
+
+    if (v.overruled) {
+      const note = document.createElement('div');
+      note.className = 'incident-ai__overruled';
+      note.textContent =
+        `Note: the model suggested "${v.overruled.model_recommended}"; ` +
+        `the evidence requires stronger containment, so it was not lowered.`;
+      host.appendChild(note);
+    }
+
+    // Proposal, not action. Nothing has happened until this is clicked.
+    if (inc.status === 'open') {
+      const actions = document.createElement('div');
+      actions.className = 'incident-ai__actions';
+
+      const apply = document.createElement('button');
+      apply.className = 'btn btn--primary btn--sm';
+      apply.textContent = this._actionLabel(v.recommended_action);
+      apply.addEventListener('click', async () => {
+        apply.disabled = true;
+        apply.textContent = 'Applying…';
+        const res = await api.applyIncidentAction(inc.id, v.recommended_action);
+        if (res && !res.error) {
+          this._load();
+          this._loadDetail(inc.id);
+        } else {
+          apply.disabled = false;
+          apply.textContent = 'Failed — retry';
+        }
+      });
+      actions.appendChild(apply);
+
+      const hint = document.createElement('span');
+      hint.className = 'incident-ai__hint';
+      hint.textContent = 'Nothing is applied until you choose.';
+      actions.appendChild(hint);
+      host.appendChild(actions);
+    }
+  }
+
+  _actionLabel(action) {
+    return {
+      quarantine: 'Quarantine device (1 hour)',
+      dismiss_benign: 'Dismiss as benign',
+      monitor: 'Keep monitoring',
+      throttle: 'Throttle device',
+    }[action] || 'Apply recommendation';
   }
 
   /** Merge runs of consecutive alerts that share the same type + message

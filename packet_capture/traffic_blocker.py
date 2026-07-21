@@ -21,6 +21,7 @@ pushed by the ``PolicyEnforcer`` (which resolves blocked MACs → current IPs).
 
 import logging
 import threading
+import time
 from typing import Optional, Set
 
 logger = logging.getLogger(__name__)
@@ -33,64 +34,223 @@ except Exception:            # ImportError or missing driver at import
     _PYDIVERT_OK = False
 
 
-def build_windivert_filter(ips: Set[str]) -> Optional[str]:
-    """WinDivert filter matching any packet to/from a blocked IPv4, or None
-    when the set is empty (→ don't open a handle, zero overhead)."""
-    v4 = sorted(i for i in ips if i and ":" not in i)
-    if not v4:
+# Ceiling on filter terms. The WinDivert filter is a single expression string
+# compiled by the driver, so an unbounded one is both slow and liable to be
+# rejected outright. Truncation is logged rather than silent: an enforcement
+# gap the operator cannot see is worse than one they can.
+MAX_FILTER_TERMS = 256
+
+
+def _v4(addrs) -> list:
+    """Sorted IPv4-only addresses — the filter matches ip.SrcAddr/ip.DstAddr,
+    which are v4 fields."""
+    return sorted({a for a in (addrs or []) if a and ":" not in str(a)})
+
+
+def build_windivert_filter(device_ips: Set[str] = None,
+                           pairs=None,
+                           server_ips: Set[str] = None) -> Optional[str]:
+    """Build the kernel drop filter, or None when nothing is blocked.
+
+    Three deliberately different shapes, because "blocked" means three
+    different things and collapsing them is what made blocking collateral:
+
+    ``device_ips``
+        Whole-device blocks — pause, quota, bedtime. Every packet to or from
+        that client is dropped, which is exactly the intent.
+    ``pairs`` — ``(client_ip, server_ip)``
+        A domain blocked *for one device*. Only that client's conversation
+        with that server dies; the same site keeps working for everyone else,
+        including this host.
+    ``server_ips``
+        A domain blocked network-wide. Everyone loses it, on purpose.
+
+    Previously every case was flattened into bare server-IP terms, so a
+    per-device rule silently cut the site off for every other client *and* for
+    the machine running NetWatch — while the UI implied per-device scope.
+    """
+    terms = []
+    for ip in _v4(device_ips):
+        terms.append(f"ip.SrcAddr == {ip} or ip.DstAddr == {ip}")
+    for ip in _v4(server_ips):
+        terms.append(f"ip.SrcAddr == {ip} or ip.DstAddr == {ip}")
+    for client, server in sorted(pairs or []):
+        if not client or not server or ":" in str(client) or ":" in str(server):
+            continue        # IPv4 filter only
+        terms.append(
+            f"(ip.SrcAddr == {client} and ip.DstAddr == {server}) or "
+            f"(ip.SrcAddr == {server} and ip.DstAddr == {client})"
+        )
+
+    if not terms:
         return None
-    terms = [f"ip.SrcAddr == {i} or ip.DstAddr == {i}" for i in v4]
+    if len(terms) > MAX_FILTER_TERMS:
+        logger.warning(
+            "Blocking filter has %d terms; enforcing the first %d. Some "
+            "blocked addresses are NOT being dropped.",
+            len(terms), MAX_FILTER_TERMS,
+        )
+        terms = terms[:MAX_FILTER_TERMS]
     return "ip and (" + " or ".join(terms) + ")"
+
+
+# Re-opening the WinDivert handle takes the kernel filter down and back up, so
+# every re-arm is a brief hole in enforcement and a burst of driver work. The
+# SNI learner discovers a blocked app's CDN addresses continuously, which made
+# the 5s policy sweep re-arm on almost every pass — sustained handle churn on
+# the live NAT path. Growth is therefore batched: a *newly blocked* IP still
+# arms immediately (blocking must feel instant), but merely *adding* addresses
+# to an already-armed block waits for this interval.
+DEFAULT_REARM_INTERVAL_SECONDS = 30.0
 
 
 class TrafficBlocker:
     """Drops forwarded traffic for a dynamic set of blocked client IPs."""
 
-    def __init__(self, arp_blackhole=None):
+    def __init__(self, arp_blackhole=None,
+                 rearm_interval: float = DEFAULT_REARM_INTERVAL_SECONDS,
+                 clock=time.monotonic):
         self._lock = threading.Lock()
+        # Whole-device blocks (pause / quota / bedtime): drop everything.
         self._blocked: frozenset = frozenset()
+        # Per-device domain blocks: (client_ip, server_ip) conversations only.
+        self._pairs: frozenset = frozenset()
+        # Network-wide domain blocks: drop the server for everyone.
+        self._server_ips: frozenset = frozenset()
         self._thread: Optional[threading.Thread] = None
         self._handle = None
         self._stop = threading.Event()
         self._mode = "off"          # off | windivert | arp | unavailable
         # Injected ARP-blackhole callable(ips) for the no-driver fallback.
         self._arp_blackhole = arp_blackhole
+        # Re-arm debounce. Injectable clock keeps the timing testable.
+        self._rearm_interval = max(0.0, float(rearm_interval))
+        self._clock = clock
+        self._last_rearm = 0.0
+        self._armed_filter: Optional[str] = None
 
     # -- public API --------------------------------------------------------
 
     def set_blocked_ips(self, ips) -> None:
-        """Replace the blocked-IP set; (re)arm enforcement to match."""
-        new = frozenset(str(i) for i in (ips or []) if i)
+        """Replace the blocked-IP set; (re)arm enforcement to match.
+
+        Only re-arms when the *filter* actually changes, and defers pure
+        additions to an existing block until the debounce interval has passed.
+        Removals and the first IP of a new block always apply at once — being
+        slow to unblock, or slow to block at all, is a correctness problem;
+        being slow to widen an existing block is not.
+        """
+        self.set_policy(device_ips=ips)
+
+    def set_policy(self, device_ips=None, pairs=None, server_ips=None) -> None:
+        """Replace the whole enforcement policy; (re)arm to match.
+
+        Only re-arms when the *filter* actually changes, and defers pure
+        additions to an existing block until the debounce interval has passed.
+        Removals and the first entry of a new block always apply at once —
+        being slow to unblock, or slow to block at all, is a correctness
+        problem; being slow to widen an existing block is not.
+        """
+        new_dev = frozenset(str(i) for i in (device_ips or []) if i)
+        new_pairs = frozenset(
+            (str(c), str(s)) for c, s in (pairs or []) if c and s
+        )
+        new_srv = frozenset(str(i) for i in (server_ips or []) if i)
+
         with self._lock:
-            if new == self._blocked:
+            if (new_dev, new_pairs, new_srv) == (
+                    self._blocked, self._pairs, self._server_ips):
                 return
-            self._blocked = new
+            previous = self._identity_locked()
+            self._blocked, self._pairs, self._server_ips = (
+                new_dev, new_pairs, new_srv)
+            if not self._should_rearm_now(previous, self._identity_locked()):
+                return
+            self._last_rearm = self._clock()
         self._rearm()
+
+    def _identity_locked(self) -> frozenset:
+        """Flat set of everything currently blocked, for change comparison.
+
+        Caller must hold ``self._lock``.
+        """
+        return frozenset(self._blocked) | frozenset(self._pairs) | frozenset(
+            self._server_ips)
+
+    def _current_filter_locked(self) -> Optional[str]:
+        """Caller must hold ``self._lock``."""
+        return build_windivert_filter(
+            self._blocked, self._pairs, self._server_ips)
+
+    def _should_rearm_now(self, previous: frozenset, new: frozenset) -> bool:
+        """Decide whether this change warrants re-opening the handle.
+
+        Caller must hold ``self._lock``.
+        """
+        if not new or not previous:
+            return True                      # first block, or full release
+        if previous - new:
+            return True                      # something was unblocked
+        if self._rearm_interval <= 0:
+            return True
+        return (self._clock() - self._last_rearm) >= self._rearm_interval
+
+    def flush_pending(self) -> bool:
+        """Apply a deferred widening of the blocked set, if one is due.
+
+        Called from the policy sweep so IPs learned between re-arms are not
+        stranded until the next unrelated change. Returns True if it re-armed.
+        """
+        with self._lock:
+            if not self._identity_locked():
+                return False
+            if self._current_filter_locked() == self._armed_filter:
+                return False
+            if (self._clock() - self._last_rearm) < self._rearm_interval:
+                return False
+            self._last_rearm = self._clock()
+        self._rearm()
+        return True
 
     def get_status(self) -> dict:
         return {
             "mode": self._mode,
             "blocked_ips": sorted(self._blocked),
+            "blocked_pairs": sorted(self._pairs),
+            "blocked_servers": sorted(self._server_ips),
             "windivert_available": _PYDIVERT_OK,
         }
 
     def stop(self) -> None:
         self._teardown()
+        with self._lock:
+            # Forget what was armed, so a restart re-opens the handle instead
+            # of concluding the (now closed) filter is still in force.
+            self._armed_filter = None
 
     # -- enforcement -------------------------------------------------------
 
     def _rearm(self) -> None:
-        self._teardown()
         with self._lock:
-            ips = set(self._blocked)
-        if not ips:
+            filt = self._current_filter_locked()
+            anything_blocked = bool(self._identity_locked())
+            # The ARP fallback can only blackhole a whole device — it has no
+            # way to express "this client, but only towards that server".
+            arp_ips = set(self._blocked)
+            summary = (len(self._blocked), len(self._pairs),
+                       len(self._server_ips))
+            if filt == self._armed_filter and self._thread and self._thread.is_alive():
+                return          # already enforcing exactly this — leave it alone
+            self._armed_filter = filt
+        self._teardown()
+        if not anything_blocked:
             self._mode = "off"
             return
-        if _PYDIVERT_OK and build_windivert_filter(ips):
-            self._start_windivert(ips)
-        elif self._arp_blackhole is not None:
+        if _PYDIVERT_OK and filt:
+            self._start_windivert(filt, summary)
+        elif self._arp_blackhole is not None and arp_ips:
             try:
-                self._arp_blackhole(ips)
+                self._arp_blackhole(arp_ips)
                 self._mode = "arp"
             except Exception as exc:
                 logger.warning("ARP blackhole failed: %s", exc)
@@ -100,8 +260,7 @@ class TrafficBlocker:
             # elsewhere) is the only enforcement. Say so honestly via status.
             self._mode = "unavailable"
 
-    def _start_windivert(self, ips: Set[str]) -> None:
-        filt = build_windivert_filter(ips)
+    def _start_windivert(self, filt: str, summary=(0, 0, 0)) -> None:
         self._stop.clear()
         # Commit the mode synchronously: callers (and get_status) must see
         # "windivert" as soon as _rearm returns, not race the worker thread's
@@ -114,7 +273,11 @@ class TrafficBlocker:
                 handle = pydivert.WinDivert(filt)
                 handle.open()
                 self._handle = handle
-                logger.info("TrafficBlocker: WinDivert dropping %d client IP(s)", len(ips))
+                logger.info(
+                    "TrafficBlocker: WinDivert active — %d device block(s), "
+                    "%d per-device domain pair(s), %d network-wide server(s)",
+                    *summary,
+                )
                 while not self._stop.is_set():
                     pkt = handle.recv()      # removes packet from the stack
                     # Never send() it back → dropped. (Loop exits when the

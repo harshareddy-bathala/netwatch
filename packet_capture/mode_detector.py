@@ -77,6 +77,9 @@ class ModeDetector:
     _hostednet_cache_time: float = 0
     _adapter_status_cache: Dict[str, str] = {}   # adapter name → "Up" / "Disconnected" / …
     _adapter_status_cache_time: float = 0
+    # Last *successfully queried* answer per adapter, kept beyond the cache TTL
+    # so a failed query can repeat it instead of reporting "inactive".
+    _adapter_last_known: Dict[str, bool] = {}
     _CACHE_TTL = 3  # seconds — reduced from 10s (Phase 5) for faster reaction to network changes
 
     # Track last detected mode to avoid log spam
@@ -94,6 +97,10 @@ class ModeDetector:
 
     def __init__(self):
         self._all_interfaces: List[InterfaceInfo] = []
+        # True when a mode is pinned but its interface is not currently
+        # present. Callers use this to hold the existing mode instead of
+        # silently switching to a different one.
+        self.forced_mode_unavailable = False
 
     # ================================================================== #
     #  PUBLIC API
@@ -129,6 +136,14 @@ class ModeDetector:
         if not self._all_interfaces:
             logger.warning("No active network interfaces found — network disconnected")
             return self._disconnected_fallback()
+
+        # Step 0.5 — Pinned mode. Detection reads live OS state, and that state
+        # flaps (Windows drops the ICS adapter when the hotspot has no client),
+        # so an operator who knows the setup can pin it and stop the churn.
+        forced = self._forced_mode()
+        if forced is not None:
+            self._log_mode_change(forced.get_mode_name().value.upper())
+            return forced
 
         # Step 1 — Port Mirror (check traffic pattern or probe promiscuously)
         # Port mirror requires physical Ethernet — Wi-Fi cannot carry
@@ -180,6 +195,91 @@ class ModeDetector:
     def get_all_interfaces(self) -> List[InterfaceInfo]:
         """Return interfaces from the last ``detect()`` call."""
         return list(self._all_interfaces)
+
+    def _forced_mode(self) -> Optional[BaseMode]:
+        """Build the operator-pinned mode, or ``None`` to auto-detect.
+
+        Deliberately skips the *liveness* checks the auto path applies (e.g.
+        ``Get-NetAdapter`` on the hotspot adapter). Those checks exist to stop
+        auto-detection guessing wrong; when a human has stated the setup they
+        only add a way for a transient PowerShell failure to drop the mode.
+
+        If the pinned mode cannot be built at all — pinned to ``hotspot`` with
+        no hotspot adapter present — we warn and return ``None`` so detection
+        degrades to auto rather than handing back a broken interface.
+        """
+        self.forced_mode_unavailable = False
+        try:
+            import config
+            name = getattr(config, "FORCE_MODE", None)
+        except Exception:
+            return None
+        if not name:
+            return None
+
+        mode = None
+        if name == "hotspot":
+            iface = self._pick_hotspot_interface()
+            if iface:
+                subnet = _cidr_from_ip_and_mask(
+                    iface.ip_address, iface.netmask or "255.255.255.0",
+                )
+                iface.ssid = ph.get_hotspot_ssid(ModeDetector._hostednet_cache)
+                mode = HotspotMode(iface, hotspot_subnet=subnet)
+        elif name == "port_mirror":
+            iface = self._pick_mirror_interface()
+            if iface:
+                mode = PortMirrorMode(iface)
+        elif name == "ethernet":
+            mode = self._check_ethernet()
+        elif name == "public_network":
+            mode = self._check_public_network_wifi() or self._safe_fallback()
+
+        if mode is None:
+            # Do NOT fall back to a different mode: switching away is exactly
+            # the flap the pin exists to prevent. Signal "unavailable" and let
+            # the caller hold the current mode until the adapter returns.
+            self.forced_mode_unavailable = True
+            logger.warning(
+                "Mode pinned to '%s' but no matching interface is present — "
+                "holding current mode until it returns", name,
+            )
+        return mode
+
+    def _pick_hotspot_interface(self) -> Optional[InterfaceInfo]:
+        """Best candidate for a pinned hotspot: the ICS/virtual adapter."""
+        candidates = [
+            i for i in self._all_interfaces
+            if i.ip_address
+            and i.ip_address not in ("0.0.0.0", "127.0.0.1")
+            and not i.ip_address.startswith("169.254.")
+        ]
+        for iface in candidates:
+            if iface.interface_type == "hotspot_virtual":
+                return iface
+        # ICS always hands the host 192.168.137.1 and gives it no gateway on
+        # that adapter — it IS the gateway.
+        for iface in candidates:
+            if iface.ip_address.startswith("192.168.137.") and not iface.gateway:
+                return iface
+        return None
+
+    def _pick_mirror_interface(self) -> Optional[InterfaceInfo]:
+        """Best candidate for a pinned SPAN capture: a physical Ethernet NIC.
+
+        A mirror port carries no traffic *for* us, so the adapter frequently
+        has no IP and no gateway at all — that makes it the *preferred*
+        candidate here, the exact opposite of every other mode.
+        """
+        ethernets = [
+            i for i in self._all_interfaces if i.interface_type == "ethernet"
+        ]
+        if not ethernets:
+            return None
+        for iface in ethernets:
+            if not iface.gateway:
+                return iface
+        return ethernets[0]
 
     def detect_for_interface(self, iface: InterfaceInfo) -> BaseMode:
         """
@@ -631,9 +731,12 @@ class ModeDetector:
         ``platform_helpers.check_hotspot_adapter_status()``.  Cache
         management stays here.
 
-        **Fail-closed:** if the PowerShell command fails we return
-        ``False`` to avoid falsely entering hotspot mode on a WiFi
-        client connection.
+        A failed query means *unknown*, not *inactive*. ``Get-NetAdapter`` is
+        a PowerShell round-trip on a busy machine and it does time out; when
+        it did, this reported "no hotspot" and the whole app switched modes,
+        restarted capture and reset the twin — on nothing more than a slow
+        subprocess. So a failure now repeats the last known answer and only
+        falls closed when we have never had one.
 
         Results are cached for ``_CACHE_TTL`` seconds.
         """
@@ -648,9 +751,16 @@ class ModeDetector:
         status, media_state = ph.check_hotspot_adapter_status(adapter_name)
 
         if not status:
+            last_known = ModeDetector._adapter_last_known.get(adapter_name)
+            if last_known is not None:
+                logger.debug(
+                    "Could not query adapter status for %s — reusing last known "
+                    "answer (active=%s)", adapter_name, last_known,
+                )
+                return last_known
             logger.debug(
-                "Could not query adapter status for %s — assuming inactive (fail-closed)",
-                adapter_name,
+                "Could not query adapter status for %s and no prior answer — "
+                "assuming inactive (fail-closed)", adapter_name,
             )
             return False
 
@@ -662,6 +772,7 @@ class ModeDetector:
         effective = "Up" if is_active else status
         ModeDetector._adapter_status_cache[adapter_name] = effective
         ModeDetector._adapter_status_cache_time = time.time()
+        ModeDetector._adapter_last_known[adapter_name] = is_active
 
         logger.debug(
             "Adapter %s status=%s, media_state=%s → active=%s",

@@ -56,8 +56,13 @@ class SniIpLearner:
         # Suffixes to match SNI against; empty = feature dormant (hot-path fast
         # path returns immediately).
         self._domains: frozenset = frozenset()
-        # ip -> last seen time
-        self._learned: Dict[str, float] = {}
+        # ip -> (last seen time, matched domain suffix)
+        #
+        # The matched domain is kept, not just the timestamp, so a learned
+        # address can be attributed back to the rule that caused it. Without
+        # that, blocking instagram.com on one phone and youtube.com on another
+        # would pool every learned IP and each phone would lose both.
+        self._learned: Dict[str, tuple] = {}
 
     # -- configuration -----------------------------------------------------
 
@@ -92,12 +97,13 @@ class SniIpLearner:
         if not sni or not dest_ip or ":" in dest_ip:   # IPv4 filter only
             return False
         name = sni.strip().lower().rstrip(".")
-        if not self._matches(name):
+        matched = self._matched_domain(name)
+        if matched is None:
             return False
         now = time.time()
         with self._lock:
             is_new = dest_ip not in self._learned
-            self._learned[dest_ip] = now
+            self._learned[dest_ip] = (now, matched)
             if len(self._learned) > MAX_LEARNED:
                 self._prune_locked(now)
         if is_new:
@@ -105,27 +111,42 @@ class SniIpLearner:
                         name, dest_ip)
         return is_new
 
-    def _matches(self, name: str) -> bool:
+    def _matched_domain(self, name: str) -> Optional[str]:
+        """Return the blocked suffix *name* belongs to, or None."""
         for d in self._domains:
             if name == d or name.endswith("." + d):
-                return True
-        return False
+                return d
+        return None
+
+    def _matches(self, name: str) -> bool:
+        return self._matched_domain(name) is not None
 
     # -- readback ----------------------------------------------------------
 
-    def learned_ips(self) -> Set[str]:
-        """Current set of IPs to block, dropping entries past their TTL."""
+    def learned_ips(self, domains=None) -> Set[str]:
+        """IPs to block, dropping entries past their TTL.
+
+        With *domains*, only addresses learned for those suffixes are returned
+        — that is what lets one rule's addresses be enforced against one device
+        without leaking into another rule's scope. Without it, every learned
+        address is returned (the network-wide case).
+        """
         now = time.time()
         with self._lock:
             self._prune_locked(now)
-            return set(self._learned)
+            if domains is None:
+                return set(self._learned)
+            wanted = {str(d).strip().lower().rstrip(".") for d in domains if d}
+            return {ip for ip, (_t, dom) in self._learned.items()
+                    if dom in wanted}
 
     def _prune_locked(self, now: float) -> None:
         cutoff = now - self._ttl
-        self._learned = {ip: t for ip, t in self._learned.items() if t > cutoff}
+        self._learned = {ip: v for ip, v in self._learned.items()
+                         if v[0] > cutoff}
         if len(self._learned) > MAX_LEARNED:
             # Keep the most recently seen.
-            newest = sorted(self._learned.items(), key=lambda kv: kv[1],
+            newest = sorted(self._learned.items(), key=lambda kv: kv[1][0],
                             reverse=True)[:MAX_LEARNED]
             self._learned = dict(newest)
 

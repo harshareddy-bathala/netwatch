@@ -23,6 +23,24 @@ from database.queries.network_filters import (
     _active_mode_for_mac,
 )
 from database.queries import network_filters as _nf
+from utils.network_utils import normalize_mac as _normalize_mac
+
+
+def _device_now() -> str:
+    """UTC timestamp for ``devices.first_seen`` / ``last_seen``.
+
+    Packet timestamps are LOCAL time (``datetime.now()`` from the capture
+    path), but every reader of ``devices.last_seen`` compares against
+    ``datetime('now')`` / ``datetime.utcnow()``, which are UTC. Writing the
+    local value put every traffic-seen device hours into the future, so it
+    never aged out of the active window, never went stale, and never released
+    its DHCP lease for the blocking recency check.
+
+    The traffic tables keep the packet's own timestamp — this is only for the
+    device table's presence bookkeeping, which is a clock question, not a
+    packet question.
+    """
+    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
 logger = logging.getLogger(__name__)
 
@@ -60,13 +78,18 @@ def save_packet(packet_data: dict) -> Optional[int]:
             cursor = conn.cursor()
 
             timestamp = packet_data.get("timestamp", datetime.now())
+            device_ts = _device_now()   # devices.last_seen is UTC
             if isinstance(timestamp, datetime):
                 timestamp = timestamp.strftime("%Y-%m-%d %H:%M:%S")
 
             source_ip = packet_data.get("source_ip") or packet_data.get("src", "unknown")
             dest_ip = packet_data.get("dest_ip") or packet_data.get("dst", "unknown")
-            source_mac = packet_data.get("source_mac")
-            dest_mac = packet_data.get("dest_mac")
+            # Canonicalise before these reach the devices primary key. Scapy
+            # usually yields lower-case, but ARP/discovery-derived packets and
+            # some parser fallbacks do not, and a single upper-case write files
+            # the device a second time under its own MAC.
+            source_mac = _normalize_mac(packet_data.get("source_mac"))
+            dest_mac = _normalize_mac(packet_data.get("dest_mac"))
             source_port = packet_data.get("source_port")
             dest_port = packet_data.get("dest_port")
             protocol = packet_data.get("protocol", "UNKNOWN")
@@ -139,7 +162,7 @@ def save_packet(packet_data: dict) -> Optional[int]:
                       None if _is_ipv6_src else source_ip,
                       source_ip if _is_ipv6_src else None,
                       device_name, vendor,
-                                            timestamp, timestamp, source_app_bytes, source_control_bytes,
+                                            device_ts, device_ts, source_app_bytes, source_control_bytes,
                       _src_active_mode, _nf._current_mode_name))
 
             # 3. Upsert dest device — ONLY if valid local device
@@ -185,7 +208,7 @@ def save_packet(packet_data: dict) -> Optional[int]:
                       None if _is_ipv6_dst else dest_ip,
                       dest_ip if _is_ipv6_dst else None,
                       device_name, dest_vendor,
-                                            timestamp, timestamp, dest_app_bytes, dest_control_bytes,
+                                            device_ts, device_ts, dest_app_bytes, dest_control_bytes,
                       _dst_active_mode, _nf._current_mode_name))
 
             # 4. Update daily usage (inside the same transaction)
@@ -210,7 +233,7 @@ def save_packet(packet_data: dict) -> Optional[int]:
                                 last_seen = ?,
                                 ipv6_address = COALESCE(ipv6_address, ?)
                             WHERE mac_address = ?
-                        """, (bytes_transferred, timestamp, source_ip, source_mac))
+                        """, (bytes_transferred, device_ts, source_ip, source_mac))
                     else:
                         cursor.execute("""
                             UPDATE devices SET
@@ -219,7 +242,7 @@ def save_packet(packet_data: dict) -> Optional[int]:
                                 last_seen = ?,
                                 ipv6_address = COALESCE(ipv6_address, ?)
                             WHERE mac_address = ?
-                        """, (bytes_transferred, timestamp, source_ip, source_mac))
+                        """, (bytes_transferred, device_ts, source_ip, source_mac))
                         _update_daily_usage_cursor(
                             cursor, source_mac, mapped_ip,
                             device_name, bytes_transferred, 0, 1)
@@ -237,7 +260,7 @@ def save_packet(packet_data: dict) -> Optional[int]:
                                 last_seen = ?,
                                 ipv6_address = COALESCE(ipv6_address, ?)
                             WHERE mac_address = ?
-                        """, (bytes_transferred, timestamp, dest_ip, dest_mac))
+                        """, (bytes_transferred, device_ts, dest_ip, dest_mac))
                     else:
                         cursor.execute("""
                             UPDATE devices SET
@@ -246,7 +269,7 @@ def save_packet(packet_data: dict) -> Optional[int]:
                                 last_seen = ?,
                                 ipv6_address = COALESCE(ipv6_address, ?)
                             WHERE mac_address = ?
-                        """, (bytes_transferred, timestamp, dest_ip, dest_mac))
+                        """, (bytes_transferred, device_ts, dest_ip, dest_mac))
                         _update_daily_usage_cursor(
                             cursor, dest_mac, mapped_ip,
                             None, 0, bytes_transferred, 0)
@@ -304,6 +327,7 @@ def save_packets_batch(packets: list, _lock_retry: int = 0) -> int:
             for pkt in packets:
                 try:
                     timestamp = pkt.get("timestamp", datetime.now())
+                    device_ts = _device_now()   # devices.last_seen is UTC
                     if isinstance(timestamp, datetime):
                         timestamp = timestamp.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -397,14 +421,14 @@ def save_packets_batch(packets: list, _lock_retry: int = 0) -> int:
                             agg = {"bytes": 0, "control_bytes": 0, "packets": 0, "ip": source_ip,
                                    "ipv4": None if is_ipv6 else source_ip,
                                    "ipv6": source_ip if is_ipv6 else None,
-                                   "name": device_name, "vendor": vendor, "ts": timestamp}
+                                   "name": device_name, "vendor": vendor, "ts": device_ts}
                             src_agg[source_mac] = agg
                         if is_control:
                             agg["control_bytes"] += bytes_transferred
                         else:
                             agg["bytes"] += bytes_transferred
                         agg["packets"] += 1
-                        agg["ts"] = timestamp  # keep latest
+                        agg["ts"] = device_ts  # keep latest
                         if not is_ipv6:
                             agg["ipv4"] = source_ip
                             agg["ip"] = source_ip
@@ -434,14 +458,14 @@ def save_packets_batch(packets: list, _lock_retry: int = 0) -> int:
                                    "ipv4": None if is_ipv6 else dest_ip,
                                    "ipv6": dest_ip if is_ipv6 else None,
                                    "name": device_name, "vendor": dest_vendor,
-                                   "ts": timestamp}
+                                   "ts": device_ts}
                             dst_agg[dest_mac] = agg
                         if is_control:
                             agg["control_bytes"] += bytes_transferred
                         else:
                             agg["bytes"] += bytes_transferred
                         agg["packets"] += 1
-                        agg["ts"] = timestamp
+                        agg["ts"] = device_ts
                         if not is_ipv6:
                             agg["ipv4"] = dest_ip
                             agg["ip"] = dest_ip
@@ -473,7 +497,7 @@ def save_packets_batch(packets: list, _lock_retry: int = 0) -> int:
                                 agg = {
                                     "bytes": 0,
                                     "control_bytes": 0,
-                                    "ts": timestamp,
+                                    "ts": device_ts,
                                     "ipv6": source_ip,
                                     "mapped_ip": mapped_ip,
                                     "name": device_name,
@@ -483,7 +507,7 @@ def save_packets_batch(packets: list, _lock_retry: int = 0) -> int:
                                 agg["control_bytes"] += bytes_transferred
                             else:
                                 agg["bytes"] += bytes_transferred
-                            agg["ts"] = timestamp
+                            agg["ts"] = device_ts
 
                             if not is_control:
                                 dk = (source_mac, mapped_ip, "src")
@@ -502,7 +526,7 @@ def save_packets_batch(packets: list, _lock_retry: int = 0) -> int:
                                 agg = {
                                     "bytes": 0,
                                     "control_bytes": 0,
-                                    "ts": timestamp,
+                                    "ts": device_ts,
                                     "ipv6": dest_ip,
                                     "mapped_ip": mapped_ip,
                                 }
@@ -511,7 +535,7 @@ def save_packets_batch(packets: list, _lock_retry: int = 0) -> int:
                                 agg["control_bytes"] += bytes_transferred
                             else:
                                 agg["bytes"] += bytes_transferred
-                            agg["ts"] = timestamp
+                            agg["ts"] = device_ts
 
                             if not is_control:
                                 dk = (dest_mac, mapped_ip, "dst")

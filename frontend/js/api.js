@@ -123,6 +123,23 @@ const api = {
   getIncidentStats: ()     => request('/incidents/stats'),
   resolveIncident:  (id)   => request(`/incidents/${id}/resolve`, { method: 'POST' }),
 
+  // AI responder — a proposal for one incident, then the operator's decision.
+  // Same budget rules as investigations: a local model on CPU takes seconds,
+  // and a retry would start a second generation rather than rescue the first.
+  assessIncident:      (id) => request(`/incidents/${id}/assess`, {
+      timeout: 240000, retries: 0,
+  }),
+  applyIncidentAction: (id, action, minutes=60) =>
+    request(`/incidents/${id}/apply`, {
+      method: 'POST', body: JSON.stringify({ action, minutes }),
+    }),
+
+  // AI briefing — "what just happened?" over the last N minutes.
+  getBriefing: (minutes=10, force=false) => request(
+    `/briefing?minutes=${minutes}${force ? '&force=1' : ''}`,
+    { timeout: 240000, retries: 0 },
+  ),
+
   // Ask NetWatch — LLM investigations (Phase 3)
   getInvestigateStatus: ()        => request('/investigate/status'),
   getInvestigateTools:  ()        => request('/investigate/tools'),

@@ -36,6 +36,7 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+import config
 from config import (
     FLASK_HOST, FLASK_PORT, FLASK_DEBUG,
     LOG_LEVEL, LOG_FORMAT, LOG_FILE, LOG_FILE_MAX_SIZE, LOG_FILE_BACKUP_COUNT,
@@ -204,6 +205,16 @@ def parse_args():
         help='Start without packet capture (dashboard only)'
     )
     parser.add_argument(
+        '--mode',
+        choices=['auto', 'hotspot', 'ethernet', 'public_network', 'port_mirror'],
+        default=None,
+        help=(
+            'Pin the capture mode instead of auto-detecting it. Use this for '
+            'demos and for port_mirror, whose auto-detection is unreliable. '
+            'Default: auto (or $NETWATCH_FORCE_MODE)'
+        )
+    )
+    parser.add_argument(
         '--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
         default=None, help='Override log level'
     )
@@ -252,6 +263,16 @@ def main():
 
     # Setup logging
     logger = setup_logging(log_level=args.log_level, log_file=args.log_file)
+
+    # --mode overrides the env var; "auto" explicitly clears a pinned mode so a
+    # stale NETWATCH_FORCE_MODE in the shell can be turned off from the CLI.
+    if args.mode is not None:
+        config.FORCE_MODE = None if args.mode == 'auto' else args.mode
+    if config.FORCE_MODE:
+        logger.info(
+            "Capture mode PINNED to '%s' — auto-detection disabled",
+            config.FORCE_MODE,
+        )
 
     print_banner()
 

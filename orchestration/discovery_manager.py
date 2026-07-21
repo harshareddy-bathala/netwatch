@@ -23,6 +23,7 @@ from config import IS_WINDOWS, HOTSPOT_STALE_DEVICE_SECONDS
 from database.connection import get_connection
 from packet_capture.hostname_resolver import enqueue_for_resolution as _enqueue_resolution
 from packet_capture.network_discovery import NetworkDiscovery
+from utils.network_utils import normalize_mac
 
 logger = logging.getLogger(__name__)
 
@@ -34,15 +35,58 @@ _recent_confirmed_macs = {}
 _recent_confirmed_macs_lock = threading.Lock()
 
 
-def _should_promote_hotspot_cache_client(client: dict, active_discovered_ips: set) -> bool:
+# Frame addresses that are never a device: broadcast, the null MAC, and the
+# IPv4/IPv6/STP multicast prefixes. The in-memory tracker has always rejected
+# these (realtime_state._is_trackable_mac) but the DB writers did not, which is
+# how a ff:ff:ff:ff:ff:ff / 192.168.137.255 row reached the devices table and
+# then had to be filtered out again by hand in a dozen separate queries.
+_UNSTORABLE_MACS = {'FF:FF:FF:FF:FF:FF', '00:00:00:00:00:00'}
+_UNSTORABLE_MAC_PREFIXES = ('01:00:5E:', '33:33:', '01:80:C2:')
+
+
+def _is_storable_mac(upper_mac: str) -> bool:
+    """True when *upper_mac* (upper-case, colon form) identifies a real device."""
+    if not upper_mac:
+        return False
+    if upper_mac in _UNSTORABLE_MACS:
+        return False
+    return not upper_mac.startswith(_UNSTORABLE_MAC_PREFIXES)
+
+
+def _get_packet_active_macs(max_age_seconds: int) -> set:
+    """MACs that have put a packet on the wire within *max_age_seconds*.
+
+    Upper-cased to match this module's normalisation. Returns an empty set if
+    the dashboard state is unavailable, which makes the callers strictly more
+    conservative (fewer devices promoted) rather than less.
+    """
+    try:
+        from utils.realtime_state import dashboard_state
+        return {
+            (m or "").upper().replace('-', ':')
+            for m in dashboard_state.get_packet_active_macs(max_age_seconds)
+        }
+    except Exception:
+        return set()
+
+
+def _should_promote_hotspot_cache_client(
+    client: dict, active_discovered_ips: set, wire_active_macs: set = None,
+) -> bool:
     """Return True when a weak hotspot client should be treated as active.
 
     ARP/cache-only client rows are promoted only when corroborated by
-    independent discovery in this cycle (currently: ping/ARP active IP set).
+    independent evidence: traffic seen on the wire (authoritative — this host
+    is the gateway, so a connected client cannot be silent), or active
+    discovery in this cycle (ping/ARP).
     """
     status = str((client or {}).get("status") or "").strip().lower()
     if status not in {"arp", "cache", "unknown", ""}:
         return False
+
+    mac_norm = str((client or {}).get("mac") or "").upper().replace('-', ':').strip()
+    if mac_norm and mac_norm in (wire_active_macs or set()):
+        return True
 
     source = str((client or {}).get("source") or "").strip().lower()
     ip_val = str((client or {}).get("ip") or "").strip()
@@ -268,11 +312,17 @@ def _upsert_devices(
             mac = dev.get('mac', '')
             ip = dev.get('ip', '')
             vendor = dev.get('vendor', '')
+            upper_mac = (mac or "").upper().replace('-', ':')
+            mac = normalize_mac(mac)
+
+            # Never file a frame address as a device.
+            if mac and not _is_storable_mac(upper_mac):
+                continue
 
             # Skip our own device entirely (any local adapter IP or MAC)
             if ip and ip in all_local_ips:
                 continue
-            if mac and mac.upper().replace('-', ':') in all_local_macs:
+            if upper_mac and upper_mac in all_local_macs:
                 continue
 
             # Security: alert on new/unknown devices
@@ -381,9 +431,17 @@ def _upsert_arp_cache_devices(
             mac = dev.get('mac', '')
             ip = dev.get('ip', '')
             vendor = dev.get('vendor', '')
+            # Upper-case form is only for comparing against the upper-cased
+            # local/preserve sets below; what gets STORED is the canonical
+            # lower-case form, because mac_address is the primary key and a
+            # case mismatch with the packet writer files one phone twice.
             normalized_mac = (mac or "").upper().replace('-', ':')
+            db_mac = normalize_mac(mac)
 
-            if not mac or mac in ('FF:FF:FF:FF:FF:FF', '00:00:00:00:00:00'):
+            # Compare the normalised form: the raw value arrives in either case
+            # depending on the discovery source, so testing `mac` against
+            # upper-case literals let lower-case broadcast rows through.
+            if not db_mac or not _is_storable_mac(normalized_mac):
                 continue
 
             # Skip our own device (any local adapter IP)
@@ -457,7 +515,7 @@ def _upsert_arp_cache_devices(
                         THEN NULL
                         ELSE active_mode END
             """, (
-                mac,
+                db_mac,
                 ip,
                 ip,
                 hostname,
@@ -846,6 +904,13 @@ def _discovery_loop():
                                     recent_confirmed = _get_recently_confirmed_macs(
                                         HOTSPOT_STALE_DEVICE_SECONDS,
                                     )
+                                    # The one signal no OS cache can fake: this
+                                    # host is the hotspot gateway, so a client
+                                    # that is really connected puts ARP/DHCP/DNS
+                                    # on the adapter we are already sniffing.
+                                    wire_active = _get_packet_active_macs(
+                                        HOTSPOT_STALE_DEVICE_SECONDS,
+                                    )
                                     for client in clients:
                                         status = str(client.get("status") or "").strip().lower()
                                         source = str(client.get("source") or "").strip().lower()
@@ -856,24 +921,33 @@ def _discovery_loop():
                                         if status in {"arp", "cache", "unknown", ""}:
                                             # ARP-only fallback clients are promoted only when
                                             # corroborated by this cycle's active discovery (e.g. ping).
-                                            if _should_promote_hotspot_cache_client(client, active_discovered_ips):
+                                            if _should_promote_hotspot_cache_client(
+                                                client, active_discovered_ips, wire_active,
+                                            ):
                                                 confirmed_clients.append(client)
                                                 continue
                                             cache_only_clients.append(client)
                                             continue
 
                                         # netsh hostednetwork statuses can be stale on Windows.
-                                        # Promote to active only when corroborated by fresh
-                                        # discovery evidence (IP present now, seen in this cycle,
-                                        # or recently confirmed).
+                                        # Promote to active only on evidence the client is
+                                        # here *now*.
+                                        #
+                                        # The previous version accepted `bool(ip_val)` or
+                                        # `source == "hostednetwork"`, and neither is
+                                        # freshness. Windows 10/11 Mobile Hotspot does not
+                                        # use the legacy hosted network, so netsh reports no
+                                        # peers and `_get_windows_clients` falls back to the
+                                        # ARP table — where every entry has an IP. The gate
+                                        # was therefore always true, a departed phone was
+                                        # re-promoted every cycle, and the dashboard read
+                                        # "1 device" with nothing connected, indefinitely.
                                         strong_status = status in {"connected", "associated", "authenticated", "leased"}
-                                        has_fresh_signal = bool(ip_val) or (
-                                            mac_norm
-                                            and (
-                                                mac_norm in active_discovered_macs
-                                                or mac_norm in recent_confirmed
-                                            )
-                                        ) or source == "hostednetwork"
+                                        has_fresh_signal = bool(mac_norm) and (
+                                            mac_norm in wire_active          # packets seen
+                                            or mac_norm in active_discovered_macs  # probed this cycle
+                                            or mac_norm in recent_confirmed  # probed just before
+                                        )
 
                                         if strong_status and has_fresh_signal:
                                             confirmed_clients.append(client)

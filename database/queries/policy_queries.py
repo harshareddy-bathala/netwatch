@@ -41,6 +41,39 @@ def _in_window(now: dtime, start: str, end: str) -> bool:
     return now >= s or now < e          # wraps midnight
 
 
+def _parse_ts(raw) -> Optional[datetime]:
+    """Parse a stored SQLite timestamp; None if absent or unparseable."""
+    if not raw:
+        return None
+    if isinstance(raw, datetime):
+        return raw
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f",
+                "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(str(raw), fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _pause_expired(policy: dict, now: datetime) -> bool:
+    """True when a timed pause has run out.
+
+    A pause with no expiry (``pause_expires_at`` NULL) never expires — that is
+    a deliberate "until I resume it" choice. But an unparseable timestamp is
+    treated as expired: if we cannot tell when a block should end, the safe
+    failure is to stop blocking, not to cut a device off forever.
+    """
+    raw = policy.get("pause_expires_at")
+    if not raw:
+        return False
+    expires = _parse_ts(raw)
+    if expires is None:
+        logger.warning("Unreadable pause_expires_at %r — releasing the pause", raw)
+        return True
+    return now >= expires
+
+
 def is_blocked_now(policy: dict, usage_bytes_today: int,
                    now: Optional[datetime] = None) -> Optional[str]:
     """Return a reason string if this device should be blocked right now,
@@ -49,7 +82,7 @@ def is_blocked_now(policy: dict, usage_bytes_today: int,
     Order: manual pause → quota exceeded → inside a blocked (bedtime) window.
     """
     now = now or datetime.now()
-    if policy.get("paused"):
+    if policy.get("paused") and not _pause_expired(policy, now):
         return "paused"
 
     quota_mb = policy.get("daily_quota_mb")
@@ -132,8 +165,15 @@ def get_policy(mac: str) -> Optional[dict]:
 def upsert_policy(mac: str, paused: Optional[bool] = None,
                   daily_quota_mb: Optional[int] = None,
                   blocked_windows: Optional[list] = None,
-                  note: Optional[str] = None) -> Optional[int]:
-    """Create or update a device's policy. Only provided fields change."""
+                  note: Optional[str] = None,
+                  pause_expires_at: Optional[str] = None,
+                  clear_pause_expiry: bool = False) -> Optional[int]:
+    """Create or update a device's policy. Only provided fields change.
+
+    ``pause_expires_at`` bounds a manual pause. Pass ``clear_pause_expiry`` to
+    deliberately make a pause open-ended; resuming always clears it, so a
+    stale expiry can never re-block a device later.
+    """
     mac = _norm_mac(mac)
     if not mac:
         return None
@@ -145,14 +185,24 @@ def upsert_policy(mac: str, paused: Optional[bool] = None,
             if existing is None:
                 cur.execute(
                     """INSERT INTO device_policies
-                           (device_mac, paused, daily_quota_mb, blocked_windows, note)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (mac, 1 if paused else 0, daily_quota_mb, windows_json, note),
+                           (device_mac, paused, daily_quota_mb, blocked_windows,
+                            note, pause_expires_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (mac, 1 if paused else 0, daily_quota_mb, windows_json, note,
+                     pause_expires_at),
                 )
             else:
                 sets, params = ["updated_at = CURRENT_TIMESTAMP"], []
                 if paused is not None:
                     sets.append("paused = ?"); params.append(1 if paused else 0)
+                    if not paused:
+                        # Resuming must not leave an expiry behind that could
+                        # be read as a live pause window later.
+                        sets.append("pause_expires_at = NULL")
+                if pause_expires_at is not None:
+                    sets.append("pause_expires_at = ?"); params.append(pause_expires_at)
+                elif clear_pause_expiry:
+                    sets.append("pause_expires_at = NULL")
                 if daily_quota_mb is not None:
                     sets.append("daily_quota_mb = ?"); params.append(daily_quota_mb or None)
                 if blocked_windows is not None:

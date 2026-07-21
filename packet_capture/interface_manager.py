@@ -130,9 +130,21 @@ class InterfaceManager:
         # Hotspot/public transitions are user-visible and must converge fast.
         self._hotspot_fast_interval = 5
         self._hotspot_entry_threshold = 1
-        self._hotspot_exit_threshold = 3
-        self._hotspot_exit_cooldown = 15
+        # Leaving hotspot is expensive (capture restart, twin reset, device
+        # re-scope) while entering is cheap, so the two are deliberately
+        # asymmetric. Windows drops the ICS adapter whenever the Mobile
+        # Hotspot has no client attached, which at the old 3x5s exit
+        # threshold produced a hotspot<->public_network flap roughly every
+        # 30 seconds. Require a full minute of agreement before believing it.
+        self._hotspot_exit_threshold = 12
+        self._hotspot_exit_cooldown = 60
         self._last_transition_time = 0.0
+
+        # Set when the capture engine reports its interface vanished. The next
+        # successful detection fires the mode-change callbacks even if the mode
+        # is unchanged, so capture restarts on an adapter that came back with
+        # the same name and IP (which is the normal case for ICS).
+        self._restart_requested = False
 
     # ================================================================== #
     #  PUBLIC API
@@ -225,20 +237,29 @@ class InterfaceManager:
     def notify_interface_lost(self) -> None:
         """Called when the capture engine detects its interface has disappeared.
 
-        Resets any pending stability counter and forces an immediate
-        re-detection that bypasses the stability threshold and cooldown,
-        so the system switches to the correct mode without delay.
+        Forces an immediate re-detection and records that capture needs to be
+        rebuilt once an interface is available again.
+
+        The stability threshold is bypassed only when we are *not* in a
+        hotspot-sensitive mode. Windows drops the ICS adapter every time the
+        last client disconnects, so accepting the first post-loss detection
+        there meant one idle moment flipped us to public_network and back —
+        the flap visible in the field logs. Losing the hotspot adapter is
+        therefore treated as a normal (slow, confirmed) transition, while the
+        restart flag still lets capture recover the instant it reappears.
         """
         logger.info("Interface lost notification — forcing immediate re-detection")
         from packet_capture.mode_detector import ModeDetector
         ModeDetector._mirror_probe_time = 0  # Allow immediate port-mirror probe
         with self._lock:
+            self._restart_requested = True
+            hotspot_sensitive = self._is_hotspot_sensitive_mode(self._current_mode)
             self._pending_mode = None
             self._pending_count = 0
-            self._last_transition_time = 0.0  # bypass cooldown
-            # Temporarily set threshold to 1 so the FIRST detection is accepted
             saved_threshold = self._stability_threshold
-            self._stability_threshold = 1
+            if not hotspot_sensitive:
+                self._last_transition_time = 0.0   # bypass cooldown
+                self._stability_threshold = 1      # accept first detection
         try:
             self._do_detect()
         finally:
@@ -435,6 +456,14 @@ class InterfaceManager:
                 capture_interface_mac=capture_iface_mac,
             )
 
+            # A pinned mode whose interface is temporarily absent must not be
+            # replaced by whatever else the OS is offering — that is the flap
+            # the pin exists to prevent. Hold the current mode and retry.
+            if (getattr(self._detector, "forced_mode_unavailable", False)
+                    and self._current_mode is not None):
+                logger.debug("Pinned mode interface absent — holding current mode")
+                return
+
         with self._lock:
             old_mode = self._current_mode
 
@@ -456,6 +485,19 @@ class InterfaceManager:
                     # Same mode as current — reset any pending transition
                     self._pending_mode = None
                     self._pending_count = 0
+
+                    # The adapter vanished and came back identical (ICS does
+                    # this every time the last client leaves and rejoins).
+                    # Nothing "changed", but capture is dead and must be
+                    # rebuilt, so fire the callbacks anyway.
+                    if self._restart_requested:
+                        self._restart_requested = False
+                        self._current_mode = new_mode
+                        changed = True
+                        logger.info(
+                            "Capture interface recovered on %s — restarting capture",
+                            new_mode.interface.name,
+                        )
 
                     if self._is_hotspot_sensitive_mode(old_mode):
                         # Keep hotspot/public detection tight so hotspot

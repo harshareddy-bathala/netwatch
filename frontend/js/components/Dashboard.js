@@ -79,6 +79,18 @@ export default class Dashboard {
           </div>
         </div>
 
+        <div class="briefing-card" id="briefing-card">
+          <div class="briefing-card__head">
+            <span class="briefing-card__title">What just happened?</span>
+            <button class="btn btn--sm" id="briefing-btn">Brief me</button>
+          </div>
+          <div class="briefing-card__body" id="briefing-body">
+            <span class="briefing-card__hint">
+              Ask for a plain-English account of the last 10 minutes.
+            </span>
+          </div>
+        </div>
+
         <div class="dashboard-grid__bottom">
           <div class="top-devices" id="top-devices-widget">
             <div class="top-devices__title">Top Devices</div>
@@ -94,6 +106,7 @@ export default class Dashboard {
     // (subscription is deferred until charts are ready to prevent
     // data arriving before chart objects exist)
     requestAnimationFrame(() => {
+      this._wireBriefing();
       this._bandwidthChart = new BandwidthChart('bandwidth-canvas');
       this._bandwidthChart.init();
 
@@ -139,6 +152,51 @@ export default class Dashboard {
   }
 
   /* ── Store handlers ──────────────────────────── */
+
+  /**
+   * Wire the "What just happened?" briefing.
+   *
+   * On demand rather than on a timer: it may run a local model, and nobody
+   * wants a paragraph regenerating under them every few seconds. The facts
+   * behind it are always current — they are gathered fresh per request.
+   */
+  _wireBriefing() {
+    const btn = this.container.querySelector('#briefing-btn');
+    const body = this.container.querySelector('#briefing-body');
+    if (!btn || !body) return;
+
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      btn.textContent = 'Thinking…';
+      body.innerHTML = '<span class="briefing-card__hint">Reading the last 10 minutes…</span>';
+
+      const api = (await import('../api.js')).default;
+      const resp = await api.getBriefing(10, true);
+
+      btn.disabled = false;
+      btn.textContent = 'Brief me';
+      if (!resp || resp.error || !resp.data) {
+        body.innerHTML = '<span class="briefing-card__hint">Briefing unavailable.</span>';
+        return;
+      }
+      const d = resp.data;
+      body.innerHTML = '';
+
+      const text = document.createElement('p');
+      text.className = 'briefing-card__text';
+      text.textContent = d.narrative || '';
+      body.appendChild(text);
+
+      // Name the author. A model-written paragraph and a computed one are
+      // both fine to show, but the viewer should know which they are reading.
+      const src = document.createElement('span');
+      src.className = 'briefing-card__source';
+      src.textContent = d.source === 'model'
+        ? 'Written by the local model from live data'
+        : 'Computed directly from live data';
+      body.appendChild(src);
+    });
+  }
 
   _onStats(stats) {
     if (!stats) return;

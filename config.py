@@ -134,6 +134,26 @@ ENABLE_AUTO_MODE_DETECTION = True
 # Useful when you want to guarantee no scanning / promiscuous behaviour
 FORCE_SAFE_MODE = False
 
+# Pin the capture mode and stop re-detecting it entirely.
+#
+# Auto-detection reads live OS state, and that state is not always stable:
+# Windows tears down the ICS virtual adapter when the Mobile Hotspot has no
+# client attached, so the detector legitimately sees "not a hotspot" and
+# switches to public_network, then back again seconds later. Every such flap
+# restarts capture, resets the digital twin, and re-scopes every device row.
+# During a live demo that reads as the app crashing.
+#
+# Set this (``--mode hotspot`` or ``NETWATCH_FORCE_MODE=hotspot``) and the
+# detector is bypassed: the named mode is built once from the matching
+# interface and never re-evaluated. Also the only reliable way to run
+# port_mirror, whose auto-detection needs traffic it cannot see until it is
+# already capturing on the right adapter.
+#
+# One of: hotspot | ethernet | public_network | port_mirror | auto (= off).
+_FORCE_MODE_RAW = os.getenv('NETWATCH_FORCE_MODE', '').strip().lower()
+VALID_FORCE_MODES = {'hotspot', 'ethernet', 'public_network', 'port_mirror'}
+FORCE_MODE = _FORCE_MODE_RAW if _FORCE_MODE_RAW in VALID_FORCE_MODES else None
+
 # Fraction of foreign source MACs (0.0-1.0) that indicates a port-mirror/SPAN port.
 # NOTE: Port mirror is ONLY detected on Ethernet interfaces.  Wi-Fi cannot carry
 # mirrored traffic (shared wireless medium causes false positives).  A physical

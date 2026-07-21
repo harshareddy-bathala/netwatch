@@ -2061,3 +2061,125 @@
   font-size: var(--font-size-xs);
   white-space: nowrap;
 }
+
+/* ==========================================================================
+   AI assessment card (Security page) + briefing card (Dashboard)
+   ========================================================================== */
+
+.incident-ai {
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-alt);
+}
+
+.incident-ai__pending {
+  color: var(--color-text-secondary);
+  font-size: 0.85rem;
+}
+
+.incident-ai__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.incident-ai__label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+}
+
+.incident-ai__conf {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  text-transform: uppercase;
+}
+.incident-ai__conf--high   { background: rgba(239, 68, 68, 0.15);  color: #ef4444; }
+.incident-ai__conf--medium { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
+.incident-ai__conf--low    { background: rgba(148, 163, 184, 0.15); color: #94a3b8; }
+
+.incident-ai__text {
+  margin: 0 0 var(--space-2);
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: var(--color-text);
+}
+
+.incident-ai__indicators {
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono, monospace);
+}
+
+.incident-ai__overruled {
+  margin-top: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  background: rgba(245, 158, 11, 0.10);
+  color: #f59e0b;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.incident-ai__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.incident-ai__hint {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+}
+
+/* -- Dashboard briefing --------------------------------------------------- */
+
+.briefing-card {
+  grid-column: 1 / -1;
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.briefing-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.briefing-card__title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.briefing-card__body {
+  min-height: 1.5rem;
+}
+
+.briefing-card__text {
+  margin: 0 0 var(--space-2);
+  font-size: 0.92rem;
+  line-height: 1.6;
+  color: var(--color-text);
+}
+
+.briefing-card__hint,
+.briefing-card__source {
+  font-size: 0.76rem;
+  color: var(--color-text-secondary);
+}
