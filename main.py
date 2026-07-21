@@ -67,7 +67,7 @@ from orchestration.background_tasks import (
     start_health_monitor, start_thread_watchdog,
     start_flow_normalizer, start_twin_builder, start_behavior_analyzer,
     start_threat_detector, start_vpn_detector, start_policy_enforcer,
-    start_traffic_blocker,
+    start_traffic_blocker, start_incident_assessor,
 )
 
 # Hostname resolver functions
@@ -568,6 +568,13 @@ def main():
             start_policy_enforcer()
         except Exception as e:
             logger.debug("Policy enforcer not started: %s", e)
+
+    # Prepare AI verdicts for security incidents as they appear, so opening
+    # one shows an answer instead of a spinner.
+    try:
+        start_incident_assessor()
+    except Exception as e:
+        logger.debug("Incident assessor not started: %s", e)
 
     # Start background hostname resolver and mDNS browser
     try:

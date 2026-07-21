@@ -77,7 +77,8 @@ export default class IncidentsView {
   destroy() {
     this._destroyed = true;
     if (this._timer) clearInterval(this._timer);
-    this._timer = null;
+    if (this._assessTimer) clearTimeout(this._assessTimer);
+    this._timer = this._assessTimer = null;
   }
 
   async _load() {
@@ -301,16 +302,34 @@ export default class IncidentsView {
    * seconds, and a retry would launch a *second* generation rather than
    * rescue the first.
    */
-  async _loadAssessment(inc, host) {
+  async _loadAssessment(inc, host, attempt = 0) {
     const resp = await api.assessIncident(inc.id);
     if (this._destroyed || !host.isConnected) return;
-    host.innerHTML = '';
 
     if (!resp || resp.error || !resp.data) {
       host.innerHTML = '<div class="incident-ai__pending">Assessment unavailable.</div>';
       return;
     }
     const v = resp.data;
+
+    // The background assessor hasn't reached this one yet (it was created
+    // seconds ago, or a new alert just changed it). Wait for it rather than
+    // starting a competing model run from the browser.
+    if (v.pending) {
+      host.innerHTML =
+        '<div class="incident-ai__pending">Preparing assessment…</div>';
+      if (attempt < 20) {
+        this._assessTimer = setTimeout(
+          () => this._loadAssessment(inc, host, attempt + 1), 3000);
+      } else {
+        host.innerHTML =
+          '<div class="incident-ai__pending">Assessment is taking longer '
+          + 'than usual.</div>';
+      }
+      return;
+    }
+
+    host.innerHTML = '';
 
     const head = document.createElement('div');
     head.className = 'incident-ai__head';
@@ -342,11 +361,15 @@ export default class IncidentsView {
     }
 
     if (v.overruled) {
+      // Plain English. The previous wording ("the evidence requires stronger
+      // containment, so it was not lowered") described the mechanism rather
+      // than what happened, and read as jargon to anyone who hadn't written it.
       const note = document.createElement('div');
       note.className = 'incident-ai__overruled';
       note.textContent =
-        `Note: the model suggested "${v.overruled.model_recommended}"; ` +
-        `the evidence requires stronger containment, so it was not lowered.`;
+        `The AI wanted to ${this._plainAction(v.overruled.model_recommended)}, `
+        + `but the evidence is strong enough that NetWatch kept the safer `
+        + `action instead. The AI can raise the response, never lower it.`;
       host.appendChild(note);
     }
 
@@ -387,6 +410,16 @@ export default class IncidentsView {
       monitor: 'Keep monitoring',
       throttle: 'Throttle device',
     }[action] || 'Apply recommendation';
+  }
+
+  /** Verb form, for use mid-sentence. */
+  _plainAction(action) {
+    return {
+      quarantine: 'cut this device off',
+      dismiss_benign: 'dismiss this as harmless',
+      monitor: 'just keep watching',
+      throttle: 'slow this device down',
+    }[action] || 'take a different action';
   }
 
   /** Merge runs of consecutive alerts that share the same type + message

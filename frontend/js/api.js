@@ -126,7 +126,12 @@ const api = {
   // AI responder — a proposal for one incident, then the operator's decision.
   // Same budget rules as investigations: a local model on CPU takes seconds,
   // and a retry would start a second generation rather than rescue the first.
-  assessIncident:      (id) => request(`/incidents/${id}/assess`, {
+  // Returns instantly: the background assessor normally has the verdict
+  // ready, and if it doesn't the response says `pending` rather than blocking
+  // behind a model run.
+  assessIncident:      (id) => request(`/incidents/${id}/assess`),
+  // Explicitly re-run the model for this incident (user-initiated only).
+  reassessIncident:    (id) => request(`/incidents/${id}/assess?refresh=1&wait=1`, {
       timeout: 240000, retries: 0,
   }),
   applyIncidentAction: (id, action, minutes=60) =>

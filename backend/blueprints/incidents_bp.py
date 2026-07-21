@@ -96,9 +96,30 @@ def assess_incident(incident_id: int):
     if incident is None:
         return error_response('Incident not found', code='NOT_FOUND', status=404)
 
-    from intelligence.responder import build_responder
-    verdict = build_responder().assess(incident)
-    return success_detail(verdict)
+    from intelligence.responder import assess_incident, assessment_store
+    from intelligence.responder import incident_fingerprint
+
+    force = request.args.get('refresh') in ('1', 'true', 'yes')
+
+    # The background assessor normally has a verdict ready before anyone opens
+    # the incident. If it does, return it immediately — recomputing on every
+    # view is what made this show "Assessing…" for seconds and throw the answer
+    # away whenever the page was left and revisited.
+    if not force:
+        cached = assessment_store.get(incident_id, incident_fingerprint(incident))
+        if cached is not None:
+            return success_detail(dict(cached, cached=True))
+
+        # Not ready yet (assessor hasn't reached it, or it just changed).
+        # Say so rather than blocking the request behind a model run.
+        if request.args.get('wait') not in ('1', 'true', 'yes'):
+            return success_detail({
+                "incident_id": incident_id,
+                "pending": True,
+                "reason": "Assessment is being prepared.",
+            })
+
+    return success_detail(assess_incident(incident, force=force))
 
 
 @incidents_bp.route('/api/incidents/<int:incident_id>/apply', methods=['POST'])

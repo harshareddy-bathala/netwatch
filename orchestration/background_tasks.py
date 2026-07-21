@@ -348,6 +348,64 @@ def start_policy_enforcer(interval: int = 5):
     return True
 
 
+def start_incident_assessor(interval: int = 20):
+    """Assess new and updated security incidents in the background.
+
+    An assessment that only starts when someone opens the incident means
+    staring at "Assessing…" for several seconds at exactly the moment you
+    wanted an answer. Since a verdict depends only on the incident's evidence,
+    it can be produced the moment that evidence appears.
+
+    Work is driven by the content fingerprint, so this runs the model only for
+    an incident that is genuinely new or has just had another alert fused into
+    it — an idle network costs nothing.
+    """
+    def _loop():
+        from database.queries import incident_queries
+        from intelligence.responder import (
+            assessment_store, build_responder, incident_fingerprint,
+        )
+
+        responder = None
+        logger.info("Incident assessor started (AI verdicts prepared in background)")
+        while not state.shutdown_event.wait(timeout=interval):
+            try:
+                open_incidents = incident_queries.get_incidents(
+                    status="open", limit=25) or []
+                if not open_incidents:
+                    continue
+
+                for row in open_incidents:
+                    if state.shutdown_event.is_set():
+                        return
+                    incident = incident_queries.get_incident(row["id"])
+                    if not incident:
+                        continue
+                    fp = incident_fingerprint(incident)
+                    if assessment_store.get(incident["id"], fp) is not None:
+                        continue        # current verdict already stored
+
+                    # Build the responder lazily: probing for a local model on
+                    # every sweep would be wasteful when nothing has changed.
+                    if responder is None:
+                        responder = build_responder()
+                    verdict = responder.assess(incident)
+                    verdict["cached"] = False
+                    assessment_store.put(incident["id"], fp, verdict)
+                    logger.info(
+                        "Assessed incident #%s -> %s (%s)",
+                        incident["id"], verdict.get("recommended_action"),
+                        verdict.get("source"),
+                    )
+            except Exception as e:
+                logger.debug("Incident assessor error: %s", e)
+
+    t = threading.Thread(target=_loop, name="IncidentAssessor", daemon=True)
+    t.start()
+    state.incident_assessor_thread = t
+    return True
+
+
 def start_traffic_blocker():
     """Start the WinDivert/ARP packet-level enforcer (parental controls)."""
     from packet_capture.traffic_blocker import TrafficBlocker

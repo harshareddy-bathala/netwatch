@@ -379,3 +379,61 @@ class TestDeviceTimestampsAreUTC:
             conn.commit()
 
         assert bt._macs_to_ips({"22:5e:3e:1a:d0:f3"}) == set()
+
+
+class TestQuotaCountsBothDirections:
+    """A daily data cap must count downloads.
+
+    Reported: Controls showed "Today: 3.9 MB · no cap" for a phone the
+    dashboard showed using ~50 MB. Not a unit conversion — the quota query
+    summed only flows where the device was the SOURCE, i.e. uploads. The phone
+    had sent 4.2 MB and received 45.8 MB.
+    """
+
+    def test_download_is_included(self, initialized_db):
+        from database.connection import get_connection
+        from database.queries.policy_queries import get_usage_today_by_mac
+
+        phone, peer = "22:5e:3e:1a:d0:f3", "2e:d0:43:a5:22:70"
+        with get_connection() as conn:
+            conn.execute(
+                """INSERT INTO flows (first_seen, last_seen, source_ip, dest_ip,
+                                      protocol, source_mac, dest_mac,
+                                      bytes_total, packets_total, is_control)
+                   VALUES (datetime('now'), datetime('now'), ?, ?, 'TCP', ?, ?,
+                           ?, 10, 0)""",
+                ("192.168.137.142", "57.144.56.196", phone, peer, 4_000_000),
+            )
+            conn.execute(
+                """INSERT INTO flows (first_seen, last_seen, source_ip, dest_ip,
+                                      protocol, source_mac, dest_mac,
+                                      bytes_total, packets_total, is_control)
+                   VALUES (datetime('now'), datetime('now'), ?, ?, 'TCP', ?, ?,
+                           ?, 40, 0)""",
+                ("57.144.56.196", "192.168.137.142", peer, phone, 46_000_000),
+            )
+            conn.commit()
+
+        usage = get_usage_today_by_mac()
+        assert usage.get(phone) == 50_000_000, (
+            "quota must count both directions, not uploads only"
+        )
+
+    def test_control_traffic_is_excluded(self, initialized_db):
+        """A cap should measure what the user did, not ARP/DHCP overhead."""
+        from database.connection import get_connection
+        from database.queries.policy_queries import get_usage_today_by_mac
+
+        phone = "22:5e:3e:1a:d0:f3"
+        with get_connection() as conn:
+            conn.execute(
+                """INSERT INTO flows (first_seen, last_seen, source_ip, dest_ip,
+                                      protocol, source_mac, dest_mac,
+                                      bytes_total, packets_total, is_control)
+                   VALUES (datetime('now'), datetime('now'), ?, ?, 'ARP', ?, ?,
+                           ?, 5, 1)""",
+                ("192.168.137.142", "192.168.137.1", phone, "2e:d0:43:a5:22:70",
+                 999_999),
+            )
+            conn.commit()
+        assert get_usage_today_by_mac().get(phone, 0) == 0

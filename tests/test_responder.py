@@ -230,3 +230,79 @@ class TestContainmentFloor:
         assert v["recommended_action"] == "dismiss_benign"
         assert "overruled" not in v
         assert v["assessment"] == "CDN."
+
+
+class TestAssessmentStore:
+    """A verdict is a function of the evidence, so it is computed once per
+    change — not on every page view.
+
+    Reported: opening an incident showed "Assessing…" for seconds, and leaving
+    the page and returning threw the answer away and ran the model again.
+    """
+
+    def test_fingerprint_changes_when_an_alert_is_added(self):
+        from intelligence.responder import incident_fingerprint
+        inc = _dns_fp_incident()
+        inc["alerts"][0]["id"] = 1
+        before = incident_fingerprint(inc)
+        inc["alerts"].append({"id": 2, "message": "another", "details": {}})
+        assert incident_fingerprint(inc) != before
+
+    def test_fingerprint_is_stable_for_unchanged_evidence(self):
+        from intelligence.responder import incident_fingerprint
+        inc = _dns_fp_incident()
+        inc["alerts"][0]["id"] = 1
+        assert incident_fingerprint(inc) == incident_fingerprint(_dns_fp_incident()
+                                                                 | {"alerts": inc["alerts"]})
+
+    def test_second_view_reuses_the_stored_verdict(self):
+        from intelligence.responder import (
+            AssessmentStore, assess_incident, assessment_store,
+        )
+        inc = _dns_fp_incident()
+        inc["alerts"][0]["id"] = 1
+        assessment_store.forget(inc["id"])
+
+        calls = []
+
+        class Counting(Responder):
+            def assess(self, incident):
+                calls.append(1)
+                return super().assess(incident)
+
+        r = Counting(runtime=None)
+        first = assess_incident(inc, responder=r)
+        second = assess_incident(inc, responder=r)
+        assert len(calls) == 1
+        assert first["recommended_action"] == second["recommended_action"]
+        assert second["cached"] is True
+
+    def test_new_evidence_forces_a_fresh_verdict(self):
+        from intelligence.responder import assess_incident, assessment_store
+        inc = _dns_fp_incident()
+        inc["alerts"][0]["id"] = 1
+        assessment_store.forget(inc["id"])
+        calls = []
+
+        class Counting(Responder):
+            def assess(self, incident):
+                calls.append(1)
+                return super().assess(incident)
+
+        r = Counting(runtime=None)
+        assess_incident(inc, responder=r)
+        inc["alerts"].append({"id": 2, "message": "port scan",
+                              "details": {"threat_type": "port_scan",
+                                          "confidence": 0.95,
+                                          "evidence": [{"signal": "vertical_scan"}]}})
+        out = assess_incident(inc, responder=r)
+        assert len(calls) == 2
+        assert out["cached"] is False
+
+    def test_store_isolates_incidents(self):
+        from intelligence.responder import AssessmentStore
+        s = AssessmentStore()
+        s.put(1, "fp1", {"recommended_action": "monitor"})
+        assert s.get(2, "fp1") is None
+        assert s.get(1, "fp1")["recommended_action"] == "monitor"
+        assert s.get(1, "different") is None

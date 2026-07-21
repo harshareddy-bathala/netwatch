@@ -506,3 +506,52 @@ class TestRuntimeFailureMidLoop:
         # The tool result gathered before the failure is preserved.
         assert len(result["tool_calls"]) == 1
         assert result["tool_calls"][0]["tool"] == "query_metrics"
+
+
+class TestSmalltalk:
+    """"hi" is not a request for a traffic analysis.
+
+    The system prompt forces a tool call before any answer — necessary, or a
+    small model invents network facts. But applied to a greeting it produced a
+    full network report, which is a strange thing to hand someone who said
+    hello. Greetings are matched deterministically and answered without
+    touching a tool or the model: instant, and it cannot drift.
+    """
+
+    def test_greetings_are_not_investigations(self):
+        from intelligence.investigator import smalltalk_reply
+        for q in ("hi", "Hello!", "hey there", "good morning", "thanks",
+                  "who are you", "what can you do", "ok"):
+            assert smalltalk_reply(q) is not None, q
+
+    def test_real_questions_are_never_swallowed(self):
+        from intelligence.investigator import smalltalk_reply
+        for q in ("what devices are on the network",
+                  "hi, which device uses most data",
+                  "is my phone connected?",
+                  "how many devices",
+                  "any security issues?",
+                  "show bandwidth"):
+            assert smalltalk_reply(q) is None, q
+
+    def test_smalltalk_costs_no_model_call_and_cites_nothing(self):
+        from intelligence.investigator import Investigator
+        from intelligence.llm_runtime import ScriptedRuntime
+        rt = ScriptedRuntime(['{"action":"answer","answer":"should not run",'
+                              '"citations":[]}'])
+        out = Investigator(rt).investigate("hi")
+        assert rt.calls == []                 # the model was never consulted
+        assert out["citations"] == []         # nothing was looked up, so nothing cited
+        assert out["tool_calls"] == []
+        assert out["smalltalk"] is True
+
+    def test_smalltalk_reply_suggests_what_to_ask(self):
+        from intelligence.investigator import smalltalk_reply
+        reply = smalltalk_reply("hi")
+        assert "devices" in reply.lower()
+        assert "bandwidth" in reply.lower()
+
+    def test_empty_input_is_not_smalltalk(self):
+        from intelligence.investigator import smalltalk_reply
+        assert smalltalk_reply("") is None
+        assert smalltalk_reply("   ") is None

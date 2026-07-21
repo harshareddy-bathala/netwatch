@@ -65,6 +65,7 @@ mode_transition_events_lock = threading.Lock()
 detector_thread = None
 cleanup_thread = None
 discovery_thread = None
+incident_assessor_thread = None   # AI verdicts prepared ahead of viewing
 
 # ---- Discovery singleton -----------------------------------------------------
 

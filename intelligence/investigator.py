@@ -67,6 +67,64 @@ part is unavailable and answer with what you do have.
 """
 
 
+# Conversational openers that are not questions about the network. The system
+# prompt deliberately forces a tool call before any answer — without that, a
+# small model happily invents network facts. But applied to "hi" it produced a
+# full traffic analysis, which is a strange thing to be handed for a greeting.
+#
+# These are matched deterministically and answered without a model call at all:
+# instant, and it cannot drift into pretending a greeting was a question.
+_SMALLTALK = {
+    "hi", "hii", "hiii", "hey", "heya", "hello", "helo", "hai", "yo",
+    "good morning", "good afternoon", "good evening", "greetings",
+    "thanks", "thank you", "thx", "ty", "ok", "okay", "cool", "nice",
+    "bye", "goodbye", "test", "testing",
+}
+_CAPABILITY_QUESTIONS = {
+    "who are you", "what are you", "what can you do", "what do you do",
+    "help", "what can i ask", "what can i ask you", "how do you work",
+    "what is this",
+}
+# If any of these appear, it is a real question however short — never small talk.
+_NETWORK_TERMS = (
+    "device", "network", "traffic", "bandwidth", "alert", "block", "phone",
+    "wifi", "wi-fi", "hotspot", "ip", "mac", "dns", "incident", "security",
+    "usage", "data", "client", "connect", "download", "upload", "speed",
+    "threat", "scan", "vpn", "protocol", "port", "domain", "app",
+)
+
+_SMALLTALK_REPLY = (
+    "Hello. I answer questions about this network by looking up live data — "
+    "I don't guess, and I show which sources I used.\n\n"
+    "Try asking:\n"
+    "• What devices are on the network right now?\n"
+    "• Which device is using the most bandwidth?\n"
+    "• What has this phone been doing?\n"
+    "• Are there any security issues I should know about?"
+)
+
+
+def smalltalk_reply(question: str) -> Optional[str]:
+    """Return a canned reply when *question* is a greeting, not a question.
+
+    Deliberately conservative: anything containing a network term, or longer
+    than a few words, falls through to a real grounded investigation.
+    """
+    if not question:
+        return None
+    text = question.strip().lower().strip("?!.,;: ")
+    if not text:
+        return None
+    if any(term in text for term in _NETWORK_TERMS):
+        return None
+    if text in _SMALLTALK or text in _CAPABILITY_QUESTIONS:
+        return _SMALLTALK_REPLY
+    # "hi there", "hello!!" — a greeting plus filler, still not a question.
+    if len(text.split()) <= 3 and text.split()[0] in _SMALLTALK:
+        return _SMALLTALK_REPLY
+    return None
+
+
 class Investigator:
     """Runs the tool-grounded investigation loop against an LLM runtime."""
 
@@ -76,6 +134,21 @@ class Investigator:
 
     def investigate(self, question: str) -> Dict[str, Any]:
         """Answer *question*.  Returns a structured, auditable result."""
+        # A greeting is not an investigation. Answering it without touching a
+        # tool or the model is both instant and honest — there are no sources
+        # to cite because nothing was looked up.
+        canned = smalltalk_reply(question)
+        if canned is not None:
+            return {
+                "available": True,
+                "question": question,
+                "answer": canned,
+                "citations": [],
+                "tool_calls": [],
+                "steps": 0,
+                "smalltalk": True,
+            }
+
         messages = [
             {"role": "system",
              "content": _SYSTEM_PROMPT.format(tools=self._render_tools())},

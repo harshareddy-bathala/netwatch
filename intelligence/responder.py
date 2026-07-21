@@ -42,6 +42,7 @@ less useful than one that talks you down.
 
 import json
 import logging
+import threading
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -464,6 +465,79 @@ class Responder:
             "available_signals": ev.get("signals"),
             "domain_context": domain_context,
         }
+
+
+# --------------------------------------------------------------------------- #
+#  Assessment store
+# --------------------------------------------------------------------------- #
+
+def incident_fingerprint(incident: dict) -> str:
+    """Identity of an incident's *content*, not just its id.
+
+    An incident is mutable: alerts keep fusing into it. The fingerprint changes
+    exactly when the evidence does, which is the only time a verdict needs
+    redoing — so navigating away and back, or refreshing, reuses the stored
+    answer instead of paying for another model run.
+    """
+    alerts = incident.get("alerts") or []
+    last_id = max((a.get("id") or 0) for a in alerts) if alerts else 0
+    return f"{incident.get('id')}:{len(alerts)}:{last_id}:{incident.get('status')}"
+
+
+class AssessmentStore:
+    """Process-wide cache of incident verdicts, keyed by content fingerprint.
+
+    Assessments were previously recomputed on every view: opening an incident
+    showed "Assessing…" for several seconds, and leaving the page and coming
+    back threw the answer away and ran the model again. A verdict is a function
+    of the evidence, so it only has to be produced once per change.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._by_incident: Dict[int, tuple] = {}     # id -> (fingerprint, verdict)
+
+    def get(self, incident_id, fingerprint: Optional[str] = None):
+        with self._lock:
+            entry = self._by_incident.get(incident_id)
+        if entry is None:
+            return None
+        stored_fp, verdict = entry
+        if fingerprint is not None and stored_fp != fingerprint:
+            return None                       # evidence changed — stale
+        return verdict
+
+    def put(self, incident_id, fingerprint: str, verdict: dict) -> None:
+        with self._lock:
+            self._by_incident[incident_id] = (fingerprint, verdict)
+
+    def forget(self, incident_id) -> None:
+        with self._lock:
+            self._by_incident.pop(incident_id, None)
+
+    def known_fingerprints(self) -> Dict[int, str]:
+        with self._lock:
+            return {i: fp for i, (fp, _v) in self._by_incident.items()}
+
+
+# The store is shared by the API and the background assessor so a verdict
+# computed ahead of time is the one the page renders.
+assessment_store = AssessmentStore()
+
+
+def assess_incident(incident: dict, responder: Optional[Responder] = None,
+                    force: bool = False) -> dict:
+    """Return this incident's verdict, computing it only if it isn't current."""
+    fp = incident_fingerprint(incident)
+    if not force:
+        cached = assessment_store.get(incident.get("id"), fp)
+        if cached is not None:
+            return dict(cached, cached=True)
+
+    verdict = (responder or build_responder()).assess(incident)
+    verdict["cached"] = False
+    assessment_store.put(incident.get("id"), fp, verdict)
+    return verdict
 
 
 def build_responder(model: Optional[str] = None) -> Responder:

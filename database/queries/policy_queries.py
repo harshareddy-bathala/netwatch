@@ -234,7 +234,18 @@ def delete_policy(mac: str) -> bool:
 
 
 def get_usage_today_by_mac(since_midnight: Optional[str] = None) -> Dict[str, int]:
-    """Per-device byte totals since local midnight, from the flows table."""
+    """Per-device byte totals since local midnight, from the flows table.
+
+    Counts traffic in **both directions**. Only summing flows where the device
+    is the *source* measured uploads alone, so a phone that had downloaded
+    45.8 MB and uploaded 4.2 MB reported "3.9 MB today" on the Controls page
+    while the dashboard correctly showed ~50 MB for the same device. A daily
+    data cap that ignores downloads is not a data cap.
+
+    Control traffic (ARP, DHCP, ICMP…) is excluded, matching the app-bytes the
+    dashboard shows — a quota should measure what the user actually did, not
+    the protocol overhead of being on the network.
+    """
     if since_midnight is None:
         since_midnight = datetime.now().strftime("%Y-%m-%d 00:00:00")
     out: Dict[str, int] = {}
@@ -242,11 +253,20 @@ def get_usage_today_by_mac(since_midnight: Optional[str] = None) -> Dict[str, in
         with get_connection() as conn:
             cur = conn.cursor()
             cur.execute(
-                """SELECT LOWER(source_mac) AS mac, SUM(bytes_total) AS b
-                   FROM flows
-                   WHERE last_seen >= ? AND source_mac IS NOT NULL
-                   GROUP BY LOWER(source_mac)""",
-                (since_midnight,),
+                """SELECT mac, SUM(b) FROM (
+                       SELECT LOWER(source_mac) AS mac, bytes_total AS b
+                       FROM flows
+                       WHERE last_seen >= ? AND source_mac IS NOT NULL
+                         AND COALESCE(is_control, 0) = 0
+                       UNION ALL
+                       SELECT LOWER(dest_mac) AS mac, bytes_total AS b
+                       FROM flows
+                       WHERE last_seen >= ? AND dest_mac IS NOT NULL
+                         AND COALESCE(is_control, 0) = 0
+                   )
+                   WHERE mac IS NOT NULL AND mac != ''
+                   GROUP BY mac""",
+                (since_midnight, since_midnight),
             )
             for row in cur.fetchall():
                 mac = row[0]
