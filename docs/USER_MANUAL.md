@@ -8,8 +8,13 @@ This guide explains how to use the NetWatch dashboard to monitor your network.
 2. [Main Dashboard](#main-dashboard)
 3. [Devices Page](#devices-page)
 4. [Alerts Page](#alerts-page)
-5. [Understanding the Data](#understanding-the-data)
-6. [Tips and Best Practices](#tips-and-best-practices)
+5. [Security Page](#security-page)
+6. [Ask NetWatch](#ask-netwatch)
+7. [Activity Page](#activity-page)
+8. [Controls Page](#controls-page)
+9. [Topology, Forecast & Behavior](#topology-forecast--behavior)
+10. [Understanding the Data](#understanding-the-data)
+11. [Tips and Best Practices](#tips-and-best-practices)
 
 ---
 
@@ -44,12 +49,23 @@ The main dashboard (`index.html`) provides a real-time overview of your network.
 
 ### Navigation Bar
 
-Located at the top of every page:
-- **NetWatch Logo:** Click to return to dashboard
-- **Dashboard:** Main overview (current page)
-- **Devices:** Full device list
-- **Alerts:** Alert feed
-- **Status Indicator:** Green dot = healthy, Yellow = warning, Red = critical
+The sidebar is present on every page:
+
+| Item | Route | Purpose |
+|---|---|---|
+| **Dashboard** | `/` | Real-time overview |
+| **Devices** | `/devices` | Full device list |
+| **Alerts** | `/alerts` | Raw alert feed and alert rules |
+| **Topology** | `/topology` | Network graph |
+| **Security** | `/security` | Incidents, ranked by risk |
+| **Forecast** | `/forecast` | Bandwidth projection |
+| **Behavior** | `/behavior` | Learned per-device baselines |
+| **Activity** | `/activity` | Live site/app feed |
+| **Controls** | `/controls` | Blocking, quotas, pauses |
+| **Ask NetWatch** | `/ask` | Ask questions in plain English |
+
+A mode badge shows the current capture mode and what it can see. The status
+indicator: green dot = healthy, yellow = warning, red = critical.
 
 ### Metric Cards
 
@@ -202,6 +218,172 @@ To mark an alert as handled:
 1. Click the "Resolve" button on the alert
 2. Alert moves to resolved state
 3. Use "Show resolved" toggle to view
+
+---
+
+## Security Page
+
+The Alerts page shows you *everything*. The Security page shows you what to
+actually do something about.
+
+### Incidents, not alerts
+
+A device doing something odd rarely produces one alert — it produces thirty.
+NetWatch groups alerts that belong to the same story into a single **incident**:
+alerts for the same device arriving within 30 minutes of an open incident join
+it instead of piling up. You triage three incidents instead of three hundred
+alerts.
+
+Each incident shows:
+
+- **Risk score and band** — incidents are listed highest-risk first
+- **Category and severity** — rolled up from its member alerts
+- **Alert count** — how many individual detections it absorbed
+- **Evidence** — expand any member alert to see exactly what was observed and
+  the detector's confidence
+
+### AI assessment
+
+Open an incident and NetWatch offers an assessment: what this looks like, how
+confident it is, which indicators matched, and a recommended action. A
+background assessor usually has this ready before you open the incident; if it
+doesn't yet, you'll see "being prepared" rather than a frozen page.
+
+Read the **source** label:
+
+| Source | Meaning |
+|---|---|
+| `model` | A local language model wrote this, grounded in the incident evidence |
+| `rules` | No model is running — this is the deterministic fallback verdict |
+
+Both are useful; they deserve different levels of trust, which is why the page
+tells you which one you're reading.
+
+### Acting on a recommendation
+
+Nothing is applied automatically. The recommendation is a proposal with a
+button next to it, and you are the one who presses it:
+
+| Action | What happens when you approve it |
+|---|---|
+| **Quarantine** | Pauses that device for 60 minutes (adjustable) |
+| **Dismiss as benign** | Resolves the incident |
+| **Monitor** / **Throttle** | Advisory only — nothing changes on the wire |
+
+A quarantine is an ordinary timed pause: it appears on the Controls page and is
+released by the same button that releases any other block. There is no hidden
+"AI action" you cannot see or undo.
+
+---
+
+## Ask NetWatch
+
+Ask questions about your own network in plain English:
+
+> *"Which device used the most data in the last hour?"*
+> *"Has anything unusual happened today?"*
+> *"What is the tablet talking to?"*
+
+NetWatch answers by querying its own database through a small set of read-only
+tools, then showing you **both the answer and the tool trace** — every query it
+ran and what came back. If an answer looks wrong, expand the trace and check it
+against the data.
+
+**This needs a local model.** If the page says it's unavailable, install
+[Ollama](https://ollama.com) and run `ollama pull llama3.2:3b`. Nothing else on
+the dashboard depends on it, and no data leaves your machine either way.
+
+Questions are capped at 1000 characters, and each one gets a budget of 6 tool
+calls before the loop stops.
+
+---
+
+## Activity Page
+
+A live feed of *what your devices are actually doing* — not just how many bytes
+moved, but which site and app.
+
+NetWatch works this out offline, from the server names devices ask for (DNS) and
+announce (TLS/QUIC SNI), matched against a bundled catalog of consumer services.
+So `scontent-xyz.cdninstagram.com` reads as **Instagram (Meta)**, not as an
+anonymous IP address.
+
+Filter by device to see one client's activity. Note that this identifies
+*destinations*, not content: NetWatch can tell you a phone is using YouTube. It
+cannot tell you what was watched, and does not try.
+
+---
+
+## Controls Page
+
+Where you actually restrict things.
+
+### Blocking rules
+
+Block a domain for one device or for the whole network. Rules take effect on the
+next lookup, not at the next restart.
+
+### Parental controls
+
+Per device:
+
+- **Daily data quota** — a cap in MB; usage today is shown alongside it
+- **Blocked time windows** — e.g. 22:00–07:00
+- **Pause** — cut a device off now, for a set number of minutes
+
+> Pauses default to 60 minutes and max out at 24 hours, on purpose. An
+> open-ended pause survives restarts and is easy to forget — one set in the
+> morning was still silently blocking a phone hours later. You can still make a
+> pause open-ended, but you have to choose it deliberately.
+
+### Read the enforcement banner
+
+This is the important part. Blocking only works when client traffic actually
+passes *through* this machine:
+
+| Banner | Meaning |
+|---|---|
+| **Enforcing (packet)** | Kernel-level blocking via WinDivert — apps cannot bypass it |
+| **Enforcing (DNS)** | DNS sinkhole only. Apps using encrypted DNS or cached IPs over QUIC — Instagram, YouTube, Brave — **can** get around it |
+| **Not enforcing** | Rules are saved but doing nothing: capture isn't running, or you're not in hotspot mode |
+
+NetWatch tells you plainly which of these you're in rather than showing a rules
+page that quietly does nothing. For full enforcement on Windows, install
+pydivert (`pip install pydivert`) and run as Administrator.
+
+---
+
+## Topology, Forecast & Behavior
+
+### Topology
+
+A live graph of who talks to whom: your devices, the gateway, this host, and the
+external services they reach. Edge thickness follows traffic volume. Useful for
+spotting a device talking to something nothing else on the network talks to.
+
+### Forecast
+
+Projects total bandwidth forward (30 minutes by default) with a confidence band
+that widens the further out it looks. This is ordinary curve-fitting on your
+recent traffic — no model involved.
+
+To get a **saturation ETA** ("you'll hit your link limit in ~12 minutes"), set
+`FORECAST_LINK_CAPACITY_MBPS` to your actual link speed. Without it, NetWatch
+doesn't know what "full" means and leaves the ETA blank.
+
+It needs roughly 20 minutes of history before it will forecast at all; until
+then it says so rather than guessing.
+
+### Behavior
+
+Every device gets a profile of what *normal* looks like for it, broken down by
+hour of the week — a work laptop at 3pm Tuesday is a different baseline from the
+same laptop at 3am Sunday. Once a bucket has enough samples, NetWatch flags
+deviations by how many standard deviations out they are.
+
+This is why "device transferred 2 GB" isn't automatically an alert: if that
+device transfers 2 GB every Tuesday afternoon, it's normal. Baselines take a few
+days to become useful.
 
 ---
 

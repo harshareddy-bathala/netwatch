@@ -19,6 +19,12 @@
 - [Network Discovery](#network-discovery)
 - [GeoIP](#geoip)
 - [Digital Twin & Intelligence](#digital-twin--intelligence)
+- [Forecasting](#forecasting)
+- [Incidents & AI Response](#incidents--ai-response)
+- [Ask NetWatch](#ask-netwatch)
+- [Briefing](#briefing)
+- [Blocking Rules](#blocking-rules)
+- [Parental Controls](#parental-controls)
 - [Export](#export)
 - [System & Metrics](#system--metrics)
 - [Server-Sent Events (SSE)](#server-sent-events-sse)
@@ -1079,6 +1085,329 @@ Behavior anomalies surface as regular alerts (`alert_type: "anomaly"`) whose
 `confidence` (0-1), and an `evidence[]` array of
 `{metric, observed, baseline_mean, baseline_std, baseline_samples, z_score, hour_of_week}`.
 
+### `GET /api/activity/recent`
+
+Live per-client activity feed: which site and app each device is using, resolved
+offline from SNI/DNS through the bundled app catalog.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `limit` | int | 100 | Max rows |
+| `mac` | string | — | Filter to one device |
+
+### `GET /api/threats/recent`
+
+Recent threat detections, including VPN/tunnel classifications, each with its
+`evidence[]` and `confidence`.
+
+---
+
+## Forecasting
+
+Computed on demand from the telemetry tables and TTL-cached. Pure math (Holt
+double-exponential smoothing) — no model and no ML dependency. When there is not
+enough history yet these return `available: false` with a `reason` instead of
+failing.
+
+### `GET /api/forecast/bandwidth`
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `horizon` | int | `FORECAST_HORIZON_MINUTES` (30) | Minutes to project forward |
+
+**Response:**
+
+```json
+{
+  "data": {
+    "available": true,
+    "horizon_minutes": 30,
+    "points": [{"minute": 1, "mbps": 12.4, "lower": 9.1, "upper": 15.7}],
+    "saturation_eta_minutes": null,
+    "link_capacity_mbps": 0
+  }
+}
+```
+
+The confidence band widens as `±1.96·σ·√k` with the step count `k`.
+`saturation_eta_minutes` is only meaningful once you set
+`FORECAST_LINK_CAPACITY_MBPS` to your actual link speed; it stays `null`
+otherwise.
+
+### `GET /api/forecast/devices`
+
+Active-device-count trend from a least-squares fit.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `horizon` | int | 6 | Hours to project forward |
+
+---
+
+## Incidents & AI Response
+
+An incident groups alerts that belong to the same story: alerts for one device
+(or network-wide) arriving within `INCIDENT_WINDOW_MINUTES` of an open incident
+join it rather than piling up separately. Reads work even when the
+`IncidentManager` is not attached — incidents are plain rows; only *fusion of new
+alerts* needs the manager.
+
+### `GET /api/incidents`
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `status` | string | — | `open` or `resolved`; anything else → 400 `BAD_STATUS` |
+| `limit` | int | 50 | Max incidents |
+
+Returned highest-risk-first. Every incident carries a computed `risk_score` and
+`risk_band`.
+
+### `GET /api/incidents/stats`
+
+```json
+{ "data": { "open_count": 3, "triage": { } } }
+```
+
+`triage` is `null` when the incident manager is not running.
+
+### `GET /api/incidents/<id>`
+
+One incident plus its member alerts. `404 NOT_FOUND` if it does not exist.
+
+### `POST /api/incidents/<id>/resolve`
+
+Mark an incident resolved. `404` if it does not exist or is already resolved.
+
+### `GET /api/incidents/<id>/assess`
+
+The AI assessment: what this incident looks like, and what to do about it.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `refresh` | `1`/`true`/`yes` | Recompute, bypassing the cache |
+| `wait` | `1`/`true`/`yes` | Block until the assessment is ready |
+
+A background assessor normally has a verdict ready before anyone opens the
+incident. If it does, you get it immediately with `"cached": true`. If not, the
+default is to return a placeholder rather than block a request behind a model
+run:
+
+```json
+{ "data": { "incident_id": 12, "pending": true,
+            "reason": "Assessment is being prepared." } }
+```
+
+A completed verdict looks like:
+
+```json
+{
+  "data": {
+    "incident_id": 12,
+    "assessment": "A device is contacting one host on a fixed 60s interval …",
+    "confidence": 0.72,
+    "indicators_matched": ["beaconing", "unknown_destination_org"],
+    "recommended_action": "quarantine",
+    "source": "model"
+  }
+}
+```
+
+`source` is `"model"` when a local LLM produced it and `"rules"` when it came
+from the deterministic fallback — those deserve different levels of trust, so
+the API states which one you got. `recommended_action` is always one of
+`monitor`, `throttle`, `quarantine`, `dismiss_benign`.
+
+### `POST /api/incidents/<id>/apply`
+
+Act on a recommendation **the operator approved**. Nothing in the assessment
+path applies itself; this call is the only thing that changes state.
+
+```json
+{ "action": "quarantine", "minutes": 60 }
+```
+
+| Action | Effect |
+|---|---|
+| `quarantine` | Pauses the incident's device for `minutes` (default 60) via the ordinary policy path, then kicks the enforcer |
+| `dismiss_benign` | Resolves the incident |
+| `monitor` / `throttle` | Advisory — `applied: false`, nothing changes on the wire |
+
+A quarantine is deliberately routed through the same timed-pause machinery as
+any other block: it shows up on the Controls page and is released by the same
+button. An action a human cannot see or undo is not one an AI should be allowed
+to take.
+
+`400 BAD_REQUEST` if `action` is not one of the four, or if `quarantine` is
+requested for an incident with no device MAC.
+
+---
+
+## Ask NetWatch
+
+Natural-language questions answered by a tool-calling loop over three read-only
+tools. Fully local — the investigator only ever talks to a local Ollama server.
+When no model is reachable these return `available: false` with a reason rather
+than failing.
+
+### `GET /api/investigate/status`
+
+```json
+{ "data": { "available": true, "model": "llama3.2:3b",
+            "tools": ["query_metrics", "query_graph", "list_incidents"] } }
+```
+
+When unavailable, `available: false` plus a `reason` explaining how to install
+Ollama and pull the model.
+
+### `GET /api/investigate/tools`
+
+The JSON schema of the grounding tools the model is allowed to call. These are
+the *only* data surface it can touch, and all three are read-only.
+
+### `POST /api/investigate`
+
+```json
+{ "question": "which device used the most data in the last hour?" }
+```
+
+| Error | Condition |
+|---|---|
+| `400 NO_QUESTION` | Empty or missing `question` |
+| `400 QUESTION_TOO_LONG` | Over 1000 characters |
+
+The response carries the answer *and* the full tool-call trace — every tool
+invoked, its arguments, and what it returned — so any claim can be checked
+against the data it came from. The loop stops at the first answer or after
+`NETWATCH_LLM_MAX_STEPS` (default 6) steps.
+
+---
+
+## Briefing
+
+### `GET /api/briefing`
+
+A short plain-English account of what just happened on the network.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `minutes` | int | 10 | Window length, clamped to 1–120 |
+| `force` | `1`/`true`/`yes` | — | Bypass the short cache |
+
+The facts are gathered deterministically; the model is only asked to *narrate*
+them. The response says whether the narrative was written by the model or
+composed from the facts, and the raw facts travel with it so the claim can be
+checked. With no model running you still get a briefing — just an unnarrated
+one.
+
+---
+
+## Blocking Rules
+
+Domain blocking, enforced by `packet_capture.dns_blocker` on the capture thread
+and, where available, by kernel-level packet drop. Every mutation reloads the
+running blockers so a rule takes effect on the next lookup rather than at the
+next restart.
+
+Every response includes a `status` object alongside `data`:
+
+```json
+{
+  "status": {
+    "enforcing": true,
+    "level": "packet",
+    "mode": "hotspot",
+    "packet_mode": "windivert",
+    "reason": null
+  }
+}
+```
+
+`level` is `packet` (WinDivert — cannot be bypassed), `dns` (sinkhole only —
+apps using DoH or cached IPs over QUIC *can* bypass it), or `none`. When
+`enforcing` is false, `reason` says exactly why: capture is not running, or the
+current mode is not `hotspot` so rules are **saved but not enforced**.
+
+### `GET /api/blocking/rules`
+
+List all rules plus the enforcement status above.
+
+### `POST /api/blocking/rules`
+
+```json
+{ "domain": "example.com", "device_mac": "aa:bb:cc:00:00:01",
+  "scope": "device", "note": "optional" }
+```
+
+`scope` is `device` (default — drops only this client's traffic to the domain)
+or `network` (every client, and this host too). Returns `201`, or `400` if the
+domain is not a valid domain name.
+
+### `PATCH /api/blocking/rules/<id>`
+
+`{ "enabled": false }` — enable or disable a rule. `400` if `enabled` is absent,
+`404` if the rule does not exist.
+
+### `DELETE /api/blocking/rules/<id>`
+
+Remove a rule. `404` if it does not exist.
+
+---
+
+## Parental Controls
+
+Per-device policy: daily data caps, blocked time windows, and pauses. Enforced
+by the same machinery as domain blocking but at the whole-device level, so the
+same hotspot-mode caveat applies — and the same `status` object is returned by
+every endpoint here, extended with:
+
+| Field | Meaning |
+|---|---|
+| `enforcement_level` | `windivert` \| `arp` \| `off` \| `unavailable` |
+| `windivert_available` | Whether packet-level blocking is installed |
+| `enforcement_note` | How to get packet-level blocking, when it's missing |
+
+### `GET /api/parental/policies`
+
+Every policy, each annotated with live state: `usage_today_bytes`,
+`blocked_now`, and `block_reason` (which rule is currently biting — quota,
+window, or pause).
+
+### `PUT /api/parental/policies/<mac>`
+
+```json
+{ "daily_quota_mb": 2048,
+  "blocked_windows": [{"start": "22:00", "end": "07:00"}],
+  "paused": false,
+  "note": "kids' tablet" }
+```
+
+All fields optional. `400` if `daily_quota_mb` is not a number or
+`blocked_windows` is not a list.
+
+### `POST /api/parental/policies/<mac>/pause`
+
+```json
+{ "minutes": 60 }
+```
+
+Defaults to 60 minutes; maximum 1440 (24 h). Pass `"minutes": null` explicitly
+for an open-ended pause.
+
+> Pauses are bounded by default on purpose. An unbounded pause outlives the
+> session that created it — one set at 10:12 was still dropping a phone's
+> traffic hours later, across restarts, with nothing in the UI explaining why.
+> Open-ended is still available, but you have to ask for it.
+
+`400` if `minutes` is not a number or falls outside 1–1440.
+
+### `POST /api/parental/policies/<mac>/resume`
+
+Lift the pause.
+
+### `DELETE /api/parental/policies/<mac>`
+
+Clear the device's policy entirely. `404` if there was none.
+
 ---
 
 ## Export
@@ -1230,6 +1559,14 @@ Trigger a manual database cleanup.
 }
 ```
 
+### `GET /api/health/idle-client-baseline`
+
+Baseline app-vs-control traffic metrics used to validate that a genuinely idle
+client reads as idle — i.e. that background chatter (ARP, mDNS, DHCP, NTP) is
+being classified as control traffic rather than inflating a device's usage. See
+[IDLE_CLIENT_BASELINE.md](IDLE_CLIENT_BASELINE.md) for the thresholds and what
+a passing baseline looks like.
+
 ---
 
 ## Server-Sent Events (SSE)
@@ -1341,3 +1678,78 @@ overridden via environment variables where noted.
 | `STALE_DEVICE_PRUNE_INTERVAL` | int | `300` | `STALE_DEVICE_PRUNE_INTERVAL` | How often (seconds) the stale-device pruning task runs |
 | `STALE_DEVICE_TIMEOUT_HOURS` | int | `2` | `STALE_DEVICE_TIMEOUT_HOURS` | Hours of inactivity after which a device is considered stale and eligible for pruning |
 | `MAX_IN_MEMORY_DEVICES` | int | `10000` | `MAX_IN_MEMORY_DEVICES` | Upper limit on devices held in memory; oldest entries are evicted when exceeded |
+
+### Local AI Model
+
+All AI features talk to a local Ollama server at `http://127.0.0.1:11434` over
+plain HTTP. No SDK, no API key, no outbound traffic. When no server answers,
+these settings are simply unused and every AI endpoint degrades gracefully.
+
+| Variable | Type | Default | Env Override | Description |
+|----------|------|---------|--------------|-------------|
+| `LLM_MODEL` | str | `llama3.2:3b` | `NETWATCH_LLM_MODEL` | Ollama model tag to use |
+| `LLM_TIMEOUT_SECONDS` | int | `180` | `NETWATCH_LLM_TIMEOUT` | Seconds before a generation is abandoned |
+| `LLM_KEEP_ALIVE` | str | `30m` | `NETWATCH_LLM_KEEP_ALIVE` | How long Ollama keeps the model resident |
+| `LLM_NUM_PREDICT` | int | `512` | `NETWATCH_LLM_NUM_PREDICT` | Max tokens per generation |
+| `LLM_MAX_STEPS` | int | `6` | `NETWATCH_LLM_MAX_STEPS` | Tool-call budget per Ask NetWatch question |
+
+### Flows and Telemetry
+
+| Variable | Type | Default | Env Override | Description |
+|----------|------|---------|--------------|-------------|
+| `FLOW_IDLE_TIMEOUT_SECONDS` | int | `30` | `FLOW_IDLE_TIMEOUT_SECONDS` | Idle time before an active flow is flushed |
+| `FLOW_MAX_AGE_SECONDS` | int | `300` | `FLOW_MAX_AGE_SECONDS` | Hard cap on a flow's lifetime before flushing |
+| `FLOW_FLUSH_INTERVAL_SECONDS` | int | `5` | `FLOW_FLUSH_INTERVAL_SECONDS` | How often the flow table is swept |
+| `FLOW_RETENTION_HOURS` | int | `72` | `FLOW_RETENTION_HOURS` | How long flow records are kept |
+| `FLOW_MAX_ACTIVE` | int | `50000` | `FLOW_MAX_ACTIVE` | Cap on simultaneously tracked flows |
+
+### Behavior Baselines
+
+| Variable | Type | Default | Env Override | Description |
+|----------|------|---------|--------------|-------------|
+| `BEHAVIOR_WINDOW_SECONDS` | int | `600` | `BEHAVIOR_WINDOW_SECONDS` | Accumulation window per sample |
+| `BEHAVIOR_MIN_BASELINE_SAMPLES` | int | `12` | `BEHAVIOR_MIN_BASELINE_SAMPLES` | Samples needed before an hour-of-week bucket is trusted |
+| `BEHAVIOR_Z_THRESHOLD` | float | `4.0` | `BEHAVIOR_Z_THRESHOLD` | Z-score at which a deviation becomes an alert |
+| `BEHAVIOR_MAX_DEVICES` | int | `1000` | `BEHAVIOR_MAX_DEVICES` | Cap on devices profiled |
+
+### Threat Detection
+
+| Variable | Type | Default | Env Override | Description |
+|----------|------|---------|--------------|-------------|
+| `THREAT_PORTSCAN_WINDOW_SECONDS` | int | `120` | same | Port-scan observation window |
+| `THREAT_PORTSCAN_PORT_THRESHOLD` | int | `15` | same | Distinct ports that trigger a port-scan alert |
+| `THREAT_PORTSCAN_HOST_THRESHOLD` | int | `10` | same | Distinct hosts that trigger a sweep alert |
+| `THREAT_BEACON_MIN_OBSERVATIONS` | int | `6` | same | Repeat connections needed to call it beaconing |
+| `THREAT_BEACON_MAX_JITTER_RATIO` | float | `0.25` | same | Interval jitter allowed while still counting as periodic |
+| `THREAT_DNS_TUNNEL_WINDOW_SECONDS` | int | `300` | same | DNS-tunnelling observation window |
+| `THREAT_DNS_TUNNEL_QUERY_THRESHOLD` | int | `25` | same | Queries in window that trigger inspection |
+| `THREAT_DNS_TUNNEL_QNAME_LENGTH` | int | `40` | same | Query-name length considered suspicious |
+| `THREAT_DNS_TUNNEL_ENTROPY` | float | `3.8` | same | Shannon entropy above which a name looks encoded |
+| `THREAT_LATERAL_WINDOW_SECONDS` | int | `300` | same | Lateral-movement observation window |
+| `THREAT_LATERAL_HOST_THRESHOLD` | int | `3` | same | Internal hosts contacted that trigger an alert |
+
+### VPN Detection
+
+| Variable | Type | Default | Env Override | Description |
+|----------|------|---------|--------------|-------------|
+| `VPN_MIN_TUNNEL_BYTES` | int | `2000000` | `VPN_MIN_TUNNEL_BYTES` | Sustained volume before a flow is called a tunnel |
+| `VPN_WINDOW_SECONDS` | int | `600` | `VPN_WINDOW_SECONDS` | Observation window |
+| `VPN_MIN_TUNNEL_SECONDS` | int | `120` | `VPN_MIN_TUNNEL_SECONDS` | Minimum duration to qualify |
+
+### Forecasting
+
+| Variable | Type | Default | Env Override | Description |
+|----------|------|---------|--------------|-------------|
+| `FORECAST_ALPHA` | float | `0.5` | `FORECAST_ALPHA` | Holt level smoothing factor |
+| `FORECAST_BETA` | float | `0.1` | `FORECAST_BETA` | Holt trend smoothing factor |
+| `FORECAST_MIN_SAMPLES` | int | `20` | `FORECAST_MIN_SAMPLES` | Minutes of history required before forecasting |
+| `FORECAST_HISTORY_HOURS` | int | `3` | `FORECAST_HISTORY_HOURS` | How far back the fit looks |
+| `FORECAST_HORIZON_MINUTES` | int | `30` | `FORECAST_HORIZON_MINUTES` | Default projection horizon |
+| `FORECAST_LINK_CAPACITY_MBPS` | float | `0` | `FORECAST_LINK_CAPACITY_MBPS` | Your link speed; `0` disables saturation ETAs |
+| `FORECAST_CACHE_TTL_SECONDS` | int | `30` | `FORECAST_CACHE_TTL_SECONDS` | Forecast cache lifetime |
+
+### Incidents
+
+| Variable | Type | Default | Env Override | Description |
+|----------|------|---------|--------------|-------------|
+| `INCIDENT_WINDOW_MINUTES` | int | `30` | `INCIDENT_WINDOW_MINUTES` | How long an open incident keeps absorbing related alerts |
