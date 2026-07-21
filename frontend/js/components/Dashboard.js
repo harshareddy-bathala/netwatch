@@ -11,9 +11,16 @@ import ProtocolChart from './ProtocolChart.js';
 import { formatBytes, formatMbps, escapeHtml } from '../utils/formatters.js';
 
 export default class Dashboard {
+  /** How often the briefing re-reads the last 10 minutes on its own. */
+  static BRIEFING_INTERVAL_MS = 10 * 60 * 1000;
+
   constructor(container) {
     this.container = container;
     this._unsubs = [];
+    this._briefingTimer = null;
+    this._briefingMetaTimer = null;
+    this._briefingInFlight = false;
+    this._briefingAt = 0;
     this._cards = {};
     this._bandwidthChart = null;
     this._protocolChart = null;
@@ -81,13 +88,14 @@ export default class Dashboard {
 
         <div class="briefing-card" id="briefing-card">
           <div class="briefing-card__head">
-            <span class="briefing-card__title">What just happened?</span>
-            <button class="btn btn--sm" id="briefing-btn">Brief me</button>
+            <div class="briefing-card__title-group">
+              <span class="briefing-card__title">What just happened?</span>
+              <span class="briefing-card__meta" id="briefing-meta"></span>
+            </div>
+            <button class="btn btn--sm" id="briefing-btn">Refresh now</button>
           </div>
           <div class="briefing-card__body" id="briefing-body">
-            <span class="briefing-card__hint">
-              Ask for a plain-English account of the last 10 minutes.
-            </span>
+            <span class="briefing-card__hint">Reading the last 10 minutes…</span>
           </div>
         </div>
 
@@ -156,46 +164,91 @@ export default class Dashboard {
   /**
    * Wire the "What just happened?" briefing.
    *
-   * On demand rather than on a timer: it may run a local model, and nobody
-   * wants a paragraph regenerating under them every few seconds. The facts
-   * behind it are always current — they are gathered fresh per request.
+   * Refreshes itself every 10 minutes so the card always reflects the last 10
+   * minutes without anyone asking — it is a status panel, not a chat prompt.
+   * "Refresh now" is there for the moment you actually want to look, e.g.
+   * right after something happened on stage.
+   *
+   * Not tied to the SSE tick: generating a paragraph can take seconds on a
+   * local model, and regenerating it every few seconds would queue model
+   * calls behind each other and make the text flicker.
    */
   _wireBriefing() {
     const btn = this.container.querySelector('#briefing-btn');
     const body = this.container.querySelector('#briefing-body');
     if (!btn || !body) return;
 
-    btn.addEventListener('click', async () => {
-      btn.disabled = true;
-      btn.textContent = 'Thinking…';
-      body.innerHTML = '<span class="briefing-card__hint">Reading the last 10 minutes…</span>';
+    btn.addEventListener('click', () => this._refreshBriefing(true));
 
+    // First fill immediately (unforced, so a warm server cache answers fast).
+    this._refreshBriefing(false);
+
+    this._briefingTimer = setInterval(
+      () => this._refreshBriefing(true), Dashboard.BRIEFING_INTERVAL_MS,
+    );
+    // Keep the "updated N ago" label honest between refreshes.
+    this._briefingMetaTimer = setInterval(() => this._renderBriefingMeta(), 30000);
+  }
+
+  async _refreshBriefing(force) {
+    const btn = this.container.querySelector('#briefing-btn');
+    const body = this.container.querySelector('#briefing-body');
+    if (!btn || !body || this._briefingInFlight) return;
+
+    this._briefingInFlight = true;
+    btn.disabled = true;
+    if (force) btn.textContent = 'Thinking…';
+    body.classList.add('briefing-card__body--loading');
+
+    let resp;
+    try {
       const api = (await import('../api.js')).default;
-      const resp = await api.getBriefing(10, true);
+      resp = await api.getBriefing(10, force);
+    } finally {
+      this._briefingInFlight = false;
+    }
 
-      btn.disabled = false;
-      btn.textContent = 'Brief me';
-      if (!resp || resp.error || !resp.data) {
-        body.innerHTML = '<span class="briefing-card__hint">Briefing unavailable.</span>';
-        return;
-      }
-      const d = resp.data;
-      body.innerHTML = '';
+    // The view may have been torn down while the model was thinking.
+    if (!body.isConnected) return;
+    btn.disabled = false;
+    btn.textContent = 'Refresh now';
+    body.classList.remove('briefing-card__body--loading');
 
-      const text = document.createElement('p');
-      text.className = 'briefing-card__text';
-      text.textContent = d.narrative || '';
-      body.appendChild(text);
+    if (!resp || resp.error || !resp.data) {
+      body.innerHTML =
+        '<span class="briefing-card__hint">Briefing unavailable.</span>';
+      return;
+    }
 
-      // Name the author. A model-written paragraph and a computed one are
-      // both fine to show, but the viewer should know which they are reading.
-      const src = document.createElement('span');
-      src.className = 'briefing-card__source';
-      src.textContent = d.source === 'model'
-        ? 'Written by the local model from live data'
-        : 'Computed directly from live data';
-      body.appendChild(src);
-    });
+    const d = resp.data;
+    body.innerHTML = '';
+
+    const text = document.createElement('p');
+    text.className = 'briefing-card__text';
+    text.textContent = d.narrative || '';
+    body.appendChild(text);
+
+    // Name the author. A model-written paragraph and a computed one are both
+    // fine to show, but the viewer should know which they are reading.
+    const src = document.createElement('span');
+    src.className = 'briefing-card__source';
+    src.textContent = d.source === 'model'
+      ? 'Written by the local model from live data'
+      : 'Computed directly from live data';
+    body.appendChild(src);
+
+    this._briefingAt = Date.now();
+    this._renderBriefingMeta();
+  }
+
+  _renderBriefingMeta() {
+    const meta = this.container.querySelector('#briefing-meta');
+    if (!meta || !this._briefingAt) return;
+    const ageMin = Math.floor((Date.now() - this._briefingAt) / 60000);
+    const nextMin = Math.max(0, Math.round(
+      (Dashboard.BRIEFING_INTERVAL_MS - (Date.now() - this._briefingAt)) / 60000));
+    const when = ageMin < 1 ? 'just now' : `${ageMin} min ago`;
+    meta.textContent = `updated ${when} · auto-refresh in ${nextMin} min`;
   }
 
   _onStats(stats) {
@@ -364,6 +417,11 @@ export default class Dashboard {
 
   destroy() {
     this._unsubs.forEach(fn => fn());
+    // Timers outlive the DOM otherwise, and a navigated-away dashboard would
+    // keep firing model calls in the background.
+    if (this._briefingTimer) clearInterval(this._briefingTimer);
+    if (this._briefingMetaTimer) clearInterval(this._briefingMetaTimer);
+    this._briefingTimer = this._briefingMetaTimer = null;
     if (this._bandwidthChart) this._bandwidthChart.destroy();
     if (this._protocolChart) this._protocolChart.destroy();
   }

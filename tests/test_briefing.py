@@ -173,3 +173,51 @@ class TestFactGathering:
         assert facts["window_minutes"] == 5
         for key in ("devices", "top_apps", "alerts", "metrics"):
             assert key in facts
+
+
+class TestForeignTimeframeGuard:
+    """A briefing must not widen its own scope.
+
+    Observed live: asked to summarise ten minutes, llama3.2:3b wrote "the
+    hotspot has been idle for the past hour" — a period it was given no facts
+    about. Quietly inventing a timeframe is the same class of error as
+    inventing a device, so it falls back to the computed narrative.
+    """
+
+    def test_past_hour_is_rejected(self):
+        assert _is_usable(
+            "The network is quiet. The hotspot has been idle for the past "
+            "hour with no new devices joining.", 10,
+        ) is False
+
+    def test_other_foreign_periods_rejected(self):
+        for phrase in ("yesterday", "all day", "this morning", "last 24 hours"):
+            assert _is_usable(
+                f"Two devices were active {phrase}, mostly using Instagram "
+                "and nothing else of note happened.", 10,
+            ) is False, phrase
+
+    def test_in_window_prose_is_accepted(self):
+        assert _is_usable(
+            "Two devices were active in the last ten minutes, mostly using "
+            "Instagram. No alerts fired and throughput stayed low.", 10,
+        ) is True
+
+    def test_briefer_falls_back_on_foreign_timeframe(self, monkeypatch):
+        import intelligence.briefing as m
+        monkeypatch.setattr(m, "gather_facts", lambda w: _facts())
+        out = Briefer(_Runtime(
+            "The network has been completely idle for the past hour with no "
+            "devices connected at any point during that time."
+        )).brief()
+        assert out["source"] == "facts"
+        assert "Nothing-Phone-2a-Plus" in out["narrative"]
+
+    def test_window_is_passed_into_the_prompt(self, monkeypatch):
+        import intelligence.briefing as m
+        monkeypatch.setattr(m, "gather_facts", lambda w: _facts())
+        rt = _Runtime("Two devices were active in the last ten minutes using "
+                      "Instagram, and no alerts fired at all.")
+        Briefer(rt).brief(window_minutes=10)
+        prompt = rt.calls[0][0]["content"]
+        assert "last 10 minutes and NOTHING else" in prompt

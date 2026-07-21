@@ -374,26 +374,12 @@ export default class ActivityView {
     li.appendChild(dom);
     li.appendChild(t);
 
-    // Org-/VPN-inferred rows name a company or tunnel, not a resolvable
-    // domain — no block button.
-    if (!blocked && g.mac && d.protocol !== 'ORG' && d.protocol !== 'VPN') {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'activity-domain__block';
-      btn.textContent = 'Block';
-      btn.title = `Block ${blockTarget} for ${g.name}`;
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        const resp = await api.addBlockingRule(blockTarget, g.mac);
-        if (resp && resp.error) {
-          btn.disabled = false;
-          btn.textContent = 'Failed';
-          return;
-        }
-        await this._loadRules();
-      });
-      li.appendChild(btn);
-    }
+    // Per-device "Block" button removed: enforcement is not reliable enough
+    // to offer yet. The API, the enforcement ladder and their tests are all
+    // still in place — only the way to *create* a rule from the UI is gone,
+    // so nothing new can be blocked by accident while it is being worked on.
+    // The blocked-rules list below is deliberately kept, so any rule already
+    // armed can still be found and switched off.
     return li;
   }
 
@@ -430,47 +416,18 @@ export default class ActivityView {
 
     panel.innerHTML = '';
 
-    const form = document.createElement('form');
-    form.className = 'activity-rules__form';
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.className = 'activity__filter';
-    input.placeholder = 'Block a domain for every client (e.g. instagram.com)';
-    input.autocomplete = 'off';
-    const add = document.createElement('button');
-    add.type = 'submit';
-    add.className = 'btn btn--sm';
-    add.textContent = 'Block';
-    const err = document.createElement('div');
-    err.className = 'activity-rules__error';
-
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const domain = (input.value || '').trim();
-      if (!domain) return;
-      add.disabled = true;
-      const resp = await api.addBlockingRule(domain, null);
-      add.disabled = false;
-      if (resp && resp.error) {
-        err.textContent = resp.message || `Could not block "${domain}".`;
-        return;
-      }
-      input.value = '';
-      err.textContent = '';
-      await this._loadRules();
-    });
-
-    form.appendChild(input);
-    form.appendChild(add);
-    panel.appendChild(form);
-    panel.appendChild(err);
-
-    if (this._status && !this._status.enforcing) {
-      const warn = document.createElement('div');
-      warn.className = 'activity__hint activity__hint--warn';
-      warn.textContent = this._status.reason || '';
-      panel.appendChild(warn);
-    }
+    // The network-wide "block a domain for every client" form is removed for
+    // the same reason as the per-row Block button: enforcement is not
+    // dependable yet, and a control that looks like it works but doesn't is
+    // worse than no control. What remains is read-and-release — existing
+    // rules stay visible so they can be switched off or deleted.
+    const note = document.createElement('div');
+    note.className = 'activity__hint';
+    note.textContent = this._rules.length
+      ? 'Blocking is being reworked. Existing rules are shown so you can turn '
+        + 'them off; new rules cannot be added from here for now.'
+      : 'Blocking is being reworked and is unavailable from the UI for now.';
+    panel.appendChild(note);
 
     if (!this._rules.length) {
       const empty = document.createElement('div');

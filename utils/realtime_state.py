@@ -140,6 +140,12 @@ class InMemoryDashboardState:
         # Device registry: MAC → DeviceInfo
         self._devices: Dict[str, DeviceInfo] = {}
 
+        # Live view of this machine's own adapters, refreshed on a TTL so an
+        # adapter created after startup (the hotspot's) is still recognised.
+        self._local_macs: set = set()
+        self._local_ips: set = set()
+        self._local_ident_at: float = 0.0
+
         # Today's running totals
         self._today_bytes: int = 0
         self._today_packets: int = 0
@@ -249,6 +255,9 @@ class InMemoryDashboardState:
                 self._gateway_macs = set()
             # Host IP for IP-based exclusion (hotspot: host = gateway)
             self._our_ip = our_ip or ""
+            # A new mode means new adapters — re-read local identity now
+            # rather than trusting whatever was cached for the old one.
+            self._local_ident_at = 0.0
             # Cache local hostname for device_name leak filtering
             try:
                 import socket
@@ -295,6 +304,50 @@ class InMemoryDashboardState:
             pass
         return {"macs": macs, "ips": ips, "hostname": hostname}
 
+    # How long a local-adapter enumeration stays trusted. Cheap enough to
+    # redo periodically, and adapters genuinely come and go: the hotspot's
+    # ICS adapter only exists while the hotspot is on.
+    _LOCAL_IDENT_TTL = 30.0
+
+    def _refresh_local_identity_locked(self) -> None:
+        """Re-read this machine's own adapter MACs and IPs, on a TTL.
+
+        Host identity used to be captured **once at startup**. If NetWatch was
+        started before the hotspot adapter finished appearing — the normal
+        order, since you start the app and then connect a phone — the ICS
+        adapter's MAC was missing from the exclusion set for the entire
+        session. The host then counted itself as a client and the dashboard
+        read "2 devices" with one phone connected.
+
+        The IP fallback could not save it either: the host's entry is created
+        from its own IPv6 link-local traffic, so its address is ``fe80::…``
+        and never equals the ``our_ip`` we compare against. Hence matching on
+        *every* local address, not just the capture interface's.
+
+        Caller must hold ``self._lock``.
+        """
+        now = time.time()
+        if (now - self._local_ident_at) < self._LOCAL_IDENT_TTL:
+            return
+        self._local_ident_at = now
+        macs, ips = set(), set()
+        try:
+            import psutil
+            for _name, addrs in psutil.net_if_addrs().items():
+                for a in addrs:
+                    fam = getattr(a.family, "name", "")
+                    if fam in ("AF_LINK", "AF_PACKET") and a.address:
+                        macs.add(a.address.lower().replace("-", ":"))
+                    elif fam in ("AF_INET", "AF_INET6") and a.address:
+                        ips.add(a.address.split("%")[0].lower())
+        except Exception:
+            # Keep whatever we had; a failed enumeration must not suddenly
+            # make the host look like a client.
+            return
+        macs.discard("00:00:00:00:00:00")
+        ips.discard("0.0.0.0")
+        self._local_macs, self._local_ips = macs, ips
+
     def _is_host_device(self, dev) -> bool:
         """True when this in-memory device row is the monitoring host itself.
 
@@ -314,9 +367,21 @@ class InMemoryDashboardState:
         # whole method exists to fix.
         if self._own_traffic_only and mac and mac in self._allowed_macs:
             return False
+
+        # Identity captured at mode-set time.
         if mac and (mac in self._host_macs or mac in self._gateway_macs):
             return True
         if ip and self._our_ip and ip == self._our_ip:
+            return True
+
+        # Live identity: catches adapters that appeared after startup (the
+        # hotspot's ICS adapter is created when the hotspot is turned on) and
+        # matches on every local address, so the host's own IPv6 link-local
+        # traffic is recognised as the host rather than as a new client.
+        self._refresh_local_identity_locked()
+        if mac and mac in self._local_macs:
+            return True
+        if ip and ip.lower() in self._local_ips:
             return True
         return False
 
@@ -466,6 +531,13 @@ class InMemoryDashboardState:
 
         with self._lock:
             if mac_norm in self._host_macs or mac_norm in self._gateway_macs:
+                return
+            # Same live-identity check the count uses, so discovery cannot
+            # re-add the host under an adapter that appeared after startup.
+            self._refresh_local_identity_locked()
+            if mac_norm in self._local_macs:
+                return
+            if ip_address and ip_address.lower() in self._local_ips:
                 return
             if self._own_traffic_only and mac_norm not in self._allowed_macs:
                 return

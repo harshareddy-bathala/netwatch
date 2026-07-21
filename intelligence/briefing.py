@@ -37,6 +37,11 @@ no preamble like "Here is your briefing".
 
 Rules:
 - Use ONLY the facts given. Never invent a device, app, domain or number.
+- The facts cover the last {window} minutes and NOTHING else. Never refer to \
+any other period — not "the past hour", not "today", not "recently". You do \
+not know what happened before this window.
+- Do not claim something did not happen unless the facts say so. Absence of a \
+fact is not evidence of absence.
 - Quote numbers and names EXACTLY as they appear. Do not convert units or \
 add things up yourself.
 - Refer to apps and companies by the friendly names given (e.g. "Instagram", \
@@ -250,11 +255,12 @@ class Briefer:
                 text = self._runtime.generate([
                     {"role": "system",
                      "content": _SYSTEM_PROMPT.format(
+                         window=window_minutes,
                          facts=json.dumps(facts, default=str, indent=2))},
                     {"role": "user", "content": "Write the briefing."},
                 ])
                 text = _clean(text)
-                if _is_usable(text):
+                if _is_usable(text, window_minutes):
                     narrative, source = text, "model"
                 else:
                     logger.info("Briefing: model output unusable — using "
@@ -287,20 +293,39 @@ def _clean(text: str) -> str:
     return text
 
 
-def _is_usable(text: str) -> bool:
+# Timeframes the model has no facts about. Observed live: asked to summarise
+# ten minutes, llama3.2:3b wrote "the hotspot has been idle for the past hour"
+# — a period it was told nothing about. A briefing that quietly widens its own
+# scope is worse than a plainer one that does not, so we fall back instead.
+_FOREIGN_TIMEFRAMES = (
+    "past hour", "last hour", "past day", "yesterday", "past week",
+    "last week", "past few hours", "all day", "overnight", "this morning",
+    "this afternoon", "past 24", "last 24",
+)
+
+
+def _is_usable(text: str, window_minutes: int = DEFAULT_WINDOW_MINUTES) -> bool:
     """Cheap sanity floor on generated prose.
 
-    Not a faithfulness check — that is what grounding the prompt in gathered
-    facts is for. This only rejects the failure modes that make a model's
-    output worse than the computed sentence: empty, truncated, or the model
-    talking about itself instead of the network.
+    Not a full faithfulness check — grounding the prompt in gathered facts is
+    what does that work. This rejects the failure modes that make a model's
+    output worse than the computed sentence: empty, truncated, the model
+    talking about itself, or the model reasoning about a period it was given
+    no data for.
     """
     if not text or len(text) < 40:
         return False
     lowered = text.lower()
     refusals = ("i cannot", "i can't", "as an ai", "i do not have access",
                 "please provide")
-    return not any(r in lowered for r in refusals)
+    if any(r in lowered for r in refusals):
+        return False
+    if any(t in lowered for t in _FOREIGN_TIMEFRAMES):
+        logger.info("Briefing: model referenced a period outside the "
+                    "%d-minute window — using computed narrative",
+                    window_minutes)
+        return False
+    return True
 
 
 def build_briefer(model: Optional[str] = None) -> Briefer:

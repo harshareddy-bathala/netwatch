@@ -2062,84 +2062,90 @@
   white-space: nowrap;
 }
 
+
 /* ==========================================================================
    AI assessment card (Security page) + briefing card (Dashboard)
-   ========================================================================== */
+   ==========================================================================
+   NOTE: this project's tokens are --color-bg-*, --spacing-*, --border-radius*
+   and --color-accent-primary. An earlier version of this block invented
+   --color-surface / --space-4 / --color-accent, none of which exist, so the
+   cards rendered completely unstyled. */
 
 .incident-ai {
-  margin-top: var(--space-4);
-  padding: var(--space-4);
+  margin-top: var(--spacing-md);
+  padding: var(--spacing-md);
   border: 1px solid var(--color-border);
-  border-left: 3px solid var(--color-accent);
-  border-radius: var(--radius-md);
-  background: var(--color-surface-alt);
+  border-left: 3px solid var(--color-accent-primary);
+  border-radius: var(--border-radius);
+  background: var(--color-bg-tertiary);
 }
 
 .incident-ai__pending {
   color: var(--color-text-secondary);
-  font-size: 0.85rem;
+  font-size: var(--font-size-sm);
 }
 
 .incident-ai__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-2);
-  margin-bottom: var(--space-2);
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-sm);
 }
 
 .incident-ai__label {
-  font-size: 0.78rem;
-  font-weight: 600;
-  letter-spacing: 0.03em;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--color-text-secondary);
 }
 
 .incident-ai__conf {
-  font-size: 0.72rem;
-  font-weight: 600;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
   padding: 2px 8px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--border-radius-sm);
   text-transform: uppercase;
+  white-space: nowrap;
 }
-.incident-ai__conf--high   { background: rgba(239, 68, 68, 0.15);  color: #ef4444; }
-.incident-ai__conf--medium { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
-.incident-ai__conf--low    { background: rgba(148, 163, 184, 0.15); color: #94a3b8; }
+.incident-ai__conf--high   { background: rgba(239, 68, 68, 0.15);   color: var(--color-error); }
+.incident-ai__conf--medium { background: rgba(245, 158, 11, 0.15);  color: var(--color-warning); }
+.incident-ai__conf--low    { background: rgba(160, 160, 160, 0.15); color: var(--color-text-secondary); }
 
 .incident-ai__text {
-  margin: 0 0 var(--space-2);
-  font-size: 0.9rem;
-  line-height: 1.55;
-  color: var(--color-text);
+  margin: 0 0 var(--spacing-sm);
+  font-size: var(--font-size-base);
+  line-height: 1.6;
+  color: var(--color-text-primary);
 }
 
 .incident-ai__indicators {
-  font-size: 0.78rem;
+  font-size: var(--font-size-xs);
   color: var(--color-text-secondary);
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
 }
 
 .incident-ai__overruled {
-  margin-top: var(--space-2);
-  padding: var(--space-2);
-  border-radius: var(--radius-sm);
+  margin-top: var(--spacing-sm);
+  padding: var(--spacing-sm);
+  border-radius: var(--border-radius-sm);
   background: rgba(245, 158, 11, 0.10);
-  color: #f59e0b;
-  font-size: 0.78rem;
+  color: var(--color-warning);
+  font-size: var(--font-size-xs);
   line-height: 1.5;
 }
 
 .incident-ai__actions {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  margin-top: var(--space-3);
+  gap: var(--spacing-md);
+  margin-top: var(--spacing-md);
   flex-wrap: wrap;
 }
 
 .incident-ai__hint {
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
   color: var(--color-text-secondary);
 }
 
@@ -2147,24 +2153,39 @@
 
 .briefing-card {
   grid-column: 1 / -1;
-  padding: var(--space-4);
+  padding: var(--spacing-md);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  background: var(--color-surface);
+  border-radius: var(--border-radius-lg);
+  background: var(--color-bg-secondary);
 }
 
 .briefing-card__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-3);
-  margin-bottom: var(--space-2);
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-sm);
+}
+
+.briefing-card__title-group {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-sm);
+  min-width: 0;
 }
 
 .briefing-card__title {
-  font-size: 0.95rem;
-  font-weight: 600;
-  color: var(--color-text);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+/* "Updated 2 min ago · next in 8 min" — the card refreshes itself, so it has
+   to say when it last did, or a stale paragraph reads as a live one. */
+.briefing-card__meta {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
 }
 
 .briefing-card__body {
@@ -2172,14 +2193,19 @@
 }
 
 .briefing-card__text {
-  margin: 0 0 var(--space-2);
-  font-size: 0.92rem;
-  line-height: 1.6;
-  color: var(--color-text);
+  margin: 0 0 var(--spacing-sm);
+  font-size: var(--font-size-base);
+  line-height: 1.65;
+  color: var(--color-text-primary);
 }
 
 .briefing-card__hint,
 .briefing-card__source {
-  font-size: 0.76rem;
+  display: block;
+  font-size: var(--font-size-xs);
   color: var(--color-text-secondary);
+}
+
+.briefing-card__body--loading .briefing-card__text {
+  opacity: 0.55;
 }

@@ -213,3 +213,73 @@ class TestLivenessRequiresTraffic:
         _add(state, PHONE_MAC, PHONE_IP, seen_on_wire=True)
         _add(state, "16:c9:99:2b:3a:27", "192.168.137.178", seen_on_wire=False)
         assert state.get_packet_active_macs(300) == {PHONE_MAC}
+
+
+class TestHostIdentityRefresh:
+    """The host must be recognised even if its adapter appeared after startup.
+
+    Reported live: dashboard read "2 devices" with one phone connected. The
+    hotspot's ICS adapter is created when the hotspot is switched on, which is
+    normally AFTER NetWatch starts — so the one-shot `get_all_local_macs()`
+    taken at startup did not contain it, and the host counted itself as a
+    client for the whole session.
+
+    The IP fallback could not catch it either: the host's entry is created from
+    its own IPv6 link-local traffic, so its address is `fe80::…` and never
+    equals the `our_ip` (192.168.137.1) being compared against.
+    """
+
+    HOST_ICS_MAC = "2e:d0:43:a5:22:70"
+    HOST_LINK_LOCAL = "fe80::8bea:fca5:1f82:816b"
+
+    def _state_started_before_hotspot(self, monkeypatch):
+        state = InMemoryDashboardState()
+        # Startup: hotspot adapter does not exist yet.
+        state.set_mode_context(
+            host_macs=set(), our_mac="", gateway_mac="",
+            own_traffic_only=False, gateway_mac_exclude=True,
+            our_ip=HOST_IP,
+        )
+        # Later: the adapter exists, so a live enumeration would see it.
+        monkeypatch.setattr(
+            state, "_refresh_local_identity_locked",
+            lambda: (setattr(state, "_local_macs", {self.HOST_ICS_MAC}),
+                     setattr(state, "_local_ips", {HOST_IP, self.HOST_LINK_LOCAL})),
+        )
+        return state
+
+    def test_host_excluded_by_late_appearing_adapter_mac(self, monkeypatch):
+        state = self._state_started_before_hotspot(monkeypatch)
+        _add(state, self.HOST_ICS_MAC, self.HOST_LINK_LOCAL)
+        _add(state, PHONE_MAC, PHONE_IP)
+        assert state.get_active_device_count() == 1
+        assert state.snapshot()["active_devices"] == 1
+
+    def test_host_excluded_by_its_ipv6_link_local(self, monkeypatch):
+        """Even under an unrecognised MAC, a local address gives it away."""
+        state = self._state_started_before_hotspot(monkeypatch)
+        _add(state, "aa:bb:cc:00:00:99", self.HOST_LINK_LOCAL)
+        _add(state, PHONE_MAC, PHONE_IP)
+        assert state.get_active_device_count() == 1
+
+    def test_discovery_cannot_readd_the_host(self, monkeypatch):
+        state = self._state_started_before_hotspot(monkeypatch)
+        state.upsert_discovered_device(
+            mac_address=self.HOST_ICS_MAC, ip_address=HOST_IP, hostname="me",
+        )
+        assert self.HOST_ICS_MAC not in state._devices
+
+    def test_a_real_client_is_still_counted(self, monkeypatch):
+        state = self._state_started_before_hotspot(monkeypatch)
+        _add(state, PHONE_MAC, PHONE_IP)
+        assert state.get_active_device_count() == 1
+
+    def test_failed_enumeration_does_not_unmask_the_host(self):
+        """A psutil failure must not suddenly make the host look like a client."""
+        state = InMemoryDashboardState()
+        state.set_mode_context(
+            host_macs={self.HOST_ICS_MAC}, our_mac="", gateway_mac="",
+            own_traffic_only=False, gateway_mac_exclude=True, our_ip=HOST_IP,
+        )
+        _add(state, self.HOST_ICS_MAC, self.HOST_LINK_LOCAL)
+        assert state.get_active_device_count() == 0
